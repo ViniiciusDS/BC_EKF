@@ -1,11 +1,16 @@
+# compare_configurations.py
+
 import sys
-from scenarios import scenarios_group1, scenarios_group2, scenarios_group3, scenarios_group4, scenarios_rectangular, scenarios_all
+from scenarios import (
+    scenarios_group1, scenarios_group2, scenarios_group3,
+    scenarios_group4, scenarios_rectangular, scenarios_all
+)
 from montecarlo_runner import run_monte_carlo
 import visualization as viz
 import numpy as np
 from bc_ekf import run_bc_ekf, run_bc_ekf_custom_commands
 
-# Parâmetros fixos
+# Parâmetros gerais fixos
 T = 0.05
 t_final = 50
 z_c = 0.5
@@ -33,6 +38,7 @@ else:
 
 results = {}
 t = np.arange(0, t_final+T, T)
+
 for scenario in scenarios:
     label = scenario["label"]
     anchors = scenario["anchors"]
@@ -41,56 +47,29 @@ for scenario in scenarios:
 
     print(f"\nRodando cenário: {label}")
 
-    t = np.arange(0, t_final+T, T)
-
     if "Retangular" in label:
-        # Criar comandos da rota retangular
+        # ===============================
+        # Cenário especial com rota retangular
+        # ===============================
         v_seg = 0.3
         w_turn = np.pi / 2 / 2.5  # gira 90° em 2.5s
 
-        # Trecho 1: reto (200 steps = 10s)
-        steps_straight = int(75 / T)
-        v1 = np.full(steps_straight, v_seg)
-        w1 = np.zeros(steps_straight)
-
-        # Trecho 2: curva
+        # Define segmentos da trajetória
+        steps_straight = int(7.5 / T)
         steps_turn = int(2.5 / T)
-        v2 = np.zeros(steps_turn)
-        w2 = np.full(steps_turn, w_turn)
 
-        # Trecho 3: reto
-        v3 = np.full(steps_straight, v_seg)
-        w3 = np.zeros(steps_straight)
+        v_straight = np.full(steps_straight, v_seg)
+        w_straight = np.zeros(steps_straight)
+        v_curve = np.zeros(steps_turn)
+        w_curve = np.full(steps_turn, w_turn)
 
-        # Trecho 4: curva
-        v4 = np.zeros(steps_turn)
-        w4 = np.full(steps_turn, w_turn)
+        v_commands = np.concatenate([v_straight, v_curve]*4)
+        w_commands = np.concatenate([w_straight, w_curve]*4)
 
-        # Trecho 5: reto
-        v5 = np.full(steps_straight, v_seg)
-        w5 = np.zeros(steps_straight)
-
-        # Trecho 6: curva
-        v6 = np.zeros(steps_turn)
-        w6 = np.full(steps_turn, w_turn)
-
-        # Trecho 7: reto
-        v7 = np.full(steps_straight, v_seg)
-        w7 = np.zeros(steps_straight)
-
-        # Trecho 8: curva final
-        v8 = np.zeros(steps_turn)
-        w8 = np.full(steps_turn, w_turn)
-
-        # Concatenar tudo
-        v_commands = np.concatenate([v1,v2,v3,v4,v5,v6,v7,v8])
-        w_commands = np.concatenate([w1,w2,w3,w4,w5,w6,w7,w8])
-
-        # Ajustar t_final para a duração correta
         t_final_actual = len(v_commands)*T
         t = np.arange(0, t_final_actual, T)
 
-        # Roda monte carlo custom
+        # Executa várias rodadas com comandos customizados
         rmse_pos_list = []
         rmse_heading_list = []
         pos_errors_all_runs = []
@@ -133,10 +112,11 @@ for scenario in scenarios:
             "est_traj": trajectories_est,
             "anchors": anchors
         }
-        scenario_labels = [s["label"] for s in scenarios]
 
     else:
-        # Cenários normais
+        # ===============================
+        # Cenários normais (trajetória circular)
+        # ===============================
         v_true = scenario.get("v_true", 0.3)
         w_true = scenario.get("w_true", np.deg2rad(7.5))
 
@@ -173,6 +153,7 @@ for scenario in scenarios:
 
 scenario_labels = [s["label"] for s in scenarios]
 
+# Visualizações
 viz.plot_rmse_boxplots(results, scenario_labels)
 viz.plot_error_over_time(results, scenario_labels, t)
 viz.plot_example_trajectories(results, scenario_labels, t)

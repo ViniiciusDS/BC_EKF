@@ -1,5 +1,7 @@
+# scenarios.py
 import numpy as np
 
+# Âncoras do ambiente real (Tectrol)
 anchors_tectrol = np.array([
     [6.351, -4.966, 1.0],
     [5.947, -4.966, 1.0],
@@ -108,38 +110,42 @@ scenarios_group3 = [
         "w_true": np.deg2rad(20)
     }
 ]
+
 # ==========================
-# Grupo 4: Tectrol
+# Grupo 4: Cenários Tectrol
 # ==========================
 scenarios_group4 = [
     {
         "label": "Tectrol - Curva Grande - Ruído Alto",
         "anchors": anchors_tectrol,
-        "baseline": 0.65 / 2,
+        "baseline": 0.65/2,
         "sigma_uwb": np.sqrt(0.05),
         "v_true": 0.3,
-        "w_true": np.deg2rad(1.5)   # curva bem ampla
+        "w_true": np.deg2rad(1.5)
     },
     {
         "label": "Tectrol - Curva Moderada - Ruído Alto",
         "anchors": anchors_tectrol,
-        "baseline": 0.65 / 2,
+        "baseline": 0.65/2,
         "sigma_uwb": np.sqrt(0.05),
         "v_true": 0.3,
         "w_true": np.deg2rad(3)
     }
 ]
 
+# ==========================
+# Grupo 5: Trajetória Retangular
+# ==========================
 scenarios_rectangular = [
     {
         "label": "Tectrol - Trajetória Retangular",
         "anchors": anchors_tectrol,
         "baseline": 0.5/2,
-        "sigma_uwb": np.sqrt(5)  # ruído alto, ambiente real
+        "sigma_uwb": np.sqrt(5)  # ruído alto
     }
 ]
 
 # ==========================
-# Grupo 5: Todos combinados
+# Todos combinados
 # ==========================
 scenarios_all = scenarios_group1 + scenarios_group2 + scenarios_group3
