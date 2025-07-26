@@ -1,5 +1,6 @@
 # robot.py
 import numpy as np
+import utils 
 
 class Robot:
     """
@@ -128,8 +129,8 @@ def simulate_trajectory_motion(
             z_c
         ]
         for i in range(num_anchors):
-            dist_f = np.linalg.norm(np.array(pf) - anchors[:, i]) + sigma_uwb * np.random.randn()
-            dist_r = np.linalg.norm(np.array(pr) - anchors[:, i]) + sigma_uwb * np.random.randn()
+            dist_f = utils.apply_uwb_errors(np.linalg.norm(pf - anchors[:,i]), sigma_uwb)
+            dist_r = utils.apply_uwb_errors(np.linalg.norm(pr - anchors[:,i]), sigma_uwb)
             z_hist[2*i, k] = dist_f
             z_hist[2*i + 1, k] = dist_r
 

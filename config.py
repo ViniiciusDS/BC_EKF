@@ -22,3 +22,13 @@ NOISE_STD_W = 0.0002       # desvio padrão do ruído angular (rad/s)
 
 # Parâmetros de salvamento dos dados
 CSV_PRECISION = 5  # Quantidade de casas decimais
+
+# Erro de viés UWB
+UWB_BIAS_ENABLED = True
+UWB_BIAS_VALUE = 0.2         # 20 cm
+UWB_BIAS_PROBABILITY = 0.1   # 10% das leituras terão viés
+
+# Erro de desalinhamento UWB
+UWB_MISALIGNMENT_ENABLED = True
+UWB_MISALIGNMENT_PROBABILITY = 0.1  # 10% de chance de desalinhamento
+UWB_MISALIGNMENT_FACTOR = 3.0       # Multiplica o ruído padrão quando desalinhado

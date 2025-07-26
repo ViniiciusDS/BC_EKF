@@ -98,7 +98,7 @@ for k in range(1, len(t)):
             H_k[2*i+1,:] = [
                 (pr[0]-anchors[0,i])/D_ri,
                 (pr[1]-anchors[1,i])/D_ri,
-                C_ri/D_r
+                C_ri/D_ri
             ]
 
         S = H_k @ P_pred @ H_k.T + R

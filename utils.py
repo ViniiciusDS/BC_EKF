@@ -3,6 +3,7 @@ import csv
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
+import config
 
 def save_data(filename, data, headers, precision=5):
     """
@@ -67,8 +68,8 @@ def simulate_run(T, t_final, anchors, v_true, w_true, l, z_c, sigma_v, sigma_w, 
         pf = np.array([xt + l*np.cos(theta), yt + l*np.sin(theta), z_c])
         pr = np.array([xt - l*np.cos(theta), yt - l*np.sin(theta), z_c])
         for i in range(num_anchors):
-            dist_f = np.linalg.norm(pf - anchors[:,i]) + sigma_uwb*np.random.randn()
-            dist_r = np.linalg.norm(pr - anchors[:,i]) + sigma_uwb*np.random.randn()
+            dist_f = apply_uwb_errors(np.linalg.norm(pf - anchors[:,i]), sigma_uwb)
+            dist_r = apply_uwb_errors(np.linalg.norm(pr - anchors[:,i]), sigma_uwb)
             z_hist[2*i,k] = dist_f
             z_hist[2*i+1,k] = dist_r
 
@@ -149,3 +150,17 @@ def generate_uwb_measurements(x_hist, anchors, l, z_c, sigma_uwb):
             z_hist[2*i+1, k] = dist_r
 
     return z_hist
+
+def apply_uwb_errors(base_distance, sigma_uwb):
+    """Aplica viés e desalinhamento às medições UWB."""
+    # Erro de viés aleatório
+    bias = 0.0
+    if config.UWB_BIAS_ENABLED and np.random.rand() < config.UWB_BIAS_PROBABILITY:
+        bias = np.random.choice([-1, 1]) * config.UWB_BIAS_VALUE
+
+    # Ruído de desalinhamento
+    noise_factor = 1.0
+    if config.UWB_MISALIGNMENT_ENABLED and np.random.rand() < config.UWB_MISALIGNMENT_PROBABILITY:
+        noise_factor = config.UWB_MISALIGNMENT_FACTOR
+
+    return base_distance + bias + noise_factor * sigma_uwb * np.random.randn()

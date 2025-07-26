@@ -1,5 +1,6 @@
 # bc_ekf.py
 import numpy as np
+import utils
 
 def run_bc_ekf(
     T,
@@ -142,7 +143,53 @@ def run_bc_ekf_custom_commands(
 
     return rmse_pos, rmse_heading, t, x_hist_true, x_hist_est
 
+def run_bc_ekf_from_data(
+    T,
+    anchors,
+    odometry_noisy,
+    z_hist,
+    baseline,
+    z_c,
+    sigma_uwb
+):
+    """
+    Roda EKF recebendo diretamente odometria e medições UWB simuladas.
+    Útil para quando a simulação é feita fora do EKF.
+    """
+    num_steps = odometry_noisy.shape[1]
+    num_anchors = anchors.shape[1]
 
+    # Inicialização
+    x_est = np.array([2.5, 0, 0])
+    P = np.diag([0.1, 0.1, 0.1])
+    Q = np.diag([1e-4] * 3)
+    R = np.diag([sigma_uwb**2] * (2 * num_anchors))
+
+    x_hist_est = np.zeros((3, num_steps))
+    x_hist_est[:, 0] = x_est
+    update_ratio = int((1/T)/5)
+
+    # Loop EKF
+    for k in range(1, num_steps):
+        v_k = odometry_noisy[0, k]
+        w_k = odometry_noisy[1, k]
+        x_pred, A_k = _predict_state(x_est, v_k, w_k, T)
+        P_pred = A_k @ P @ A_k.T + Q
+
+        if k % update_ratio == 0:
+            h_pred, H_k = _measurement_model(x_pred, anchors, baseline, z_c)
+            K_k = P_pred @ H_k.T @ np.linalg.inv(H_k @ P_pred @ H_k.T + R)
+            z_k = z_hist[:, k]
+            x_est = x_pred + K_k @ (z_k - h_pred)
+            x_est[2] = np.arctan2(np.sin(x_est[2]), np.cos(x_est[2]))
+            P = (np.eye(3) - K_k @ H_k) @ P_pred
+        else:
+            x_est = x_pred
+            P = P_pred
+
+        x_hist_est[:, k] = x_est
+
+    return x_hist_est
 # ======================
 # Funções auxiliares
 # ======================
@@ -251,8 +298,8 @@ def _generate_uwb_measurements(x_hist, anchors, l, z_c, sigma_uwb):
         pf = [xt + l*np.cos(theta), yt + l*np.sin(theta), z_c]
         pr = [xt - l*np.cos(theta), yt - l*np.sin(theta), z_c]
         for i in range(num_anchors):
-            dist_f = np.linalg.norm(np.array(pf) - anchors[:, i]) + sigma_uwb * np.random.randn()
-            dist_r = np.linalg.norm(np.array(pr) - anchors[:, i]) + sigma_uwb * np.random.randn()
+            dist_f = utils.apply_uwb_errors(np.linalg.norm(pf - anchors[:,i]), sigma_uwb)
+            dist_r = utils.apply_uwb_errors(np.linalg.norm(pr - anchors[:,i]), sigma_uwb)
             z_hist[2*i, k] = dist_f
             z_hist[2*i + 1, k] = dist_r
     return z_hist
