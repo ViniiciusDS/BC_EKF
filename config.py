@@ -32,3 +32,8 @@ UWB_BIAS_PROBABILITY = 0.1   # 10% das leituras terão viés
 UWB_MISALIGNMENT_ENABLED = True
 UWB_MISALIGNMENT_PROBABILITY = 0.1  # 10% de chance de desalinhamento
 UWB_MISALIGNMENT_FACTOR = 3.0       # Multiplica o ruído padrão quando desalinhado
+
+# Logging
+LOGGING_ENABLED = False                 # habilita/desabilita logging
+LOG_DIR = "resultados/logs"            # pasta-base dos logs
+LOG_FLUSH_EVERY_N = 50                 # flush do CSV a cada N amostras

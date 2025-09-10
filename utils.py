@@ -1,9 +1,11 @@
 # utils.py
-import csv
+import os, csv, time, json
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
 import config
+from datetime import datetime
+from typing import Optional
 
 def save_data(filename, data, headers, precision=5):
     """
@@ -151,6 +153,32 @@ def generate_uwb_measurements(x_hist, anchors, l, z_c, sigma_uwb):
 
     return z_hist
 
+def generate_uwb_single_measurement(x_state, anchors, l, z_c, sigma_uwb):
+    """
+    Gera medições UWB para um único estado do robô (não histórico).
+    Args:
+        x_state: lista ou array [x, y, theta].
+        anchors: matriz 3xN com posições das âncoras.
+        l: metade do baseline.
+        z_c: altura das tags.
+        sigma_uwb: desvio padrão do ruído.
+    Returns:
+        z_k: vetor de medições UWB (2*num_anchors, ).
+    """
+    num_anchors = anchors.shape[1]
+    z_k = np.zeros(2 * num_anchors)
+
+    x, y, theta = x_state
+    pf = np.array([x + l*np.cos(theta), y + l*np.sin(theta), z_c])
+    pr = np.array([x - l*np.cos(theta), y - l*np.sin(theta), z_c])
+
+    for i in range(num_anchors):
+        dist_f = np.linalg.norm(pf - anchors[:, i]) + sigma_uwb * np.random.randn()
+        dist_r = np.linalg.norm(pr - anchors[:, i]) + sigma_uwb * np.random.randn()
+        z_k[2*i] = dist_f
+        z_k[2*i + 1] = dist_r
+    return z_k
+
 def apply_uwb_errors(base_distance, sigma_uwb):
     """Aplica viés e desalinhamento às medições UWB."""
     # Erro de viés aleatório
@@ -164,3 +192,88 @@ def apply_uwb_errors(base_distance, sigma_uwb):
         noise_factor = config.UWB_MISALIGNMENT_FACTOR
 
     return base_distance + bias + noise_factor * sigma_uwb * np.random.randn()
+
+def _makedirs_silent(path: str):
+    os.makedirs(path, exist_ok=True)
+
+class RunLogger:
+    """
+    Logger simples de execução:
+      - meta.json: guarda metadados da simulação (config, âncoras, rota etc.)
+      - data.csv: guarda amostras por passo (tempo, estados, comandos, erros)
+    """
+    def __init__(self,
+                 out_dir: str,
+                 run_name: Optional[str] = None,
+                 meta: Optional[dict] = None,
+                 flush_every_n: int = 200):
+
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.run_name = run_name or f"run_{ts}"
+        self.root = os.path.join(out_dir, self.run_name)
+        _makedirs_silent(self.root)
+
+        # salva metadados
+        self.meta_path = os.path.join(self.root, "meta.json")
+        with open(self.meta_path, "w", encoding="utf-8") as f:
+            json.dump(meta or {}, f, ensure_ascii=False, indent=2)
+
+        # prepara CSV
+        self.csv_path = os.path.join(self.root, "data.csv")
+        self._fh = open(self.csv_path, "w", newline="", encoding="utf-8")
+        self._writer = csv.writer(self._fh, delimiter=";")
+
+        header = [
+            "t_sec",
+            # true
+            "x_true", "y_true", "theta_true",
+            # pred
+            "x_pred", "y_pred", "theta_pred",
+            # est
+            "x_est", "y_est", "theta_est",
+            # comandos / entradas
+            "v_cmd", "w_cmd", "v_meas", "w_meas",
+            # erros
+            "pos_err_m", "heading_err_deg"
+        ]
+        self._writer.writerow(header)
+        self._count = 0
+        self._t0 = time.time()
+        self._flush_every_n = max(1, int(flush_every_n))
+
+    @property
+    def out_path(self) -> str:
+        return self.root
+
+    def log_step(self,
+                 true_state,      # [x,y,theta]
+                 pred_state,      # [x,y,theta] (opcional: pode ser None)
+                 est_state,       # [x,y,theta]
+                 v_cmd, w_cmd,
+                 v_meas, w_meas,
+                 pos_err, heading_err_deg):
+        t_sec = time.time() - self._t0
+        x_pred, y_pred, th_pred = (pred_state if pred_state is not None
+                                   else (float("nan"),) * 3)
+
+        row = [
+            f"{t_sec:.5f}",
+            f"{true_state[0]:.6f}", f"{true_state[1]:.6f}", f"{true_state[2]:.6f}",
+            f"{x_pred:.6f}", f"{y_pred:.6f}", f"{th_pred:.6f}",
+            f"{est_state[0]:.6f}", f"{est_state[1]:.6f}", f"{est_state[2]:.6f}",
+            f"{v_cmd:.6f}", f"{w_cmd:.6f}", f"{v_meas:.6f}", f"{w_meas:.6f}",
+            f"{pos_err:.6f}", f"{heading_err_deg:.6f}",
+        ]
+        self._writer.writerow(row)
+        self._count += 1
+
+        if self._count % self._flush_every_n == 0:
+            self._fh.flush()
+
+    def close(self):
+        try:
+            self._fh.flush()
+        finally:
+            self._fh.close()
+
+

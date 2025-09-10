@@ -190,6 +190,45 @@ def run_bc_ekf_from_data(
         x_hist_est[:, k] = x_est
 
     return x_hist_est
+
+
+def run_bc_ekf_step(x_est, P, u_k, z_k, anchors, l, z_c, Q, R):
+    """
+    Executa UMA iteração do EKF (predição + correção).
+    Args:
+        x_est (np.ndarray): Estado anterior [x, y, theta].
+        P (np.ndarray): Matriz de covariância anterior.
+        u_k (np.ndarray): Controle [v, w].
+        z_k (np.ndarray): Medidas UWB no instante (pode ser None se não disponível).
+        anchors (np.ndarray): Posições das âncoras.
+        l (float): Semi-baseline.
+        z_c (float): Altura das tags.
+        Q (np.ndarray): Covariância do processo.
+        R (np.ndarray): Covariância da medição.
+    Returns:
+        x_est (np.ndarray): Novo estado estimado.
+        P (np.ndarray): Nova matriz de covariância.
+    """
+    v_k, w_k = u_k
+    T = Q[0,0]**0.0  # assumindo T implícito no modelo 
+
+    # Predição
+    x_pred, A_k = _predict_state(x_est, v_k, w_k, T)
+    P_pred = A_k @ P @ A_k.T + Q
+
+    if z_k is not None:
+        # Correção
+        h_pred, H_k = _measurement_model(x_pred, anchors, l, z_c)
+        K_k = P_pred @ H_k.T @ np.linalg.inv(H_k @ P_pred @ H_k.T + R)
+        x_est = x_pred + K_k @ (z_k - h_pred)
+        x_est[2] = np.arctan2(np.sin(x_est[2]), np.cos(x_est[2]))  # normaliza ângulo
+        P = (np.eye(3) - K_k @ H_k) @ P_pred
+    else:
+        # Sem medições
+        x_est = x_pred
+        P = P_pred
+
+    return x_est, P
 # ======================
 # Funções auxiliares
 # ======================

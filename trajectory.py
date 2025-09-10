@@ -37,3 +37,30 @@ class Trajectory:
         Verifica se todos os waypoints foram alcançados.
         """
         return self.current_index >= len(self.waypoints)
+
+    @staticmethod
+    def square(size=5, start=(0,0)):
+        x0, y0 = start
+        return Trajectory([
+            (x0, y0),
+            (x0 + size, y0),
+            (x0 + size, y0 + size),
+            (x0, y0 + size),
+            (x0, y0)
+        ])
+
+    @staticmethod
+    def circle(radius=5, points=36, center=(0,0)):
+        cx, cy = center
+        waypoints = [(cx + radius*np.cos(theta), cy + radius*np.sin(theta))
+                     for theta in np.linspace(0, 2*np.pi, points, endpoint=False)]
+        return Trajectory(waypoints)
+
+    @staticmethod
+    def figure_eight(radius=3, points=36, center=(0,0)):
+        cx, cy = center
+        waypoints = []
+        for theta in np.linspace(0, 2*np.pi, points, endpoint=False):
+            waypoints.append((cx + radius*np.sin(theta), cy + radius*np.sin(theta)*np.cos(theta)))
+        return Trajectory(waypoints)
+

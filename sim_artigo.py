@@ -5,10 +5,9 @@ import matplotlib.pyplot as plt
 from utils import simulate_run
 from bc_ekf import run_bc_ekf_from_data
 from scenarios import anchors_tectrol
-import config
 import os
 
-
+# Criar pasta de resultados
 os.makedirs("resultados", exist_ok=True)
 
 # ======================
@@ -20,6 +19,8 @@ t_final = 50
 z_c = 0.5
 sigma_v = 0.02
 sigma_w = 0.05
+v_true = 0.25              # Velocidade linear do robô físico (m/s)
+w_true = 0.05              # Velocidade angular do robô físico (rad/s)
 
 # Ranges de teste
 ANCHOR_COUNTS = [3, 4, 5, 6, 7]        # quantidade de âncoras
@@ -35,7 +36,7 @@ def run_experiment(anchors, baseline, sigma_uwb):
     for _ in range(N_MONTE_CARLO):
         # Simula a trajetória realista com ruído
         t, x_true, v_noisy, w_noisy, z_hist = simulate_run(
-            T, t_final, anchors, 0.3, np.deg2rad(7.5), baseline, z_c, sigma_v, sigma_w, sigma_uwb
+            T, t_final, anchors, v_true, w_true, baseline, z_c, sigma_v, sigma_w, sigma_uwb
         )
         # Executa EKF com os dados simulados
         x_est = run_bc_ekf_from_data(
@@ -78,12 +79,12 @@ for n_anchors in ANCHOR_COUNTS:
 # ======================
 df = pd.DataFrame(results)
 df.to_csv("resultados/resultados_artigo.csv", sep=";", index=False)
-print("\nResultados salvos em resultados_artigo.csv")
+print("\nResultados salvos em resultados/resultados_artigo.csv")
 
 # ======================
 # Heatmaps para visualização
 # ======================
-def plot_heatmap(df, x_param, y_param, value_param, title, cmap="viridis"):
+def plot_heatmap(df, x_param, y_param, value_param, title, filename, cmap="viridis"):
     pivot_table = df.pivot_table(index=y_param, columns=x_param, values=value_param)
     plt.figure(figsize=(8,6))
     plt.imshow(pivot_table, cmap=cmap, aspect='auto', origin='lower')
@@ -94,62 +95,102 @@ def plot_heatmap(df, x_param, y_param, value_param, title, cmap="viridis"):
     plt.ylabel(y_param)
     plt.title(title)
     plt.tight_layout()
+    plt.savefig(filename, format='jpg', dpi=300)
     plt.show()
 
 # Heatmaps: RMSE posição
 for sigma in SIGMAS_UWB:
     subset = df[df["sigma_uwb"] == sigma]
     plot_heatmap(subset, "anchors", "baseline", "rmse_pos_mean",
-                 f"RMSE Posição (m) - Ruído={sigma}m")
+                 f"RMSE Posição (m) - Ruído={sigma}m",
+                 f"resultados/heatmap_pos_sigma_{sigma}.jpg")
 
 # Heatmaps: RMSE heading
 for sigma in SIGMAS_UWB:
     subset = df[df["sigma_uwb"] == sigma]
     plot_heatmap(subset, "anchors", "baseline", "rmse_heading_mean",
-                 f"RMSE Heading (°) - Ruído={sigma}m")
+                 f"RMSE Heading (°) - Ruído={sigma}m",
+                 f"resultados/heatmap_heading_sigma_{sigma}.jpg")
 
+# ======================
+# Gráficos de barras comparativos
+# ======================
 def plot_bar_comparisons(results_csv_path):
-    """
-    Lê o CSV de resultados e plota gráficos de barras comparando RMSE médio por variável.
-    """
-    import pandas as pd
     df = pd.read_csv(results_csv_path, sep=";")
 
-    # Gráfico 1: Impacto da quantidade de âncoras
+    # Gráficos para RMSE de posição
     anchors_group = df.groupby("anchors")["rmse_pos_mean"].mean()
     plt.figure(figsize=(8,5))
-    anchors_group.plot(kind='bar', color='skyblue', edgecolor='black')
+    anchors_group.plot(kind='bar', color='skyblue', edgecolor='black', alpha=1.0)
     plt.title("Impacto da Quantidade de Âncoras no RMSE de Posição")
     plt.xlabel("Quantidade de Âncoras")
     plt.ylabel("RMSE de Posição (m)")
     plt.grid(axis='y', linestyle='--', alpha=0.7)
     plt.tight_layout()
-    plt.savefig("resultados/bar_anchors_vs_rmse.png", dpi=300)
+    plt.savefig("resultados/bar_anchors_vs_rmse_pos.eps", format='eps', dpi=300)
     plt.show()
 
-    # Gráfico 2: Impacto do baseline
     baseline_group = df.groupby("baseline")["rmse_pos_mean"].mean()
     plt.figure(figsize=(8,5))
-    baseline_group.plot(kind='bar', color='lightgreen', edgecolor='black')
+    baseline_group.plot(kind='bar', color='lightgreen', edgecolor='black', alpha=1.0)
     plt.title("Impacto do Baseline no RMSE de Posição")
     plt.xlabel("Baseline (m)")
     plt.ylabel("RMSE de Posição (m)")
     plt.grid(axis='y', linestyle='--', alpha=0.7)
     plt.tight_layout()
-    plt.savefig("resultados/bar_baseline_vs_rmse.png", dpi=300)
+    plt.savefig("resultados/bar_baseline_vs_rmse_pos.eps", format='eps', dpi=300)
     plt.show()
 
-    # Gráfico 3: Impacto do ruído UWB
     noise_group = df.groupby("sigma_uwb")["rmse_pos_mean"].mean()
     plt.figure(figsize=(8,5))
-    noise_group.plot(kind='bar', color='salmon', edgecolor='black')
+    noise_group.plot(kind='bar', color='salmon', edgecolor='black', alpha=1.0)
     plt.title("Impacto do Ruído UWB no RMSE de Posição")
     plt.xlabel("Desvio Padrão do Ruído (m)")
     plt.ylabel("RMSE de Posição (m)")
     plt.grid(axis='y', linestyle='--', alpha=0.7)
     plt.tight_layout()
-    plt.savefig("resultados/bar_noise_vs_rmse.png", dpi=300)
+    plt.savefig("resultados/bar_noise_vs_rmse_pos.eps", format='eps', dpi=300)
     plt.show()
 
-# Chamar após salvar o CSV
+    # Gráficos para RMSE de heading
+    anchors_group_heading = df.groupby("anchors")["rmse_heading_mean"].mean()
+    plt.figure(figsize=(8,5))
+    anchors_group_heading.plot(kind='bar', color='orange', edgecolor='black', alpha=1.0)
+    plt.title("Impacto da Quantidade de Âncoras no RMSE de Heading")
+    plt.xlabel("Quantidade de Âncoras")
+    plt.ylabel("RMSE de Heading (°)")
+    plt.grid(axis='y', linestyle='--', alpha=0.7)
+    plt.tight_layout()
+    plt.savefig("resultados/bar_anchors_vs_rmse_heading.eps", format='eps', dpi=300)
+    plt.show()
+
+    baseline_group_heading = df.groupby("baseline")["rmse_heading_mean"].mean()
+    plt.figure(figsize=(8,5))
+    baseline_group_heading.plot(kind='bar', color='purple', edgecolor='black', alpha=1.0)
+    plt.title("Impacto do Baseline no RMSE de Heading")
+    plt.xlabel("Baseline (m)")
+    plt.ylabel("RMSE de Heading (°)")
+    plt.grid(axis='y', linestyle='--', alpha=0.7)
+    plt.tight_layout()
+    plt.savefig("resultados/bar_baseline_vs_rmse_heading.eps", format='eps', dpi=300)
+    plt.show()
+
+    noise_group_heading = df.groupby("sigma_uwb")["rmse_heading_mean"].mean()
+    plt.figure(figsize=(8,5))
+    noise_group_heading.plot(kind='bar', color='gray', edgecolor='black', alpha=1.0)
+    plt.title("Impacto do Ruído UWB no RMSE de Heading")
+    plt.xlabel("Desvio Padrão do Ruído (m)")
+    plt.ylabel("RMSE de Heading (°)")
+    plt.grid(axis='y', linestyle='--', alpha=0.7)
+    plt.tight_layout()
+    plt.savefig("resultados/bar_noise_vs_rmse_heading.eps", format='eps', dpi=300)
+    plt.show()
+
 plot_bar_comparisons("resultados/resultados_artigo.csv")
+
+# ======================
+# Exportar melhores casos de heading
+# ======================
+best_heading_cases = df.loc[df.groupby("sigma_uwb")["rmse_heading_mean"].idxmin()]
+best_heading_cases.to_csv("resultados/melhores_casos_heading.csv", sep=";", index=False)
+print("\nResumo dos melhores casos de Heading salvo em resultados/melhores_casos_heading.csv")
