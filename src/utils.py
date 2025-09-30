@@ -1,9 +1,10 @@
 # utils.py
+# ruido, I/O, helpers
 import os, csv, time, json
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
-import config
+import src.config as config
 from datetime import datetime
 from typing import Optional
 
@@ -165,18 +166,23 @@ def generate_uwb_single_measurement(x_state, anchors, l, z_c, sigma_uwb):
     Returns:
         z_k: vetor de medições UWB (2*num_anchors, ).
     """
+    if anchors is None:
+        return np.array([])
+    num_anchors = anchors.shape[1]
+    if num_anchors == 0:
+        return np.array([])
+    
+    xk, yk, th = x_state
+    pf = np.array([xk + l*np.cos(th), yk + l*np.sin(th), z_c])
+    pr = np.array([xk - l*np.cos(th), yk - l*np.sin(th), z_c])
+    
     num_anchors = anchors.shape[1]
     z_k = np.zeros(2 * num_anchors)
 
-    x, y, theta = x_state
-    pf = np.array([x + l*np.cos(theta), y + l*np.sin(theta), z_c])
-    pr = np.array([x - l*np.cos(theta), y - l*np.sin(theta), z_c])
-
     for i in range(num_anchors):
-        dist_f = np.linalg.norm(pf - anchors[:, i]) + sigma_uwb * np.random.randn()
-        dist_r = np.linalg.norm(pr - anchors[:, i]) + sigma_uwb * np.random.randn()
-        z_k[2*i] = dist_f
-        z_k[2*i + 1] = dist_r
+        a = anchors[:, i]
+        z_k[2*i]     = np.linalg.norm(pf - a) + sigma_uwb*np.random.randn()
+        z_k[2*i + 1] = np.linalg.norm(pr - a) + sigma_uwb*np.random.randn()
     return z_k
 
 def apply_uwb_errors(base_distance, sigma_uwb):
@@ -277,3 +283,12 @@ class RunLogger:
             self._fh.close()
 
 
+
+#   Noise functions
+rng = np.random.default_rng()
+
+def add_gaussian_noise(value, std_dev):
+    """
+    Retorna 'value' com ruído gaussiano de desvio padrão 'std_dev'.
+    """
+    return value + rng.normal(0, std_dev)

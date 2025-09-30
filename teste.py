@@ -1,7 +1,7 @@
-from trajectory import Trajectory
-from robot import simulate_trajectory_motion
-from bc_ekf import run_bc_ekf_from_data
-import visualization as viz
+from src.trajectory import Trajectory
+from src.robot import simulate_trajectory_motion
+from src.bc_ekf import run_bc_ekf_from_data
+import src.visualization as viz
 import numpy as np
 
 # Trajetória retangular

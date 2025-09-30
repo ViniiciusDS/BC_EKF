@@ -1,7 +1,7 @@
 # bc_ekf_simulation.py
 import numpy as np
 import matplotlib.pyplot as plt
-from utils import generate_ground_truth, generate_noisy_odometry, generate_uwb_measurements
+from src.utils import generate_ground_truth, generate_noisy_odometry, generate_uwb_measurements
 
 # ================================
 # 1. Parâmetros de simulação

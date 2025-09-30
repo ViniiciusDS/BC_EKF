@@ -1,10 +1,11 @@
 # sim_artigo.py
+# varreduras/heatmaps/barras para artigo
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from utils import simulate_run
-from bc_ekf import run_bc_ekf_from_data
-from scenarios import anchors_tectrol
+from src.utils import simulate_run
+from src.bc_ekf import run_bc_ekf_from_data
+from src.scenarios import anchors_tectrol
 import os
 
 # Criar pasta de resultados

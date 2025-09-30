@@ -1,6 +1,7 @@
 # bc_ekf.py
+# EKF (passo unico + wrapper) para robô diferencial com UWB
 import numpy as np
-import utils
+import src.utils as utils
 
 def run_bc_ekf(
     T,
@@ -192,43 +193,81 @@ def run_bc_ekf_from_data(
     return x_hist_est
 
 
-def run_bc_ekf_step(x_est, P, u_k, z_k, anchors, l, z_c, Q, R):
+def run_bc_ekf_step(x_est, P, u_k, z_k, anchors, l, z_c, Q, R, debug: bool = False):
     """
-    Executa UMA iteração do EKF (predição + correção).
-    Args:
-        x_est (np.ndarray): Estado anterior [x, y, theta].
-        P (np.ndarray): Matriz de covariância anterior.
-        u_k (np.ndarray): Controle [v, w].
-        z_k (np.ndarray): Medidas UWB no instante (pode ser None se não disponível).
-        anchors (np.ndarray): Posições das âncoras.
-        l (float): Semi-baseline.
-        z_c (float): Altura das tags.
-        Q (np.ndarray): Covariância do processo.
-        R (np.ndarray): Covariância da medição.
-    Returns:
-        x_est (np.ndarray): Novo estado estimado.
-        P (np.ndarray): Nova matriz de covariância.
+    Executa UM passo do BC-EKF (predição +, opcionalmente, correção).
+    - Aceita z_k vazio e ignora a correção se não houver medições.
+    - Quando debug=True, retorna também um dicionário de diagnósticos com:
+      {'innov': y, 'S': S, 'K': K, 'h': h, 'H': H}
+
+    Retornos:
+      - Se debug=False (padrão): (x_next, P_next)
+      - Se debug=True: (x_next, P_next, diag_dict)
     """
-    v_k, w_k = u_k
-    T = Q[0,0]**0.0  # assumindo T implícito no modelo 
+    v, w = u_k
 
-    # Predição
-    x_pred, A_k = _predict_state(x_est, v_k, w_k, T)
-    P_pred = A_k @ P @ A_k.T + Q
+    # --- Predição ---
+    theta = x_est[2]
+    dx = v * np.cos(theta)
+    dy = v * np.sin(theta)
+    dth = w
+    x_pred = x_est + np.array([dx, dy, dth])
+    x_pred[2] = np.arctan2(np.sin(x_pred[2]), np.cos(x_pred[2]))
 
-    if z_k is not None:
-        # Correção
-        h_pred, H_k = _measurement_model(x_pred, anchors, l, z_c)
-        K_k = P_pred @ H_k.T @ np.linalg.inv(H_k @ P_pred @ H_k.T + R)
-        x_est = x_pred + K_k @ (z_k - h_pred)
-        x_est[2] = np.arctan2(np.sin(x_est[2]), np.cos(x_est[2]))  # normaliza ângulo
-        P = (np.eye(3) - K_k @ H_k) @ P_pred
-    else:
-        # Sem medições
-        x_est = x_pred
-        P = P_pred
+    A = np.array([
+        [1, 0, -v * np.sin(theta)],
+        [0, 1,  v * np.cos(theta)],
+        [0, 0, 1]
+    ])
+    P_pred = A @ P @ A.T + Q
 
-    return x_est, P
+    # --- Correção (se houver medições) ---
+    n_meas = 0 if z_k is None else len(z_k)
+    if n_meas == 0:
+        if debug:
+            return x_pred, P_pred, {
+                "innov": None, "S": None, "K": None, "h": None, "H": None,
+                "x_pred": x_pred.copy(), "P_pred": P_pred.copy()
+            }
+        return x_pred, P_pred
+
+    # measurement model (h, H) para o estado x_pred
+    num_anchors = anchors.shape[1]
+    xp, yp, th = x_pred
+    pf = np.array([xp + l*np.cos(th), yp + l*np.sin(th), z_c])
+    pr = np.array([xp - l*np.cos(th), yp - l*np.sin(th), z_c])
+
+    h = np.zeros(2*num_anchors)
+    H = np.zeros((2*num_anchors, 3))
+
+    for i in range(num_anchors):
+        a = anchors[:, i]
+        Df = np.linalg.norm(pf - a)
+        Dr = np.linalg.norm(pr - a)
+        h[2*i]     = Df
+        h[2*i + 1] = Dr
+
+        Cf = - (pf[0]-a[0]) * l*np.sin(th) + (pf[1]-a[1]) * l*np.cos(th)
+        Cr =   (pr[0]-a[0]) * l*np.sin(th) - (pr[1]-a[1]) * l*np.cos(th)
+
+        H[2*i, :]     = [(pf[0]-a[0]) / Df, (pf[1]-a[1]) / Df, Cf / Df]
+        H[2*i + 1, :] = [(pr[0]-a[0]) / Dr, (pr[1]-a[1]) / Dr, Cr / Dr]
+
+    # Ganho de Kalman e atualização
+    S = H @ P_pred @ H.T + R
+    K = P_pred @ H.T @ np.linalg.inv(S)
+    y = z_k - h
+    x_upd = x_pred + K @ y
+    x_upd[2] = np.arctan2(np.sin(x_upd[2]), np.cos(x_upd[2]))
+    P_upd = (np.eye(3) - K @ H) @ P_pred
+
+    if debug:
+        return x_upd, P_upd, {
+            "innov": y, "S": S, "K": K, "h": h, "H": H,
+            "x_pred": x_pred.copy(), "P_pred": P_pred.copy()
+        }
+    return x_upd, P_upd
+
 # ======================
 # Funções auxiliares
 # ======================

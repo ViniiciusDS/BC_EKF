@@ -1,4 +1,4 @@
-# config.py
+    # config.py
 
 # Mapa
 MAP_WIDTH = 5.0  # metros

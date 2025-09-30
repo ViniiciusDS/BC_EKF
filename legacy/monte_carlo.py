@@ -1,7 +1,7 @@
 # monte_carlo.py
 import numpy as np
 import matplotlib.pyplot as plt
-from bc_ekf import run_bc_ekf
+from src.bc_ekf import run_bc_ekf
 
 # ============================
 # 1. Parâmetros gerais

@@ -1,9 +1,9 @@
 # main.py
-import config
-from robot import Robot
-from trajectory import Trajectory
-from noise import add_gaussian_noise
-from utils import save_data, plot_trajectory
+import src.config as config
+from src.robot import Robot
+from src.trajectory import Trajectory
+from legacy.noise import add_gaussian_noise
+from src.utils import save_data, plot_trajectory
 import numpy as np
 
 def main():

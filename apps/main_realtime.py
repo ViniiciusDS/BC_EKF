@@ -3,11 +3,11 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider
 import time
-from simulator import Simulator
-from scenarios import anchors_tectrol
-import config
-from trajectory import Trajectory
-from utils import RunLogger
+from src.simulator import Simulator
+from src.scenarios import anchors_tectrol
+import src.config as config
+from src.trajectory import Trajectory
+from src.utils import RunLogger
 import os
 
 # ======================

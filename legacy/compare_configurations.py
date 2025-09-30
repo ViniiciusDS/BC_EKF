@@ -1,14 +1,14 @@
 # compare_configurations.py
 
 import sys
-from scenarios import (
+from src.scenarios import (
     scenarios_group1, scenarios_group2, scenarios_group3,
     scenarios_group4, scenarios_rectangular, scenarios_all
 )
-from montecarlo_runner import run_monte_carlo
-import visualization as viz
+from legacy.montecarlo_runner import run_monte_carlo
+import src.visualization as viz
 import numpy as np
-from bc_ekf import run_bc_ekf, run_bc_ekf_custom_commands
+from src.bc_ekf import run_bc_ekf, run_bc_ekf_custom_commands
 
 # Parâmetros gerais fixos
 T = 0.05

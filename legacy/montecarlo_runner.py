@@ -1,6 +1,6 @@
 # montecarlo_runner.py
 import numpy as np
-from bc_ekf import run_bc_ekf
+from src.bc_ekf import run_bc_ekf
 
 def run_monte_carlo(
     T,
