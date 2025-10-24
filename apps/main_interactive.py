@@ -164,6 +164,7 @@ def draw_path(surface, cam: Camera, path_xy, color, width=2, dashed=False):
             pg.draw.line(surface, color, (int(sx), int(sy)), (int(ex), int(ey)), width)
             # pula o "gap"
             dist = dist_end + gap_len
+        
 
 def draw_robot(surface, cam: Camera, x, y, theta, color=BLACK):
     L = 0.5
@@ -221,20 +222,28 @@ def open_folder(path):
 # Autopilot simples
 # ==========================
 def waypoint_controller(state_xyz, waypoints, idx, v_max=0.25, w_max=0.8, threshold=0.35):
-    if idx >= len(waypoints):
+    if waypoints is None or len(waypoints) == 0 or idx >= len(waypoints):
         return 0.0, 0.0, idx
+
     x, y, th = state_xyz
     tx, ty = waypoints[idx]
     dx, dy = tx - x, ty - y
     dist = math.hypot(dx, dy)
     target_th = math.atan2(dy, dx)
     angle_err = math.atan2(math.sin(target_th - th), math.cos(target_th - th))
-    v = v_max * max(0.0, min(1.0, dist))
-    w = 1.6 * angle_err
-    v = max(-v_max, min(v_max, v))
-    w = max(-w_max, min(w_max, w))
+
+    # ganho angular um pouco menor + limitação
+    kp_ang = 1.2
+    w = max(-w_max, min(w_max, kp_ang * angle_err))
+
+    # reduz v quando erro angular é grande (mais aderência na curva)
+    ang_scale = max(0.2, math.cos(angle_err))  # [0.2..1]
+    v_ref = v_max * max(0.0, min(1.0, dist))
+    v = max(-v_max, min(v_max, v_ref * ang_scale))
+
     if dist < threshold:
         idx += 1
+
     return v, w, idx
 
 # ==========================
@@ -453,11 +462,6 @@ def main():
                 dy = my - pan_last[1]
                 cam.pan_pixels(dx, dy)
                 pan_last = (mx, my)
-            elif event.type == pg.KEYDOWN:
-                if event.key == pg.K_ESCAPE:
-                    running = False
-                elif event.key == pg.K_d:
-                    show_debug = not show_debug
 
 
         # teclas contínuas (manual)
@@ -476,7 +480,7 @@ def main():
             else:
                 w_cmd *= 0.86
         else:
-            v_cmd, w_cmd, wp_idx = waypoint_controller(sim.x_est, waypoints, wp_idx, v_max=0.25, w_max=0.9)
+            v_cmd, w_cmd, wp_idx = waypoint_controller(sim.x_est, waypoints, wp_idx, v_max=0.25, w_max=0.8)
 
         # física
         for _ in range(speed_factor):
@@ -529,6 +533,11 @@ def main():
         # rota planejada
         if waypoints is not None and len(waypoints) > 1:
             draw_path(screen, cam, waypoints, BLACK, 2, dashed=True)
+            # destaque do waypoint atual
+            if autopilot and 0 <= wp_idx < len(waypoints):
+                sx, sy = cam.world_to_screen(*waypoints[wp_idx])
+                pg.draw.circle(screen, GREEN, (sx, sy), 6)
+                pg.draw.circle(screen, BLACK, (sx, sy), 6, 1)
         # rota gravada em curso (pontos)
         if recording and len(recorded_points) > 0:
             for pt in recorded_points:
@@ -547,6 +556,22 @@ def main():
         if len(est_traj) > 0:
             xe, ye, te = est_traj[-1]
             draw_robot(screen, cam, xe, ye, te, ORANGE)
+
+        # --- Overlay: indicador de waypoint no canto inferior-direito do MAPA ---
+        if waypoints is not None and len(waypoints) > 0:
+            wp_current = min(wp_idx + 1, len(waypoints))
+            label = f"WP: {wp_current}/{len(waypoints)}"
+            img = font.render(label, True, BLACK)
+
+            pad = 6
+            tx = cam.viewport[0] - img.get_width() - pad - 8
+            ty = cam.viewport[1] - img.get_height() - pad - 8
+
+            card = pg.Surface((img.get_width() + 2*pad, img.get_height() + 2*pad), pg.SRCALPHA)
+            card.fill((255, 255, 255, 210))  # branco com alpha
+            card.blit(img, (pad, pad))
+            screen.blit(card, (tx - pad, ty - pad))
+            pg.draw.rect(screen, BLACK, (tx - pad, ty - pad, card.get_width(), card.get_height()), 1)
 
         # HUD lateral
         pg.draw.rect(screen, (245, 245, 245), (cam.viewport[0], 0, SIDE_W, cam.viewport[1]))

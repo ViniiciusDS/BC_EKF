@@ -4,14 +4,17 @@ import os, csv, time, json
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
-import src.config as config
 from datetime import datetime
 from typing import Optional
+try:
+    import src.config as config  # projeto como pacote (layout src/)
+except Exception:
+    import config  # fallback quando rodar como scripts soltos
 
-def save_data(filename, data, headers, precision=5):
-    """
-    Salva dados em CSV com separador ; e precisão configurável.
-    """
+def save_data(filename, data, headers, precision=None):
+    """Salva dados em CSV com separador ';' e precisão configurável."""
+    if precision is None:
+        precision = getattr(config, "CSV_PRECISION", 5)
     df = pd.DataFrame(data, columns=headers)
     for col in df.columns:
         if pd.api.types.is_numeric_dtype(df[col]):
@@ -19,62 +22,56 @@ def save_data(filename, data, headers, precision=5):
     df.to_csv(filename, index=False, sep=";")
 
 def plot_trajectory(map_size, waypoints, path):
-    """
-    Plota um mapa com waypoints e trajetória percorrida.
-    """
+    """Plota mapa com waypoints e trajetória (seguro para listas vazias)."""
     plt.figure(figsize=(6,6))
-    plt.xlim(0, map_size[0])
-    plt.ylim(0, map_size[1])
+    plt.xlim(0, map_size[0]); plt.ylim(0, map_size[1])
 
-    # Waypoints
-    wp_x, wp_y = zip(*waypoints)
-    plt.plot(wp_x, wp_y, "ro--", label="Waypoints")
+    if waypoints and len(waypoints) > 0:
+        wp_x, wp_y = zip(*waypoints)
+        plt.plot(wp_x, wp_y, "ro--", label="Waypoints")
 
-    # Trajetória
-    path_x = [p[0] for p in path]
-    path_y = [p[1] for p in path]
-    plt.plot(path_x, path_y, "b-", label="Trajetória")
+    if path and len(path) > 0:
+        path_x = [p[0] for p in path]
+        path_y = [p[1] for p in path]
+        plt.plot(path_x, path_y, "b-", label="Trajetória")
 
-    plt.xlabel("X (m)")
-    plt.ylabel("Y (m)")
-    plt.title("Simulação de Trajetória")
-    plt.legend()
-    plt.grid()
-    plt.tight_layout()
-    plt.show()
+    plt.xlabel("X (m)"); plt.ylabel("Y (m)")
+    plt.title("Simulação de Trajetória"); plt.legend(); plt.grid(True)
+    plt.tight_layout(); plt.show()
 
 def simulate_run(T, t_final, anchors, v_true, w_true, l, z_c, sigma_v, sigma_w, sigma_uwb):
-    """
-    Simula a trajetória real e gera medições ruidosas (versão simplificada).
-    """
-    t = np.arange(0, t_final+T, T)
-    num_anchors = anchors.shape[1]
+    """Simula trajetória e gera medições ruidosas (robusto a âncoras vazias)."""
+    t = np.arange(0, t_final + T, T)
+    num_anchors = 0 if anchors is None else (anchors.shape[1] if anchors.size else 0)
 
-    # Trajetória real
+    # trajetória real
     x_hist_true = np.zeros((3, len(t)))
-    x_hist_true[:,0] = [2.5, 0, 0]
+    x_hist_true[:, 0] = [2.5, 0, 0]
     for k in range(1, len(t)):
-        theta = x_hist_true[2,k-1]
-        x_hist_true[0,k] = x_hist_true[0,k-1] + v_true*T*np.cos(theta + w_true*T/2)
-        x_hist_true[1,k] = x_hist_true[1,k-1] + v_true*T*np.sin(theta + w_true*T/2)
-        x_hist_true[2,k] = np.arctan2(np.sin(x_hist_true[2,k-1] + w_true*T), np.cos(x_hist_true[2,k-1] + w_true*T))
+        theta = x_hist_true[2, k-1]
+        x_hist_true[0, k] = x_hist_true[0, k-1] + v_true*T*np.cos(theta + w_true*T/2)
+        x_hist_true[1, k] = x_hist_true[1, k-1] + v_true*T*np.sin(theta + w_true*T/2)
+        x_hist_true[2, k] = np.arctan2(np.sin(x_hist_true[2, k-1] + w_true*T),
+                                       np.cos(x_hist_true[2, k-1] + w_true*T))
 
-    # Odometria ruidosa
-    v_noisy = v_true + sigma_v * np.random.randn(len(t))
-    w_noisy = w_true + sigma_w * np.random.randn(len(t))
+    v_noisy = v_true + sigma_v*np.random.randn(len(t))
+    w_noisy = w_true + sigma_w*np.random.randn(len(t))
 
-    # Medições UWB
+    if num_anchors == 0:
+        z_hist = np.empty((0, len(t)))
+        return t, x_hist_true, v_noisy, w_noisy, z_hist
+
+    # medições UWB com o mesmo modelo de erros da função “apply_uwb_errors”
     z_hist = np.zeros((2*num_anchors, len(t)))
     for k in range(len(t)):
-        theta = x_hist_true[2,k]
-        xt, yt = x_hist_true[0,k], x_hist_true[1,k]
+        theta = x_hist_true[2, k]; xt, yt = x_hist_true[0, k], x_hist_true[1, k]
         pf = np.array([xt + l*np.cos(theta), yt + l*np.sin(theta), z_c])
         pr = np.array([xt - l*np.cos(theta), yt - l*np.sin(theta), z_c])
         for i in range(num_anchors):
-            dist_f = apply_uwb_errors(np.linalg.norm(pf - anchors[:,i]), sigma_uwb)
-            dist_r = apply_uwb_errors(np.linalg.norm(pr - anchors[:,i]), sigma_uwb)
-            z_hist[2*i,k] = dist_f
-            z_hist[2*i+1,k] = dist_r
+            dist_f = apply_uwb_errors(np.linalg.norm(pf - anchors[:, i]), sigma_uwb)
+            dist_r = apply_uwb_errors(np.linalg.norm(pr - anchors[:, i]), sigma_uwb)
+            z_hist[2*i, k] = dist_f
+            z_hist[2*i + 1, k] = dist_r
 
     return t, x_hist_true, v_noisy, w_noisy, z_hist
 
@@ -122,12 +119,10 @@ def generate_noisy_odometry(v_true, w_true, t, sigma_v, sigma_w):
     w_noisy = w_true + sigma_w * np.random.randn(len(t))
     return v_noisy, w_noisy
 
-
 def generate_uwb_measurements(x_hist, anchors, l, z_c, sigma_uwb):
     """
-    Simula medições UWB ruidosas a partir da trajetória real.
-
-    Args:
+    Medições UWB históricas usando o mesmo modelo de erro (bias + desalinh.).
+        Args:
         x_hist (ndarray): Matriz 3 x N com [x, y, theta] ao longo do tempo.
         anchors (ndarray): Matriz 3 x num_anchors das posições das âncoras.
         l (float): Metade do baseline.
@@ -137,26 +132,23 @@ def generate_uwb_measurements(x_hist, anchors, l, z_c, sigma_uwb):
     Returns:
         z_hist (ndarray): Medições simuladas (2*num_anchors x N).
     """
-    num_anchors = anchors.shape[1]
-    z_hist = np.zeros((2 * num_anchors, x_hist.shape[1]))
+    num_anchors = 0 if anchors is None else anchors.shape[1]
+    if num_anchors == 0:
+        return np.empty((0, x_hist.shape[1]))
 
+    z_hist = np.zeros((2 * num_anchors, x_hist.shape[1]))
     for k in range(x_hist.shape[1]):
-        theta = x_hist[2, k]
-        xt, yt = x_hist[0, k], x_hist[1, k]
+        theta = x_hist[2, k]; xt, yt = x_hist[0, k], x_hist[1, k]
         pf = np.array([xt + l*np.cos(theta), yt + l*np.sin(theta), z_c])
         pr = np.array([xt - l*np.cos(theta), yt - l*np.sin(theta), z_c])
-
         for i in range(num_anchors):
-            dist_f = np.linalg.norm(pf - anchors[:, i]) + sigma_uwb * np.random.randn()
-            dist_r = np.linalg.norm(pr - anchors[:, i]) + sigma_uwb * np.random.randn()
-            z_hist[2*i, k] = dist_f
-            z_hist[2*i+1, k] = dist_r
-
+            z_hist[2*i, k]     = apply_uwb_errors(np.linalg.norm(pf - anchors[:, i]), sigma_uwb)
+            z_hist[2*i + 1, k] = apply_uwb_errors(np.linalg.norm(pr - anchors[:, i]), sigma_uwb)
     return z_hist
 
 def generate_uwb_single_measurement(x_state, anchors, l, z_c, sigma_uwb):
     """
-    Gera medições UWB para um único estado do robô (não histórico).
+    Medição UWB instantânea (retorna vetor vazio se não houver âncoras).
     Args:
         x_state: lista ou array [x, y, theta].
         anchors: matriz 3xN com posições das âncoras.
@@ -166,23 +158,17 @@ def generate_uwb_single_measurement(x_state, anchors, l, z_c, sigma_uwb):
     Returns:
         z_k: vetor de medições UWB (2*num_anchors, ).
     """
-    if anchors is None:
-        return np.array([])
-    num_anchors = anchors.shape[1]
-    if num_anchors == 0:
-        return np.array([])
-    
+    if anchors is None or anchors.shape[1] == 0:
+        return np.empty((0,))
     xk, yk, th = x_state
     pf = np.array([xk + l*np.cos(th), yk + l*np.sin(th), z_c])
     pr = np.array([xk - l*np.cos(th), yk - l*np.sin(th), z_c])
-    
     num_anchors = anchors.shape[1]
     z_k = np.zeros(2 * num_anchors)
-
     for i in range(num_anchors):
         a = anchors[:, i]
-        z_k[2*i]     = np.linalg.norm(pf - a) + sigma_uwb*np.random.randn()
-        z_k[2*i + 1] = np.linalg.norm(pr - a) + sigma_uwb*np.random.randn()
+        z_k[2*i]     = apply_uwb_errors(np.linalg.norm(pf - a), sigma_uwb)
+        z_k[2*i + 1] = apply_uwb_errors(np.linalg.norm(pr - a), sigma_uwb)
     return z_k
 
 def apply_uwb_errors(base_distance, sigma_uwb):
@@ -282,6 +268,12 @@ class RunLogger:
         finally:
             self._fh.close()
 
+    def __enter__(self):
+        return self
+    
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
+        return False  # não suprime exceções
 
 
 #   Noise functions
@@ -292,3 +284,7 @@ def add_gaussian_noise(value, std_dev):
     Retorna 'value' com ruído gaussiano de desvio padrão 'std_dev'.
     """
     return value + rng.normal(0, std_dev)
+
+def set_random_seed(seed: int):
+    """Define semente global para reproduzibilidade."""
+    np.random.seed(seed)

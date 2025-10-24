@@ -149,7 +149,7 @@ def run_bc_ekf_from_data(
     anchors,
     odometry_noisy,
     z_hist,
-    baseline,
+    l,
     z_c,
     sigma_uwb
 ):
@@ -178,7 +178,7 @@ def run_bc_ekf_from_data(
         P_pred = A_k @ P @ A_k.T + Q
 
         if k % update_ratio == 0:
-            h_pred, H_k = _measurement_model(x_pred, anchors, baseline, z_c)
+            h_pred, H_k = _measurement_model(x_pred, anchors, l, z_c)
             K_k = P_pred @ H_k.T @ np.linalg.inv(H_k @ P_pred @ H_k.T + R)
             z_k = z_hist[:, k]
             x_est = x_pred + K_k @ (z_k - h_pred)
@@ -193,10 +193,11 @@ def run_bc_ekf_from_data(
     return x_hist_est
 
 
-def run_bc_ekf_step(x_est, P, u_k, z_k, anchors, l, z_c, Q, R, debug: bool = False):
+def run_bc_ekf_step(x_est, P, u_k, z_k, anchors, l, z_c, Q, R, dt=None, debug: bool = False):
     """
     Executa UM passo do BC-EKF (predição +, opcionalmente, correção).
     - Aceita z_k vazio e ignora a correção se não houver medições.
+    - dt explicito para coerencia com o modelo discreto.
     - Quando debug=True, retorna também um dicionário de diagnósticos com:
       {'innov': y, 'S': S, 'K': K, 'h': h, 'H': H}
 
@@ -204,35 +205,47 @@ def run_bc_ekf_step(x_est, P, u_k, z_k, anchors, l, z_c, Q, R, debug: bool = Fal
       - Se debug=False (padrão): (x_next, P_next)
       - Se debug=True: (x_next, P_next, diag_dict)
     """
+    if dt is None:
+        raise ValueError("run_bc_ekf_step: dt é None; passe dt=... (time step)")
     v, w = u_k
 
-    # --- Predição ---
+    # --- Predição discreta com dt ---
     theta = x_est[2]
-    dx = v * np.cos(theta)
-    dy = v * np.sin(theta)
-    dth = w
+    dx   = v * dt * np.cos(theta + w*dt/2.0)
+    dy   = v * dt * np.sin(theta + w*dt/2.0)
+    dth  = w * dt
+
     x_pred = x_est + np.array([dx, dy, dth])
     x_pred[2] = np.arctan2(np.sin(x_pred[2]), np.cos(x_pred[2]))
 
+    # Jacobiano do processo (discreto) w.r.t. estado
     A = np.array([
-        [1, 0, -v * np.sin(theta)],
-        [0, 1,  v * np.cos(theta)],
+        [1, 0, -v * dt * np.sin(theta + w*dt/2.0)],
+        [0, 1,  v * dt * np.cos(theta + w*dt/2.0)],
         [0, 0, 1]
     ])
     P_pred = A @ P @ A.T + Q
 
-    # --- Correção (se houver medições) ---
-    n_meas = 0 if z_k is None else len(z_k)
-    if n_meas == 0:
+    # --- Correção: checagens rápidas ---
+    # Sem medições ou R inválido -> sai só com predição
+    if z_k is None or len(z_k) == 0 or R is None or R.size == 0:
         if debug:
             return x_pred, P_pred, {
                 "innov": None, "S": None, "K": None, "h": None, "H": None,
-                "x_pred": x_pred.copy(), "P_pred": P_pred.copy()
+                "x_pred": x_pred.copy(), "P_pred": P_pred.copy(), "dt": dt
             }
         return x_pred, P_pred
 
-    # measurement model (h, H) para o estado x_pred
     num_anchors = anchors.shape[1]
+    if num_anchors == 0:
+        if debug:
+            return x_pred, P_pred, {
+                "innov": None, "S": None, "K": None, "h": None, "H": None,
+                "x_pred": x_pred.copy(), "P_pred": P_pred.copy(), "dt": dt
+            }
+        return x_pred, P_pred
+
+    # --- Modelo de medição (h, H) em x_pred ---
     xp, yp, th = x_pred
     pf = np.array([xp + l*np.cos(th), yp + l*np.sin(th), z_c])
     pr = np.array([xp - l*np.cos(th), yp - l*np.sin(th), z_c])
@@ -244,6 +257,17 @@ def run_bc_ekf_step(x_est, P, u_k, z_k, anchors, l, z_c, Q, R, debug: bool = Fal
         a = anchors[:, i]
         Df = np.linalg.norm(pf - a)
         Dr = np.linalg.norm(pr - a)
+
+        # Evitar divisões por zero
+        if Df < 1e-9 or Dr < 1e-9:
+            if debug:
+                return x_pred, P_pred, {
+                    "innov": None, "S": None, "K": None, "h": None, "H": None,
+                    "x_pred": x_pred.copy(), "P_pred": P_pred.copy(), "dt": dt,
+                    "warn": "Distância tag-âncora ~ 0"
+                }
+            return x_pred, P_pred
+
         h[2*i]     = Df
         h[2*i + 1] = Dr
 
@@ -253,10 +277,23 @@ def run_bc_ekf_step(x_est, P, u_k, z_k, anchors, l, z_c, Q, R, debug: bool = Fal
         H[2*i, :]     = [(pf[0]-a[0]) / Df, (pf[1]-a[1]) / Df, Cf / Df]
         H[2*i + 1, :] = [(pr[0]-a[0]) / Dr, (pr[1]-a[1]) / Dr, Cr / Dr]
 
-    # Ganho de Kalman e atualização
+    # --- Atualização de Kalman robusta ---
     S = H @ P_pred @ H.T + R
-    K = P_pred @ H.T @ np.linalg.inv(S)
+    # regularização leve em S (caso mal-condicionado)
+    eps = 1e-9
+    S = S + eps * np.eye(S.shape[0])
+
     y = z_k - h
+
+    # Use solve ao invés de inv
+    try:
+        assert S.shape[0] == S.shape[1] == H.shape[0], f"Dimensão inconsistente: S={S.shape}, H={H.shape}, P_pred={P_pred.shape}"
+        K = P_pred @ H.T @ np.linalg.inv(S)   # K = P_pred H^T S^{-1}
+    except np.linalg.LinAlgError:
+        # fallback numérico
+        Sinv = np.linalg.pinv(S)
+        K = P_pred @ H.T @ Sinv
+
     x_upd = x_pred + K @ y
     x_upd[2] = np.arctan2(np.sin(x_upd[2]), np.cos(x_upd[2]))
     P_upd = (np.eye(3) - K @ H) @ P_pred
@@ -264,7 +301,7 @@ def run_bc_ekf_step(x_est, P, u_k, z_k, anchors, l, z_c, Q, R, debug: bool = Fal
     if debug:
         return x_upd, P_upd, {
             "innov": y, "S": S, "K": K, "h": h, "H": H,
-            "x_pred": x_pred.copy(), "P_pred": P_pred.copy()
+            "x_pred": x_pred.copy(), "P_pred": P_pred.copy(), "dt": dt
         }
     return x_upd, P_upd
 
