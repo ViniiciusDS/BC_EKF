@@ -9,6 +9,9 @@
 # MAP_WIDTH/HEIGHT ficam para um modo "mapa fixo" ou exportações offline.
 MAP_WIDTH = 5.0   # m (não usado no PyGame infinito)
 MAP_HEIGHT = 5.0  # m (não usado no PyGame infinito)
+# Diretório e nome padrão do mapa
+MAPS_DIR = "maps"
+DEFAULT_MAP_NAME = "default_map.json"
 
 # --- Robô (cinemática) ---
 WHEEL_RADIUS = 0.05          # m

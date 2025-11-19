@@ -10,6 +10,14 @@ try:
     import src.config as config  # projeto como pacote (layout src/)
 except Exception:
     import config  # fallback quando rodar como scripts soltos
+from .uwb_channel import uwb_range_measure
+from .environment import Environment
+import multiprocessing as mp
+from multiprocessing import Process, Queue
+import queue
+import time
+
+_plot_backend_started = False
 
 def save_data(filename, data, headers, precision=None):
     """Salva dados em CSV com separador ';' e precisão configurável."""
@@ -146,7 +154,17 @@ def generate_uwb_measurements(x_hist, anchors, l, z_c, sigma_uwb):
             z_hist[2*i + 1, k] = apply_uwb_errors(np.linalg.norm(pr - anchors[:, i]), sigma_uwb)
     return z_hist
 
-def generate_uwb_single_measurement(x_state, anchors, l, z_c, sigma_uwb):
+def generate_uwb_single_measurement(
+    x_state,
+    anchors,
+    l,
+    z_c,
+    sigma_uwb,
+    env: Environment | None = None,
+    channel_params: dict | None = None,
+    return_meta: bool = False,
+    rng: np.random.Generator | None = None
+):
     """
     Medição UWB instantânea (retorna vetor vazio se não houver âncoras).
     Args:
@@ -156,20 +174,52 @@ def generate_uwb_single_measurement(x_state, anchors, l, z_c, sigma_uwb):
         z_c: altura das tags.
         sigma_uwb: desvio padrão do ruído.
     Returns:
-        z_k: vetor de medições UWB (2*num_anchors, ).
+      - se return_meta=False: z_k (np.ndarray shape (2*N,))
+      - se return_meta=True : (z_k, meta_list)  [meta_list: len==2*N]
     """
     if anchors is None or anchors.shape[1] == 0:
-        return np.empty((0,))
+        return (np.empty((0,)), []) if return_meta else np.empty((0,))
+    
+    rng = rng or np.random.default_rng()
+
     xk, yk, th = x_state
     pf = np.array([xk + l*np.cos(th), yk + l*np.sin(th), z_c])
     pr = np.array([xk - l*np.cos(th), yk - l*np.sin(th), z_c])
     num_anchors = anchors.shape[1]
+
     z_k = np.zeros(2 * num_anchors)
+    meta_list = []
+
     for i in range(num_anchors):
         a = anchors[:, i]
-        z_k[2*i]     = apply_uwb_errors(np.linalg.norm(pf - a), sigma_uwb)
-        z_k[2*i + 1] = apply_uwb_errors(np.linalg.norm(pr - a), sigma_uwb)
-    return z_k
+
+        if env is None:
+            # --- comportamento antigo ---
+            dist_f = np.linalg.norm(pf - a) + sigma_uwb * np.random.randn()
+            dist_r = np.linalg.norm(pr - a) + sigma_uwb * np.random.randn()
+            z_k[2*i]     = dist_f
+            z_k[2*i + 1] = dist_r
+            if return_meta:
+                meta_list += [{'mode':'LOS','used':'direct'}, {'mode':'LOS','used':'direct'}]
+        else:
+            # --- canal com ambiente (camada 1) ---
+            zf, mf = uwb_range_measure(pf[:2], a[:2], sigma_uwb, env, rng, channel_params)
+            zr, mr = uwb_range_measure(pr[:2], a[:2], sigma_uwb, env, rng, channel_params)
+
+            # segurança: degrade para LOS se vier NaN (dropout desabilitado por padrão)
+            if not np.isfinite(zf):
+                zf = np.linalg.norm(pf - a) + sigma_uwb * rng.normal()
+                mf = {'mode':'fallback','used':'degraded'}
+            if not np.isfinite(zr):
+                zr = np.linalg.norm(pr - a) + sigma_uwb * rng.normal()
+                mr = {'mode':'fallback','used':'degraded'}
+
+            z_k[2*i]     = zf
+            z_k[2*i + 1] = zr
+            if return_meta:
+                meta_list += [mf, mr]
+
+    return (z_k, meta_list) if return_meta else z_k
 
 def apply_uwb_errors(base_distance, sigma_uwb):
     """Aplica viés e desalinhamento às medições UWB."""
@@ -187,6 +237,31 @@ def apply_uwb_errors(base_distance, sigma_uwb):
 
 def _makedirs_silent(path: str):
     os.makedirs(path, exist_ok=True)
+
+def _segments_intersect(p1, p2, q1, q2):
+    """Teste robusto de interseção de segmentos 2D."""
+    def orient(a,b,c):
+        return np.cross(b-a, c-a)
+    p1 = np.array(p1[:2], float); p2 = np.array(p2[:2], float)
+    q1 = np.array(q1[:2], float); q2 = np.array(q2[:2], float)
+
+    o1 = orient(p1, p2, q1); o2 = orient(p1, p2, q2)
+    o3 = orient(q1, q2, p1); o4 = orient(q1, q2, p2)
+
+    if (o1 == 0 and np.allclose(q1, p1)) or (o2 == 0 and np.allclose(q2, p1)):
+        return True
+    return (o1*o2 < 0) and (o3*o4 < 0)
+
+
+def _ray_blocked_by_walls(p_src3, p_dst3, walls):
+    """Retorna True se o segmento src→dst cruza alguma parede."""
+    if not walls:
+        return False
+    a = (p_src3[0], p_src3[1]); b = (p_dst3[0], p_dst3[1])
+    for (w1, w2) in walls:
+        if _segments_intersect(np.array(a), np.array(b), np.array(w1), np.array(w2)):
+            return True
+    return False
 
 class RunLogger:
     """
@@ -288,3 +363,139 @@ def add_gaussian_noise(value, std_dev):
 def set_random_seed(seed: int):
     """Define semente global para reproduzibilidade."""
     np.random.seed(seed)
+
+
+
+#   Gráficos em tempo real com multiprocessing
+
+def _plotting_process(q: Queue):
+    """
+    Processo separado que mantém a janela do Matplotlib e atualiza gráficos
+    com dados recebidos pela fila q. Envie None para encerrar.
+    """
+    import matplotlib
+    # backend com janela
+    matplotlib.use("TkAgg")
+    import matplotlib.pyplot as plt
+
+    plt.ion()
+    fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True)
+    fig.canvas.manager.set_window_title("Erros BC-EKF — tempo real")
+
+    line1, = ax1.plot([], [], label="Erro Pos (m)")
+    line2, = ax2.plot([], [], label="Erro Heading (°)")
+
+    ax1.set_ylabel("Erro [m]")
+    ax1.grid(True); ax1.legend(loc="upper right")
+    ax2.set_xlabel("Tempo [s]")
+    ax2.set_ylabel("Erro [°]")
+    ax2.grid(True); ax2.legend(loc="upper right")
+
+    # garante que NÃO fica “sempre no topo”
+    try:
+        win = fig.canvas.manager.window
+        win.attributes("-topmost", False)
+    except Exception:
+        pass
+
+    # mostra a janela UMA vez, sem travar processo
+    plt.show(block=False)
+
+    running = True
+    while running and plt.fignum_exists(fig.number):
+        try:
+            msg = q.get(timeout=0.1)
+        except queue.Empty:
+            msg = None
+
+        # None = pedido para encerrar
+        if msg is None:
+            break
+
+        t_hist, pos_hist, head_hist = msg
+        if not t_hist:
+            continue
+
+        # atualiza dados
+        line1.set_data(t_hist, pos_hist)
+        line2.set_data(t_hist, head_hist)
+
+        ax1.set_xlim(0, max(t_hist))
+        ax2.set_xlim(0, max(t_hist))
+        ax1.set_ylim(0, max(1e-3, max(pos_hist) * 1.1))
+        ax2.set_ylim(0, max(1e-3, max(head_hist) * 1.1))
+
+        # redesenha sem POPUP
+        fig.canvas.draw_idle()
+        fig.canvas.flush_events()
+
+        time.sleep(0.05)  # ~20 Hz de atualização máx.
+
+    plt.close("all")
+
+
+def start_plot_process(state: dict):
+    """
+    Garante que existe um processo de gráficos rodando.
+    Uso:
+      state = {"plot_proc": None, "plot_q": None}
+      start_plot_process(state)
+    """
+    if state.get("plot_proc") is not None and state["plot_proc"].is_alive():
+        return  # já está rodando
+
+    q = mp.Queue()
+    p = mp.Process(target=_plotting_process, args=(q,), daemon=True)
+    p.start()
+    state["plot_proc"] = p
+    state["plot_q"] = q
+
+
+def stop_plot_process(state: dict):
+    """Encerra o processo de gráficos (se existir)."""
+    proc = state.get("plot_proc")
+    q = state.get("plot_q")
+    try:
+        if q is not None:
+            # envia sentinela para o worker encerrar
+            q.put_nowait(None)
+    except Exception:
+        pass
+    if proc is not None and proc.is_alive():
+        proc.join(timeout=1.0)
+    state["plot_proc"] = None
+    state["plot_q"] = None
+
+
+def push_plot_data(state: dict, t_vec, pos_err_vec, head_err_vec):
+    """
+    Envia (cópias) dos dados atuais para o processo de gráficos, se ativo.
+    """
+    q = state.get("plot_q")
+    if q is None:
+        return
+    try:
+        # manda cópias simples (listas) para não ter problema com numpy
+        q.put_nowait((list(t_vec), list(pos_err_vec), list(head_err_vec)))
+    except Exception:
+        # se a fila estiver cheia ou processo morto
+        pass
+
+# Paredes/obstáculos
+def point_segment_distance(p, p0, p1):
+    """
+    Distância mínima entre um ponto p e o segmento [p0, p1] (todos np.array de shape (2,)).
+    """
+    p  = np.asarray(p, dtype=float)
+    p0 = np.asarray(p0, dtype=float)
+    p1 = np.asarray(p1, dtype=float)
+
+    v = p1 - p0
+    w = p  - p0
+    denom = np.dot(v, v)
+    if denom <= 1e-12:
+        return np.linalg.norm(w)  # segmento degenerado
+    t = np.dot(w, v) / denom
+    t = np.clip(t, 0.0, 1.0)
+    proj = p0 + t * v
+    return np.linalg.norm(p - proj)

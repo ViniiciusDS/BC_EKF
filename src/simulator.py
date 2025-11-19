@@ -6,7 +6,7 @@ import src.utils as utils
 import src.config as config
 
 class Simulator:
-    def __init__(self, anchors, baseline, z_c, Q, R, dt=0.05, config=config, logger=None):
+    def __init__(self, anchors, baseline, z_c, Q, R, dt=0.05, config=config, logger=None, env=None, channel_params=None):
         """
         Simulador do robô + EKF.
         anchors: 3xN
@@ -47,6 +47,10 @@ class Simulator:
         self.sigma_v   = getattr(config, "NOISE_STD_V", 0.02)
         self.sigma_w   = getattr(config, "NOISE_STD_W", 0.05)
         self.sigma_uwb = np.sqrt(0.0025)  # pode virar config também
+        self.env = env
+        self.channel_params = channel_params or {'disable_dropout': True}
+        self.last_meas_meta = None  # <- para o HUD
+        self.last_meas = (0.0, 0.0)  # <- para o HUD
 
     def step(self, v_cmd, w_cmd, noisy=True):
         """Executa um passo: integra robô, simula sensores, roda EKF e loga."""
@@ -60,19 +64,29 @@ class Simulator:
             w_meas = w_cmd + np.random.randn() * self.sigma_w
         else:
             v_meas, w_meas = v_cmd, w_cmd
+        
+        # expõe odometria medida (para log e HUD)
+        self.last_meas = (float(v_meas), float(w_meas))
 
         # 3) Medidas UWB e R conforme nº de âncoras
         num_anchors = 0 if self.anchors is None else self.anchors.shape[1]
+
         if num_anchors > 0:
-            z_k = utils.generate_uwb_single_measurement(
+            zk, meta = utils.generate_uwb_single_measurement(
                 [x_true, y_true, theta_true],
                 self.anchors, self.l, self.z_c,
-                self.sigma_uwb if noisy else 0.0
+                0.05 if noisy else 0.0,
+                env=self.env,
+                channel_params=self.channel_params,
+                return_meta=True
             )
+            z_k = zk
+            self.last_meas_meta = meta
             # Variância = sigma^2 para cada distância (frente e trás)
-            self.R = np.eye(2 * num_anchors) * (self.sigma_uwb ** 2)
+            self.R = np.eye(2 * num_anchors) * (0.05**2)
         else:
-            z_k = np.array([])        # sem medições
+            z_k = np.array([])      # sem medições
+            self.last_meas_meta = []   # sem meta
             self.R = np.zeros((0, 0)) # garante forma compatível
 
         # 4) EKF (predição sempre; correção só se houver z_k)
