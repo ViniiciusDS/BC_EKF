@@ -19,6 +19,10 @@ import time
 
 _plot_backend_started = False
 
+######################################################
+#   File I/O functions                              #
+######################################################
+
 def save_data(filename, data, headers, precision=None):
     """Salva dados em CSV com separador ';' e precisão configurável."""
     if precision is None:
@@ -47,6 +51,22 @@ def plot_trajectory(map_size, waypoints, path):
     plt.title("Simulação de Trajetória"); plt.legend(); plt.grid(True)
     plt.tight_layout(); plt.show()
 
+def list_map_files(maps_dir):
+    """Retorna lista de arquivos .json dentro da pasta de mapas."""
+    if not os.path.exists(maps_dir):
+        return []
+    return [f for f in os.listdir(maps_dir) if f.lower().endswith(".json")]
+
+def map_file_path(maps_dir, name):
+    """Gera path completo para um arquivo de mapa."""
+    name = name.strip()
+    if not name.endswith(".json"):
+        name += ".json"
+    return os.path.join(maps_dir, name)
+
+#####################################################
+#   Simulation functions                            #
+#####################################################
 def simulate_run(T, t_final, anchors, v_true, w_true, l, z_c, sigma_v, sigma_w, sigma_uwb):
     """Simula trajetória e gera medições ruidosas (robusto a âncoras vazias)."""
     t = np.arange(0, t_final + T, T)
@@ -365,8 +385,9 @@ def set_random_seed(seed: int):
     np.random.seed(seed)
 
 
-
-#   Gráficos em tempo real com multiprocessing
+####################################################
+#   Gráficos em tempo real com multiprocessing     #
+#####################################################
 
 def _plotting_process(q: Queue):
     """

@@ -14,7 +14,8 @@ from src.trajectory import Trajectory
 from src.scenarios import anchors_tectrol
 import src.config as config
 from src.environment import Environment, Obstacle, draw_environment
-from src.utils import start_plot_process, stop_plot_process, push_plot_data, point_segment_distance
+from src.utils import start_plot_process, stop_plot_process, push_plot_data, point_segment_distance, list_map_files, map_file_path
+from src.ui_elements import TextBoxDropdown
 
 # ==========================
 # Environment setup
@@ -295,8 +296,8 @@ def main():
     btn_mapedit = Button((440, 580, 220, 44), "Editor de mapa", bigfont)
     
     # holders p/ botões do editor de mapas
-    btn_save_map = None
-    btn_load_map = None
+    btn_save_as = None
+    btn_load_by_name = None
 
     # -------- SIM --------
     # --- botões no HUD (estado SIM) ---
@@ -369,6 +370,10 @@ def main():
     editor_msg = ""
     editor_msg_t = 0.0 # tempo restante em segundos
 
+    # Campo de texto do nome do mapa
+    editor_filename = "map_name"
+    name_box = None       
+
     running = True
     while running:
         dt = clock.tick(60) / 1000.0
@@ -432,9 +437,21 @@ def main():
                         # botões salvar/carregar
                         sidebar_x = screen.get_width() - SIDE_W + 16
                         y0 = 260
-                        btn_save_map = Button((sidebar_x, y0, 160, 32), "Salvar mapa", font, bg=(240,255,240))
-                        btn_load_map = Button((sidebar_x, y0+40, 160, 32), "Carregar mapa", font, bg=(240,240,255))
+                        btn_save_as = Button((sidebar_x, y0, 160, 32), "Salvar como", font, bg=(240,255,240))
+                        btn_load_by_name = Button((sidebar_x, y0+40, 160, 32), "Carregar (nome)", font, bg=(240,240,255))
 
+                        # ==== cria TextBoxDropdown uma única vez ====
+                        map_choices = list_map_files(MAPS_DIR)
+                        editor_filename = DEFAULT_MAP_NAME if DEFAULT_MAP_NAME else "map_name"
+
+                        # posição inicial aproximada do textbox; 
+                        name_box = TextBoxDropdown(
+                            rect=(sidebar_x, 200, 220, 28),
+                            font=font,
+                            options=map_choices
+                        )
+                        name_box.text = editor_filename
+                        name_box.cursor_pos = len(editor_filename)
 
                 elif event.type == pg.KEYDOWN and event.key == pg.K_ESCAPE:
                     running = False
@@ -468,7 +485,7 @@ def main():
 
                 elif event.type == pg.KEYDOWN:
                     if event.key == pg.K_ESCAPE:
-                        # limpamos qualquer preview e voltamos pro menu
+                        # Limpa qualquer preview e volta pro menu
                         editor_first_pt = None
                         editor_preview_pt = None
                         state = STATE_MENU
@@ -483,6 +500,11 @@ def main():
                             idx = 0
                         editor_material = material_list[(idx + 1) % len(material_list)]
                         print("Material atual do editor:", editor_material)
+                    
+                    # Teclado para o TextBoxDropdown
+                    if name_box and name_box.handle_event(event):
+                        editor_filename = name_box.text
+                        continue
 
                 # Eventos do mouse
                 elif event.type == pg.MOUSEBUTTONDOWN:
@@ -502,7 +524,7 @@ def main():
                         pan_last = (mx, my)
                         continue
 
-                    # desenho/remoção de paredes se for dentro do MAPA
+                    # ==== clique na área do mapa ====
                     if mx < cam.viewport[0]:
                         wx, wy = cam.screen_to_world(mx, my)
 
@@ -540,28 +562,32 @@ def main():
                     # HUD LATERAL (direita)
                     # ============================
                     else:
-                        # clique no HUD
-                        if btn_save_map and btn_save_map.hit((mx, my)):
-                            # SALVAR ambiente atual
-                            os.makedirs(MAPS_DIR, exist_ok=True)
-                            path = os.path.join(MAPS_DIR, DEFAULT_MAP_NAME)
-                            env.save_json(path)
-                            print(f"[EDITOR] Mapa salvo em: {path}")
-                            editor_msg = f"Mapa salvo: {os.path.basename(path)}"
-                            editor_msg_t = 2.0  # exibe por ~2s
+                        # 1) textbox/dropdown
+                        if name_box and name_box.handle_event(event):
+                            editor_filename = name_box.text
+                            continue
 
-                        elif btn_load_map and btn_load_map.hit((mx, my)):
-                            # CARREGAR para 'env' o mapa salvo
-                            path = os.path.join(MAPS_DIR, DEFAULT_MAP_NAME)
-                            try:
+                        # 2) botões
+                        if btn_save_as and btn_save_as.hit(event.pos):
+                            path = map_file_path(MAPS_DIR, editor_filename)
+                            env.save_json(path)
+                            editor_msg = f"Mapa salvo como: {os.path.basename(path)}"
+                            editor_msg_t = 2.0
+
+                            # atualiza lista de mapas no dropdown
+                            name_box.options_all = list_map_files(MAPS_DIR)
+                            name_box.update_filter()
+                            continue
+                        
+                        if btn_load_by_name and btn_load_by_name.hit(event.pos):
+                            path = map_file_path(MAPS_DIR, editor_filename)
+                            if os.path.exists(path):
                                 env = Environment.load_json(path)
-                                print(f"[EDITOR] Mapa carregado de: {path}")
-                                editor_msg = f"Mapa carregado: {os.path.basename(path)}"
-                                editor_msg_t = 2.0
-                            except FileNotFoundError:
-                                print(f"[EDITOR] Arquivo não encontrado: {path}")
-                                editor_msg = "Mapa não encontrado!"
-                                editor_msg_t = 2.0
+                                editor_msg = "Mapa carregado!"
+                            else:
+                                editor_msg = "Arquivo não encontrado!"
+                            editor_msg_t = 2.0
+                            continue
 
                 elif event.type == pg.MOUSEBUTTONUP:
                     if event.button == 2:
@@ -615,14 +641,30 @@ def main():
             draw_text(screen, f"Material atual: {editor_material}", sidebar_x, y, font); y += LINE_H
             draw_text(screen, "M: trocar material", sidebar_x, y, font); y += LINE_H
 
+            draw_text(screen, "Nome do mapa:", sidebar_x, y, font); y += 25
+
+            if name_box:
+                name_box.rect.topleft = (sidebar_x, y)
+                name_box.update(dt)
+                name_box.draw(screen)
+                
+                y = name_box.rect.bottom + 10
+
+                if name_box.dropdown_open and name_box.options_filtered:
+                    num = min(name_box.max_visible, len(name_box.options_filtered))
+                    y += num * name_box.line_h + 10
+            else:
+                # fallback
+                y += 60
+
             # botões salvar/carregar
-            if btn_save_map:
-                btn_save_map.rect.topleft = (sidebar_x, y)
-                btn_save_map.draw(screen)
+            if btn_save_as:
+                btn_save_as.rect.topleft = (sidebar_x, y)
+                btn_save_as.draw(screen)
                 y += 40
-            if btn_load_map:
-                btn_load_map.rect.topleft = (sidebar_x, y)
-                btn_load_map.draw(screen)
+            if btn_load_by_name:
+                btn_load_by_name.rect.topleft = (sidebar_x, y)
+                btn_load_by_name.draw(screen)
                 y += 40
 
             if editor_first_pt is not None:
@@ -648,7 +690,7 @@ def main():
                 pg.draw.rect(screen, (255, 255, 210), (box_x, box_y, box_w, box_h), border_radius=6)
                 pg.draw.rect(screen, BLACK, (box_x, box_y, box_w, box_h), 1, border_radius=6)
                 screen.blit(msg_img, (box_x + pad, box_y + pad))
-
+            
             pg.display.flip()
             continue
                 
