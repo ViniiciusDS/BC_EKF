@@ -25,7 +25,7 @@ class TextBoxDropdown:
       name_box.update(dt)
       name_box.draw(screen)
     """
-    def __init__(self, rect, font, options):
+    def __init__(self, rect, font, options, placeholder="", max_len=32):
         self.rect = pg.Rect(rect)
         self.font = font
         self.options_all = list(options)          # lista completa (ex.: arquivos)
@@ -40,6 +40,8 @@ class TextBoxDropdown:
         # cursor piscando
         self.blink_timer = 0.0
         self.show_cursor = True
+
+        self.max_len = max_len                         # máx. caracteres no texto
 
     # -------------------------------------------------
     # Utilidades

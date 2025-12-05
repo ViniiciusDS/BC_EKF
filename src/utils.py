@@ -16,6 +16,8 @@ import multiprocessing as mp
 from multiprocessing import Process, Queue
 import queue
 import time
+import math
+
 
 _plot_backend_started = False
 
@@ -282,6 +284,10 @@ def _ray_blocked_by_walls(p_src3, p_dst3, walls):
         if _segments_intersect(np.array(a), np.array(b), np.array(w1), np.array(w2)):
             return True
     return False
+
+#####################################################
+#   RunLogger class                                 #
+#####################################################
 
 class RunLogger:
     """

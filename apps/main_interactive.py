@@ -199,6 +199,65 @@ def draw_text(surface, txt, x, y, font, color=LBL):
     img = font.render(txt, True, color)
     surface.blit(img, (x, y))
 
+def draw_axes(surface, cam: Camera, font):
+    """
+    Desenha marcações e rótulos dos eixos X e Y no mapa, com passo adaptativo
+    para evitar texto sobreposto quando o zoom está muito afastado.
+    """
+    w, h = cam.viewport
+    if cam.scale <= 0:
+        return
+
+    # Queremos ~50 px entre labels
+    min_px = 50
+    raw_step = min_px / cam.scale  # em metros
+
+    # "snapping" para valores agradáveis
+    nice_steps = [0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
+    step = nice_steps[-1]
+    for s in nice_steps:
+        if s >= raw_step:
+            step = s
+            break
+
+    # --------- EIXO X ----------
+    x0_world, _ = cam.screen_to_world(0, h)
+    x1_world, _ = cam.screen_to_world(w, h)
+    x_min = min(x0_world, x1_world)
+    x_max = max(x0_world, x1_world)
+
+    start_x = math.floor(x_min / step) * step
+    end_x   = math.ceil(x_max / step) * step
+    n_x = int(round((end_x - start_x) / step)) + 1
+
+    for i in range(n_x):
+        xm = start_x + i * step
+        sx, sy = cam.world_to_screen(xm, 0)
+        if 0 <= sx <= w:
+            text = f"{xm:g}"  # formatação sem zeros desnecessários
+            img  = font.render(text, True, (120, 120, 120))
+            surface.blit(img, (sx - img.get_width() // 2, h - img.get_height() - 2))
+
+    # --------- EIXO Y ----------
+    _, y0_world = cam.screen_to_world(0, h)
+    _, y1_world = cam.screen_to_world(0, 0)
+    y_min = min(y0_world, y1_world)
+    y_max = max(y0_world, y1_world)
+
+    start_y = math.floor(y_min / step) * step
+    end_y   = math.ceil(y_max / step) * step
+    n_y = int(round((end_y - start_y) / step)) + 1
+
+    for i in range(n_y):
+        ym = start_y + i * step
+        sx, sy = cam.world_to_screen(0, ym)
+        if 0 <= sy <= h:
+            text = f"{ym:g}"
+            img  = font.render(text, True, (120, 120, 120))
+            surface.blit(img, (4, sy - img.get_height() // 2))
+
+
+
 class Button:
     def __init__(self, rect, text, font, bg=(245,245,245), fg=LBL, border=BLACK):
         self.rect = pg.Rect(rect)
@@ -374,6 +433,13 @@ def main():
     editor_filename = "map_name"
     name_box = None       
 
+    # Campo de posicionamento das âncoras 
+    font = pg.font.SysFont("arial", 18)
+    bigfont = pg.font.SysFont("arial", 22, bold=True)
+    textbox_x = None
+    textbox_y = None
+    btn_place_anchor = None
+
     running = True
     while running:
         dt = clock.tick(60) / 1000.0
@@ -406,13 +472,25 @@ def main():
                         cam.reset_view()
                         state = STATE_SIM
                         sidebar_x = cam.viewport[0]
+
                         # posição vertical de base para botões HUD
                         hud_y0 = 260  # ajuste fino conforme botões adicionados
                         btn_filelog = Button((sidebar_x + 16, hud_y0 + 160, 180, 32), "Log arquivo: OFF", font, bg=(240,240,255))
                         btn_graphs  = Button((sidebar_x + 210, hud_y0 + 160, 180, 32), "Abrir gráficos", font, bg=(240,255,240))
                         filelog_on = False
                         file_logger = None
-                
+
+                        # Campo de coordenadas das âncoras
+                        textbox_x = TextBoxDropdown(pg.Rect(0, 0, 80, 26), font, options=[])
+                        textbox_x.text = "0.0"
+                        textbox_x.cursor_pos = len(textbox_x.text)
+
+                        textbox_y = TextBoxDropdown(pg.Rect(0, 0, 80, 26), font, options=[])
+                        textbox_y.text = "0.0"
+                        textbox_y.cursor_pos = len(textbox_y.text)
+                        
+                        btn_place_anchor = Button((0, 0, 190, 30), "Adicionar Âncora (x,y)", font, bg=(235,250,235))
+
                     elif btn_logs.hit(event.pos):
                         # abre pasta de logs
                         open_folder(getattr(config, "LOG_DIR", "logs"))
@@ -613,6 +691,7 @@ def main():
             pg.draw.rect(screen, WHITE, map_rect)
             draw_grid(screen, cam)
             draw_environment(screen, cam, env)  # desenha paredes existentes
+            draw_axes(screen, cam, font)
 
             # preview da parede (linha “fantasma”)
             if editor_first_pt is not None and editor_preview_pt is not None:
@@ -703,7 +782,20 @@ def main():
             
             if event.type == pg.QUIT:
                 running = False
+
             elif event.type == pg.KEYDOWN:
+                # Check Textboxes first
+                consumed = False
+                if textbox_x and textbox_x.handle_event(event):
+                    consumed = True
+                if not consumed and textbox_y and textbox_y.handle_event(event):
+                    consumed = True
+                
+                if consumed:
+                    # A tecla foi usada pelo TextBox (nmr, backspace, etc)
+                    # Não processa como tecla do HUD
+                    continue
+
                 if event.key == pg.K_ESCAPE:                    
                     # quando voltar para o MENU (em KEYDOWN K_ESCAPE que troca o state) OU ao encerrar o programa:
                     if file_logger:
@@ -713,36 +805,46 @@ def main():
                         filelog_on = False
                     stop_plot_process(plot_state)
                     state = STATE_MENU
+
                 elif event.key == pg.K_d:
                     show_debug = not show_debug
+
                 elif event.key == pg.K_SPACE:
                     autopilot = not autopilot
+
                 elif event.key == pg.K_LEFTBRACKET:
                     speed_factor = max(1, speed_factor - 1)
+
                 elif event.key == pg.K_RIGHTBRACKET:
                     speed_factor = min(20, speed_factor + 1)
+
                 elif event.key == pg.K_c:
                     anchors_dyn = np.zeros((3, 0))
                     sim.anchors = anchors_dyn
                     sim.R = np.eye(2) * 1e6
+
                 elif event.key == pg.K_b:
                     anchors_dyn = anchors_tectrol.copy()
                     sim.anchors = anchors_dyn
                     sim.R = np.eye(2 * anchors_dyn.shape[1]) * 0.0025
+
                 elif event.key == pg.K_r:
                     cam.reset_view()
+
                 elif event.key == pg.K_g:
                     recording = not recording
                     if not recording and len(recorded_points) > 1:
                         waypoints = np.array(recorded_points, dtype=float)
                         wp_idx = 0
                         autopilot = True
+
                 elif event.key == pg.K_RETURN:
                     if recording and len(recorded_points) > 1:
                         waypoints = np.array(recorded_points, dtype=float)
                         wp_idx = 0
                         autopilot = True
                         recording = False
+
                 elif event.key == pg.K_DELETE:
                     recorded_points = []
 
@@ -779,6 +881,12 @@ def main():
                             sim.R = np.eye(2 * anchors_dyn.shape[1]) * 0.0025
                     else:
                         # >>> HUD (LMB)
+                        
+                        if textbox_x and textbox_x.handle_event(event):
+                            continue
+                        if textbox_y and textbox_y.handle_event(event):
+                            continue
+
                         if btn_filelog and btn_filelog.hit((mx, my)):
                             if not filelog_on:
                                 from src.utils import RunLogger
@@ -815,6 +923,21 @@ def main():
                         elif btn_graphs and btn_graphs.hit((mx, my)):
                             # inicia/reativa a janela de gráficos (processo separado)
                             start_plot_process(plot_state)
+
+                        if btn_place_anchor and btn_place_anchor.hit((mx, my)):
+                            try:
+                                x = float(textbox_x.text.replace(",", "."))
+                                y = float(textbox_y.text.replace(",", "."))
+                                z = getattr(config, "TAG_HEIGHT", 0.5)
+
+                                new_anchor = np.array([[x], [y], [z]])
+                                anchors_dyn = np.hstack([anchors_dyn, new_anchor])
+                                sim.anchors = anchors_dyn
+                                sim.R = np.eye(2 * anchors_dyn.shape[1]) * 0.0025
+                                print(f"Âncora adicionada em ({x}, {y})")
+                            except ValueError:
+                                print("Coordenadas inválidas para âncora.")
+                            continue
 
                 # -----------------------------------------
                 # CLIQUE DIREITO (mapa)
@@ -931,6 +1054,7 @@ def main():
         pg.draw.rect(screen, WHITE, map_rect)
         draw_grid(screen, cam)
         draw_environment(screen, cam, sim.env)
+        draw_axes(screen, cam, font)
         draw_anchors(screen, cam, anchors_dyn)
 
         # rota planejada
@@ -976,7 +1100,9 @@ def main():
             screen.blit(card, (tx - pad, ty - pad))
             pg.draw.rect(screen, BLACK, (tx - pad, ty - pad, card.get_width(), card.get_height()), 1)
 
-        # HUD lateral
+        ######################################
+        # HUD lateral (direita) - Estado SIM
+        ######################################
         pg.draw.rect(screen, (245, 245, 245), (cam.viewport[0], 0, SIDE_W, cam.viewport[1]))
         sidebar_x = cam.viewport[0] + 16
         LINE_H = 22
@@ -1003,6 +1129,25 @@ def main():
         draw_text(screen, "Scroll: zoom  |  Botão do meio: pan", sidebar_x, y, font); y += LINE_H
         draw_text(screen, "C: limpar âncoras  |  B: âncoras padrão", sidebar_x, y, font); y += LINE_H
         draw_text(screen, "ESC: voltar ao menu", sidebar_x, y, font); y += LINE_H
+
+        # Posicionamento de Âncoras
+        y += 10
+        draw_text(screen, "Posicionar âncora em (x, y):", sidebar_x, y, font)
+        y += LINE_H
+
+        if textbox_x and textbox_y and btn_place_anchor:
+            textbox_x.rect.topleft = (sidebar_x, y)
+            textbox_x.update(dt)
+            textbox_x.draw(screen)
+
+            textbox_y.rect.topleft = (sidebar_x + textbox_x.rect.w + 10, y)
+            textbox_y.update(dt)
+            textbox_y.draw(screen)
+
+            y += textbox_x.rect.h + 8
+            btn_place_anchor.rect.topleft = (sidebar_x, y)
+            btn_place_anchor.draw(screen)
+            y += btn_place_anchor.rect.h + 10
 
         # --- MÉTRICAS DE CANAL / NLOS ---
         if sim.last_meas_meta:
