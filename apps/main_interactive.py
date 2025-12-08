@@ -16,6 +16,7 @@ import src.config as config
 from src.environment import Environment, Obstacle, draw_environment
 from src.utils import start_plot_process, stop_plot_process, push_plot_data, point_segment_distance, list_map_files, map_file_path
 from src.ui_elements import TextBoxDropdown
+from src.ui.map_editor import MapEditorScreen
 
 # ==========================
 # Environment setup
@@ -338,6 +339,7 @@ def main():
     clock = pg.time.Clock()
     font = pg.font.SysFont("arial", 18)
     bigfont = pg.font.SysFont("arial", 22, bold=True)
+    FPS = 60
 
     # -------- MENU --------
     state = STATE_MENU
@@ -439,6 +441,9 @@ def main():
     textbox_x = None
     textbox_y = None
     btn_place_anchor = None
+
+    # instancia do editor de mapas
+    editor_screen = MapEditorScreen(env, font, bigfont, SIDE_W)
 
     running = True
     while running:
@@ -552,10 +557,7 @@ def main():
         if state == STATE_MAPEDITOR:
             cam.set_viewport(screen.get_width() - SIDE_W, screen.get_height())
 
-            if editor_msg_t > 0:
-                editor_msg_t -= dt
-                if editor_msg_t <= 0:
-                    editor_msg_t = 0
+            dt = clock.tick(FPS) / 1000.0
 
             for event in pg.event.get():
                 if event.type == pg.QUIT:
@@ -563,28 +565,18 @@ def main():
 
                 elif event.type == pg.KEYDOWN:
                     if event.key == pg.K_ESCAPE:
-                        # Limpa qualquer preview e volta pro menu
-                        editor_first_pt = None
-                        editor_preview_pt = None
+                        # sai do editor, limpa preview e volta pro menu
+                        editor_screen.reset_preview()
+                        # sincroniza env global com o env do editor
+                        env = editor_screen.env
+                        # Volta para o menu
                         state = STATE_MENU
-                    
-                    # Edição de Material
-                    elif event.key == pg.K_m:
-                        # Cicla entre materiais pré-definidos
-                        material_list = ["metal", "wall", "glass", "human"]
-                        try:
-                            idx = material_list.index(editor_material)
-                        except ValueError:
-                            idx = 0
-                        editor_material = material_list[(idx + 1) % len(material_list)]
-                        print("Material atual do editor:", editor_material)
-                    
-                    # Teclado para o TextBoxDropdown
-                    if name_box and name_box.handle_event(event):
-                        editor_filename = name_box.text
                         continue
 
-                # Eventos do mouse
+                    # passa resto do teclado pro editor (M, textbox etc.)
+                    editor_screen.handle_event(event, cam, cam.viewport[0])
+                    continue
+
                 elif event.type == pg.MOUSEBUTTONDOWN:
                     mx, my = event.pos
 
@@ -602,70 +594,8 @@ def main():
                         pan_last = (mx, my)
                         continue
 
-                    # ==== clique na área do mapa ====
-                    if mx < cam.viewport[0]:
-                        wx, wy = cam.screen_to_world(mx, my)
-
-                        # LMB: desenhar paredes (2 cliques = 1 parede)
-                        if event.button == 1:
-                            if editor_first_pt is None:
-                                # começa uma nova parede
-                                editor_first_pt = (wx, wy)
-                                editor_preview_pt = (wx, wy)
-                            else:
-                                # finaliza parede: cria obstáculo
-                                p0 = np.array(editor_first_pt, dtype=float)
-                                p1 = np.array([wx, wy], dtype=float)
-                                # evita segmento zerado
-                                if np.linalg.norm(p1 - p0) > 1e-3:
-                                    env.add(Obstacle(p0, p1, material=editor_material))
-                                editor_first_pt = None
-                                editor_preview_pt = None
-
-                        # RMB: remover parede mais próxima
-                        elif event.button == 3 and env is not None and env.obstacles:
-                            p_click = np.array([wx, wy], dtype=float)
-                            min_dist = float("inf")
-                            min_idx = None
-                            for idx, obs in enumerate(env.obstacles):
-                                d = point_segment_distance(p_click, obs.p0, obs.p1)
-                                if d < min_dist:
-                                    min_dist = d
-                                    min_idx = idx
-                            # limiar em metros para “pegar” uma parede
-                            if min_idx is not None and min_dist < 0.4:
-                                env.obstacles.pop(min_idx)
-
-                    # ============================
-                    # HUD LATERAL (direita)
-                    # ============================
-                    else:
-                        # 1) textbox/dropdown
-                        if name_box and name_box.handle_event(event):
-                            editor_filename = name_box.text
-                            continue
-
-                        # 2) botões
-                        if btn_save_as and btn_save_as.hit(event.pos):
-                            path = map_file_path(MAPS_DIR, editor_filename)
-                            env.save_json(path)
-                            editor_msg = f"Mapa salvo como: {os.path.basename(path)}"
-                            editor_msg_t = 2.0
-
-                            # atualiza lista de mapas no dropdown
-                            name_box.options_all = list_map_files(MAPS_DIR)
-                            name_box.update_filter()
-                            continue
-                        
-                        if btn_load_by_name and btn_load_by_name.hit(event.pos):
-                            path = map_file_path(MAPS_DIR, editor_filename)
-                            if os.path.exists(path):
-                                env = Environment.load_json(path)
-                                editor_msg = "Mapa carregado!"
-                            else:
-                                editor_msg = "Arquivo não encontrado!"
-                            editor_msg_t = 2.0
-                            continue
+                    # demais cliques vão pro editor (LMB/RMB, HUD)
+                    editor_screen.handle_event(event, cam, cam.viewport[0])
 
                 elif event.type == pg.MOUSEBUTTONUP:
                     if event.button == 2:
@@ -678,98 +608,30 @@ def main():
                         dy = my - pan_last[1]
                         cam.pan_pixels(dx, dy)
                         pan_last = (mx, my)
-                    # atualiza preview da parede se já temos o primeiro ponto
-                    if editor_first_pt is not None and mx < cam.viewport[0]:
-                        editor_preview_pt = cam.screen_to_world(mx, my)
+
+                    # mover mouse para atualizar preview
+                    editor_screen.handle_event(event, cam, cam.viewport[0])
+
+            # --- atualização do editor ---
+            editor_screen.update(dt)
 
             # --- desenho do editor ---
             screen.fill(WHITE)
             cam.set_viewport(screen.get_width() - SIDE_W, screen.get_height())
 
-            # área do mapa
+            # área do mapa (fundo, grid, paredes existentes, eixos)
             map_rect = pg.Rect(0, 0, cam.viewport[0], cam.viewport[1])
             pg.draw.rect(screen, WHITE, map_rect)
             draw_grid(screen, cam)
-            draw_environment(screen, cam, env)  # desenha paredes existentes
+            draw_environment(screen, cam, editor_screen.env)
             draw_axes(screen, cam, font)
 
             # preview da parede (linha “fantasma”)
-            if editor_first_pt is not None and editor_preview_pt is not None:
-                p0s = cam.world_to_screen(*editor_first_pt)
-                p1s = cam.world_to_screen(*editor_preview_pt)
-                pg.draw.line(screen, (0, 160, 0), p0s, p1s, 2)
-                pg.draw.circle(screen, (0, 200, 0), p0s, 4)
-                pg.draw.circle(screen, (0, 200, 0), p1s, 4)
+            editor_screen.draw_preview(screen, cam)
 
             # HUD lateral do editor
-            pg.draw.rect(screen, (245, 245, 245), (cam.viewport[0], 0, SIDE_W, cam.viewport[1]))
-            sidebar_x = cam.viewport[0] + 16
-            y = 18
-            LINE_H = 22
+            editor_screen.draw_sidebar(screen, cam, font, bigfont)
 
-            draw_text(screen, "Editor de mapa (beta)", sidebar_x, y, bigfont); y += 34
-            draw_text(screen, "ESC: voltar ao menu", sidebar_x, y, font); y += LINE_H
-            draw_text(screen, "Scroll: zoom  |  Botão do meio: pan", sidebar_x, y, font); y += LINE_H
-            y += 8
-            draw_text(screen, "Desenho de paredes:", sidebar_x, y, bigfont); y += LINE_H
-            draw_text(screen, "LMB: 1º clique = inicio parede", sidebar_x, y, font); y += LINE_H
-            draw_text(screen, "LMB: 2º clique = fim parede", sidebar_x, y, font); y += LINE_H
-            draw_text(screen, "RMB: remover parede mais próxima", sidebar_x, y, font); y += LINE_H
-
-            y += 8
-            draw_text(screen, f"Material atual: {editor_material}", sidebar_x, y, font); y += LINE_H
-            draw_text(screen, "M: trocar material", sidebar_x, y, font); y += LINE_H
-
-            draw_text(screen, "Nome do mapa:", sidebar_x, y, font); y += 25
-
-            if name_box:
-                name_box.rect.topleft = (sidebar_x, y)
-                name_box.update(dt)
-                name_box.draw(screen)
-                
-                y = name_box.rect.bottom + 10
-
-                if name_box.dropdown_open and name_box.options_filtered:
-                    num = min(name_box.max_visible, len(name_box.options_filtered))
-                    y += num * name_box.line_h + 10
-            else:
-                # fallback
-                y += 60
-
-            # botões salvar/carregar
-            if btn_save_as:
-                btn_save_as.rect.topleft = (sidebar_x, y)
-                btn_save_as.draw(screen)
-                y += 40
-            if btn_load_by_name:
-                btn_load_by_name.rect.topleft = (sidebar_x, y)
-                btn_load_by_name.draw(screen)
-                y += 40
-
-            if editor_first_pt is not None:
-                y += 10
-                draw_text(screen, "Status: definindo fim da parede...", sidebar_x, y, font); y += LINE_H
-            else:
-                y += 10
-                draw_text(screen, "Status: pronto para novo segmento", sidebar_x, y, font); y += LINE_H
-                
-            # popup flutuante de feedback (salvo / carregado / erro)
-            if editor_msg_t > 0 and editor_msg:
-                msg_img = font.render(editor_msg, True, BLACK)
-                pad = 10
-                box_w = msg_img.get_width() + 2 * pad
-                box_h = msg_img.get_height() + 2 * pad
-
-                # centraliza o popup na coluna lateral
-                box_x = cam.viewport[0] + (SIDE_W - box_w) // 2
-                # um pouco acima da borda inferior
-                box_y = cam.viewport[1] - box_h - 20
-
-                # fundo amarelo claro
-                pg.draw.rect(screen, (255, 255, 210), (box_x, box_y, box_w, box_h), border_radius=6)
-                pg.draw.rect(screen, BLACK, (box_x, box_y, box_w, box_h), 1, border_radius=6)
-                screen.blit(msg_img, (box_x + pad, box_y + pad))
-            
             pg.display.flip()
             continue
                 
@@ -1194,6 +1056,15 @@ def main():
     pg.quit()
 
 if __name__ == "__main__":
+    import multiprocessing as mp    # Evita problemas no Windows multiprocessing
+    mp.freeze_support()
+
+    # set 'spawn' como método de start (mais seguro) evita erro se já estiver setado
+    try:
+        mp.set_start_method('spawn')
+    except RuntimeError:
+        pass
+
     main()
 
 

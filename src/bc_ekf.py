@@ -2,6 +2,7 @@
 # EKF (passo unico + wrapper) para robô diferencial com UWB
 import numpy as np
 import src.utils as utils
+from typing import Optional
 
 def run_bc_ekf(
     T,
@@ -193,13 +194,38 @@ def run_bc_ekf_from_data(
     return x_hist_est
 
 
-def run_bc_ekf_step(x_est, P, u_k, z_k, anchors, l, z_c, Q, R, dt=None, debug: bool = False):
+def run_bc_ekf_step(
+        x_est: np.ndarray,
+        P: np.ndarray, 
+        u_k: np.ndarray, 
+        z_k: np.ndarray, 
+        anchors: np.ndarray, 
+        l: float, 
+        z_c: float, 
+        Q: np.ndarray, 
+        R: np.ndarray, 
+        dt: Optional[float] = None, 
+        debug: bool = False
+        ):
     """
     Executa UM passo do BC-EKF (predição +, opcionalmente, correção).
     - Aceita z_k vazio e ignora a correção se não houver medições.
     - dt explicito para coerencia com o modelo discreto.
     - Quando debug=True, retorna também um dicionário de diagnósticos com:
       {'innov': y, 'S': S, 'K': K, 'h': h, 'H': H}
+
+    Args:
+    x_est: estado estimado corrente (shape (3,))
+    P: matriz de covariância atual (3x3)
+    u_k: comando de controle [v, w]
+    z_k: vetor de medições UWB (2*N anchors) ou vazio
+    anchors: matriz 3xN com posições das âncoras
+    l: metade do baseline entre as tags
+    z_c: altura das tags
+    Q: covariância do processo (3x3)
+    R: covariância das medições (2N x 2N ou vazia)
+    dt: passo de tempo
+    debug: se True, retorna também dicionário de debug
 
     Retornos:
       - Se debug=False (padrão): (x_next, P_next)

@@ -1,6 +1,7 @@
 # utils.py
 # ruido, I/O, helpers
 import os, csv, time, json
+import matplotlib
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
@@ -261,7 +262,13 @@ def _makedirs_silent(path: str):
     os.makedirs(path, exist_ok=True)
 
 def _segments_intersect(p1, p2, q1, q2):
-    """Teste robusto de interseção de segmentos 2D."""
+    """
+    [LEGACY] Teste de interseção de segmentos 2D.
+
+    OBS: código novo deve usar `environment.segments_intersect`
+    e `environment.los_blocked`. Esta função existe apenas
+    por compatibilidade com scripts antigos.
+    """
     def orient(a,b,c):
         return np.cross(b-a, c-a)
     p1 = np.array(p1[:2], float); p2 = np.array(p2[:2], float)
@@ -276,7 +283,13 @@ def _segments_intersect(p1, p2, q1, q2):
 
 
 def _ray_blocked_by_walls(p_src3, p_dst3, walls):
-    """Retorna True se o segmento src→dst cruza alguma parede."""
+    """
+    [LEGACY] Versão antiga de checagem de bloqueio de LOS.
+
+    OBS: para código novo use `environment.los_blocked(...)`.
+    Esta função existe apenas para manter compatibilidade
+    com código legado que ainda não foi migrado.
+    """
     if not walls:
         return False
     a = (p_src3[0], p_src3[1]); b = (p_dst3[0], p_dst3[1])
@@ -393,119 +406,108 @@ def set_random_seed(seed: int):
 
 ####################################################
 #   Gráficos em tempo real com multiprocessing     #
-#####################################################
+####################################################
+matplotlib.use("TkAgg")
+_plot_manager = None # instancia interna do gerenciador de gráficos
 
-def _plotting_process(q: Queue):
-    """
-    Processo separado que mantém a janela do Matplotlib e atualiza gráficos
-    com dados recebidos pela fila q. Envie None para encerrar.
-    """
-    import matplotlib
-    # backend com janela
-    matplotlib.use("TkAgg")
-    import matplotlib.pyplot as plt
-
-    plt.ion()
-    fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True)
-    fig.canvas.manager.set_window_title("Erros BC-EKF — tempo real")
-
-    line1, = ax1.plot([], [], label="Erro Pos (m)")
-    line2, = ax2.plot([], [], label="Erro Heading (°)")
-
-    ax1.set_ylabel("Erro [m]")
-    ax1.grid(True); ax1.legend(loc="upper right")
-    ax2.set_xlabel("Tempo [s]")
-    ax2.set_ylabel("Erro [°]")
-    ax2.grid(True); ax2.legend(loc="upper right")
-
-    # garante que NÃO fica “sempre no topo”
-    try:
-        win = fig.canvas.manager.window
-        win.attributes("-topmost", False)
-    except Exception:
-        pass
-
-    # mostra a janela UMA vez, sem travar processo
-    plt.show(block=False)
-
-    running = True
-    while running and plt.fignum_exists(fig.number):
+class _LivePlotter:
+    def __init__(self):
+        plt.ion()
+        self.fig, (self.ax1, self.ax2) = plt.subplots(2, 1, sharex=True)
         try:
-            msg = q.get(timeout=0.1)
-        except queue.Empty:
-            msg = None
+            self.fig.canvas.manager.set_window_title("Erros BC-EKF — tempo real")
+        except Exception:
+            pass
 
-        # None = pedido para encerrar
-        if msg is None:
-            break
+        self.line1, = self.ax1.plot([], [], label="Erro Pos (m)")
+        self.line2, = self.ax2.plot([], [], label="Erro Heading (°)")
 
-        t_hist, pos_hist, head_hist = msg
+        self.ax1.set_ylabel("Erro [m]")
+        self.ax1.grid(True)
+        self.ax1.legend(loc="upper right")
+
+        self.ax2.set_xlabel("Tempo [s]")
+        self.ax2.set_ylabel("Erro [°]")
+        self.ax2.grid(True)
+        self.ax2.legend(loc="upper right")
+
+        # tenta garantir que a janela não fique sempre no topo
+        try:
+            win = self.fig.canvas.manager.window
+            win.attributes("-topmost", False)
+        except Exception:
+            pass
+
+        self.fig.show()
+
+    def is_open(self) -> bool:
+        return plt.fignum_exists(self.fig.number)
+
+    def update(self, t_hist, pos_hist, head_hist):
+        if not self.is_open():
+            return
+
         if not t_hist:
-            continue
+            return
 
-        # atualiza dados
-        line1.set_data(t_hist, pos_hist)
-        line2.set_data(t_hist, head_hist)
+        self.line1.set_data(t_hist, pos_hist)
+        self.line2.set_data(t_hist, head_hist)
 
-        ax1.set_xlim(0, max(t_hist))
-        ax2.set_xlim(0, max(t_hist))
-        ax1.set_ylim(0, max(1e-3, max(pos_hist) * 1.1))
-        ax2.set_ylim(0, max(1e-3, max(head_hist) * 1.1))
+        self.ax1.set_xlim(0, max(t_hist))
+        self.ax2.set_xlim(0, max(t_hist))
 
-        # redesenha sem POPUP
-        fig.canvas.draw_idle()
-        fig.canvas.flush_events()
+        self.ax1.set_ylim(0, max(1e-3, max(pos_hist) * 1.1))
+        self.ax2.set_ylim(0, max(1e-3, max(head_hist) * 1.1))
 
-        time.sleep(0.05)  # ~20 Hz de atualização máx.
+        self.fig.canvas.draw_idle()
+        self.fig.canvas.flush_events()
 
-    plt.close("all")
+    def close(self):
+        if self.fig:
+            plt.close(self.fig)
 
 
 def start_plot_process(state: dict):
     """
-    Garante que existe um processo de gráficos rodando.
-    Uso:
-      state = {"plot_proc": None, "plot_q": None}
-      start_plot_process(state)
+    Abre (se necessário) a janela de gráficos.
+    Mantém API de "processo", mas agora é só um gerenciador interno.
     """
-    if state.get("plot_proc") is not None and state["plot_proc"].is_alive():
-        return  # já está rodando
+    global _plot_manager
+    if _plot_manager is not None and _plot_manager.is_open():
+        return
 
-    q = mp.Queue()
-    p = mp.Process(target=_plotting_process, args=(q,), daemon=True)
-    p.start()
-    state["plot_proc"] = p
-    state["plot_q"] = q
+    _plot_manager = _LivePlotter()
+    # Mantém o contrato do dicionário state, mesmo que sem processo real
+    state["plot_proc"] = True
+    state["plot_q"] = None
 
 
 def stop_plot_process(state: dict):
-    """Encerra o processo de gráficos (se existir)."""
-    proc = state.get("plot_proc")
-    q = state.get("plot_q")
-    try:
-        if q is not None:
-            # envia sentinela para o worker encerrar
-            q.put_nowait(None)
-    except Exception:
-        pass
-    if proc is not None and proc.is_alive():
-        proc.join(timeout=1.0)
+    """Fecha a janela de gráficos (se existir)."""
+    global _plot_manager
+    if _plot_manager is not None:
+        _plot_manager.close()
+        _plot_manager = None
+
     state["plot_proc"] = None
     state["plot_q"] = None
 
 
 def push_plot_data(state: dict, t_vec, pos_err_vec, head_err_vec):
     """
-    Envia (cópias) dos dados atuais para o processo de gráficos, se ativo.
+    Atualiza os gráficos em tempo real, se a janela estiver aberta.
     """
-    q = state.get("plot_q")
-    if q is None:
+    global _plot_manager
+    if _plot_manager is None or not _plot_manager.is_open():
         return
+
     try:
-        # manda cópias simples (listas) para não ter problema com numpy
-        q.put_nowait((list(t_vec), list(pos_err_vec), list(head_err_vec)))
+        t_hist = list(t_vec)
+        pos_hist = list(pos_err_vec)
+        head_hist = list(head_err_vec)
+        _plot_manager.update(t_hist, pos_hist, head_hist)
     except Exception:
-        # se a fila estiver cheia ou processo morto
+        # Falhas aqui não podem derrubar a simulação
         pass
 
 # Paredes/obstáculos

@@ -4,9 +4,21 @@ from src.robot import Robot
 from src.bc_ekf import run_bc_ekf_step
 import src.utils as utils
 import src.config as config
+from typing import Optional, Any, Dict
 
 class Simulator:
-    def __init__(self, anchors, baseline, z_c, Q, R, dt=0.05, config=config, logger=None, env=None, channel_params=None):
+    def __init__(self, 
+                 anchors: Optional[np.ndarray], 
+                 baseline: float, 
+                 z_c: float, 
+                 Q: np.ndarray, 
+                 R: np.ndarray, 
+                 dt: float = 0.05, 
+                 config=config, 
+                 logger: Optional[Any] = None, 
+                 env: Optional[Any] = None, 
+                 channel_params: Optional[Dict[str, Any]] = None
+                 ) -> None:
         """
         Simulador do robô + EKF.
         anchors: 3xN
@@ -46,13 +58,17 @@ class Simulator:
         # Ruídos (centralizados)
         self.sigma_v   = getattr(config, "NOISE_STD_V", 0.02)
         self.sigma_w   = getattr(config, "NOISE_STD_W", 0.05)
-        self.sigma_uwb = np.sqrt(0.0025)  # pode virar config também
+        self.sigma_uwb = getattr(config, "UWB_NOISE_STD", 0.05)
         self.env = env
         self.channel_params = channel_params or {'disable_dropout': True}
         self.last_meas_meta = None  # <- para o HUD
         self.last_meas = (0.0, 0.0)  # <- para o HUD
 
-    def step(self, v_cmd, w_cmd, noisy=True):
+    def step(self, 
+             v_cmd: float, 
+             w_cmd: float, 
+             noisy: bool = True
+             ) -> None:
         """Executa um passo: integra robô, simula sensores, roda EKF e loga."""
         # 1) Atualiza o estado verdadeiro (modelo cinemático do robô já limita aceleração)
         self.robot.update(v_cmd, w_cmd, self.dt)
