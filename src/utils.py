@@ -510,6 +510,9 @@ def push_plot_data(state: dict, t_vec, pos_err_vec, head_err_vec):
         # Falhas aqui não podem derrubar a simulação
         pass
 
+#####################################################
+#   Geometric helper functions                      #
+#####################################################
 # Paredes/obstáculos
 def point_segment_distance(p, p0, p1):
     """
