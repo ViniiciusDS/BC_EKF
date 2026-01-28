@@ -7,7 +7,7 @@ import numpy as np
 import pygame as pg
 
 from src.environment import Environment, Obstacle
-from src.ui_elements import TextBoxDropdown
+from src.ui.ui_elements import TextBoxDropdown
 from src.utils import list_map_files, map_file_path
 from src.config import MAPS_DIR
 

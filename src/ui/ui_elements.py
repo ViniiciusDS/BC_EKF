@@ -1,4 +1,4 @@
-# src/ui_elements.py
+# src/ui/ui_elements.py
 import pygame as pg
 from typing import List, Sequence, Tuple, Union
 
@@ -73,6 +73,7 @@ class TextBoxDropdown:
         # Layout do dropdown
         self._item_height: int = self.rect.height
         self._max_visible: int = 6  # máximo de itens visíveis no dropdown
+
 
     # ======================================================================
     # API PÚBLICA
@@ -213,8 +214,10 @@ class TextBoxDropdown:
         """Desenha a caixa de texto e, se aberto, o dropdown."""
         # Fundo da caixa
         bg_color = BG_ACTIVE if self.active else BG_INACTIVE
+        border = (30, 140, 255) if self.active else BORDER
         pg.draw.rect(surface, bg_color, self.rect)
         pg.draw.rect(surface, BORDER, self.rect, 1)
+        pg.draw.rect(surface, border, self.rect, 2 if self.active else 1)
 
         # Texto ou placeholder
         if self.text:

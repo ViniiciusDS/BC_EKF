@@ -15,8 +15,11 @@ from src.scenarios import anchors_tectrol
 import src.config as config
 from src.environment import Environment, Obstacle, draw_environment
 from src.utils import start_plot_process, stop_plot_process, push_plot_data, point_segment_distance, list_map_files, map_file_path
-from src.ui_elements import TextBoxDropdown
+from src.ui.ui_elements import TextBoxDropdown
 from src.ui.map_editor import MapEditorScreen
+from src.ui.simulation_screen import SimulationScreen
+from src.ui.drawing import draw_grid, draw_axes, draw_anchors, draw_path, draw_robot, draw_text
+from src.ui.botton import Button
 
 # ==========================
 # Environment setup
@@ -100,185 +103,6 @@ class Camera:
         self.pan = [0, 0]
 
 # ==========================
-# Desenho mapa infinito
-# ==========================
-def draw_grid(surface, cam: Camera):
-    w, h = cam.viewport
-    # calcula os limites de mundo visíveis
-    x0, y0 = cam.screen_to_world(0, h)
-    x1, y1 = cam.screen_to_world(w, 0)
-    # linhas verticais a cada 1m
-    x_start = math.floor(min(x0, x1))
-    x_end = math.ceil(max(x0, x1))
-    for xm in range(x_start, x_end + 1):
-        col = GRID if (xm % 5) else GRID5
-        sx0, sy0 = cam.world_to_screen(xm, y0)
-        sx1, sy1 = cam.world_to_screen(xm, y1)
-        pg.draw.line(surface, col, (sx0, sy0), (sx1, sy1), 1)
-    # horizontais
-    y_start = math.floor(min(y0, y1))
-    y_end = math.ceil(max(y0, y1))
-    for ym in range(y_start, y_end + 1):
-        col = GRID if (ym % 5) else GRID5
-        sx0, sy0 = cam.world_to_screen(x0, ym)
-        sx1, sy1 = cam.world_to_screen(x1, ym)
-        pg.draw.line(surface, col, (sx0, sy0), (sx1, sy1), 1)
-
-def draw_anchors(surface, cam: Camera, anchors3xN):
-    if anchors3xN is None or anchors3xN.shape[1] == 0:
-        return
-    for ax, ay in zip(anchors3xN[0], anchors3xN[1]):
-        sx, sy = cam.world_to_screen(ax, ay)
-        pg.draw.circle(surface, RED, (sx, sy), 6)
-        pg.draw.circle(surface, BLACK, (sx, sy), 6, 1)
-
-def draw_path(surface, cam: Camera, path_xy, color, width=2, dashed=False):
-    """
-    Desenha uma polyline no plano do mundo.
-    - Se dashed=False, usa pg.draw.lines direto.
-    - Se dashed=True, desenha traço-pausa ao longo de CADA segmento consecutivo,
-      garantindo que rotas fechadas (ex.: quadrado) apareçam corretamente.
-    """
-    if path_xy is None or len(path_xy) < 2:
-        return
-
-    pts = [cam.world_to_screen(x, y) for x, y in path_xy]
-
-    if not dashed:
-        pg.draw.lines(surface, color, False, pts, width)
-        return
-
-    # --- Desenho pontilhado contínuo ao longo de cada segmento (p[i] -> p[i+1]) ---
-    # parâmetros do tracejado em pixels
-    dash_len = 12
-    gap_len = 6
-    period = dash_len + gap_len
-
-    for i in range(len(pts) - 1):
-        (x0, y0) = pts[i]
-        (x1, y1) = pts[i + 1]
-        dx = x1 - x0
-        dy = y1 - y0
-        seg_len = math.hypot(dx, dy)
-        if seg_len == 0:
-            continue
-
-        # vetor unitário na direção do segmento
-        ux = dx / seg_len
-        uy = dy / seg_len
-
-        # avança ao longo do segmento alternando traço e espaço
-        dist = 0.0
-        while dist < seg_len:
-            # início do traço
-            sx = x0 + ux * dist
-            sy = y0 + uy * dist
-            # fim do traço (clamp no fim do segmento)
-            dist_end = min(dist + dash_len, seg_len)
-            ex = x0 + ux * dist_end
-            ey = y0 + uy * dist_end
-            # desenha o "dash"
-            pg.draw.line(surface, color, (int(sx), int(sy)), (int(ex), int(ey)), width)
-            # pula o "gap"
-            dist = dist_end + gap_len
-        
-
-def draw_robot(surface, cam: Camera, x, y, theta, color=BLACK):
-    L = 0.5
-    W = 0.32
-    p_front = (x + L * math.cos(theta), y + L * math.sin(theta))
-    p_l = (x + W * math.cos(theta + 2.5), y + W * math.sin(theta + 2.5))
-    p_r = (x + W * math.cos(theta - 2.5), y + W * math.sin(theta - 2.5))
-    pts = [cam.world_to_screen(*p) for p in (p_front, p_l, p_r)]
-    pg.draw.polygon(surface, color, pts)
-    # nariz
-    a = cam.world_to_screen(x, y)
-    b = cam.world_to_screen(x + (L + 0.25) * math.cos(theta), y + (L + 0.25) * math.sin(theta))
-    pg.draw.line(surface, WHITE, a, b, 2)
-
-def draw_text(surface, txt, x, y, font, color=LBL):
-    img = font.render(txt, True, color)
-    surface.blit(img, (x, y))
-
-def draw_axes(surface, cam: Camera, font):
-    """
-    Desenha marcações e rótulos dos eixos X e Y no mapa, com passo adaptativo
-    para evitar texto sobreposto quando o zoom está muito afastado.
-    """
-    w, h = cam.viewport
-    if cam.scale <= 0:
-        return
-
-    # Queremos ~50 px entre labels
-    min_px = 50
-    raw_step = min_px / cam.scale  # em metros
-
-    # "snapping" para valores agradáveis
-    nice_steps = [0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
-    step = nice_steps[-1]
-    for s in nice_steps:
-        if s >= raw_step:
-            step = s
-            break
-
-    # --------- EIXO X ----------
-    x0_world, _ = cam.screen_to_world(0, h)
-    x1_world, _ = cam.screen_to_world(w, h)
-    x_min = min(x0_world, x1_world)
-    x_max = max(x0_world, x1_world)
-
-    start_x = math.floor(x_min / step) * step
-    end_x   = math.ceil(x_max / step) * step
-    n_x = int(round((end_x - start_x) / step)) + 1
-
-    for i in range(n_x):
-        xm = start_x + i * step
-        sx, sy = cam.world_to_screen(xm, 0)
-        if 0 <= sx <= w:
-            text = f"{xm:g}"  # formatação sem zeros desnecessários
-            img  = font.render(text, True, (120, 120, 120))
-            surface.blit(img, (sx - img.get_width() // 2, h - img.get_height() - 2))
-
-    # --------- EIXO Y ----------
-    _, y0_world = cam.screen_to_world(0, h)
-    _, y1_world = cam.screen_to_world(0, 0)
-    y_min = min(y0_world, y1_world)
-    y_max = max(y0_world, y1_world)
-
-    start_y = math.floor(y_min / step) * step
-    end_y   = math.ceil(y_max / step) * step
-    n_y = int(round((end_y - start_y) / step)) + 1
-
-    for i in range(n_y):
-        ym = start_y + i * step
-        sx, sy = cam.world_to_screen(0, ym)
-        if 0 <= sy <= h:
-            text = f"{ym:g}"
-            img  = font.render(text, True, (120, 120, 120))
-            surface.blit(img, (4, sy - img.get_height() // 2))
-
-
-
-class Button:
-    def __init__(self, rect, text, font, bg=(245,245,245), fg=LBL, border=BLACK):
-        self.rect = pg.Rect(rect)
-        self.text = text
-        self.font = font
-        self.bg = bg
-        self.fg = fg
-        self.border = border
-
-    def draw(self, surface):
-        pg.draw.rect(surface, self.bg, self.rect, border_radius=6)
-        pg.draw.rect(surface, self.border, self.rect, 1, border_radius=6)
-        img = self.font.render(self.text, True, self.fg)
-        surface.blit(img, (self.rect.x + (self.rect.w - img.get_width())//2,
-                           self.rect.y + (self.rect.h - img.get_height())//2))
-
-    def hit(self, pos):
-        return self.rect.collidepoint(pos)
-
-# ==========================
 # Util
 # ==========================
 def open_folder(path):
@@ -294,33 +118,6 @@ def open_folder(path):
     except Exception as e:
         print("Não foi possível abrir a pasta:", e)
 
-# ==========================
-# Autopilot simples
-# ==========================
-def waypoint_controller(state_xyz, waypoints, idx, v_max=0.25, w_max=0.8, threshold=0.35):
-    if waypoints is None or len(waypoints) == 0 or idx >= len(waypoints):
-        return 0.0, 0.0, idx
-
-    x, y, th = state_xyz
-    tx, ty = waypoints[idx]
-    dx, dy = tx - x, ty - y
-    dist = math.hypot(dx, dy)
-    target_th = math.atan2(dy, dx)
-    angle_err = math.atan2(math.sin(target_th - th), math.cos(target_th - th))
-
-    # ganho angular um pouco menor + limitação
-    kp_ang = 1.2
-    w = max(-w_max, min(w_max, kp_ang * angle_err))
-
-    # reduz v quando erro angular é grande (mais aderência na curva)
-    ang_scale = max(0.2, math.cos(angle_err))  # [0.2..1]
-    v_ref = v_max * max(0.0, min(1.0, dist))
-    v = max(-v_max, min(v_max, v_ref * ang_scale))
-
-    if dist < threshold:
-        idx += 1
-
-    return v, w, idx
 
 # ==========================
 # Estados
@@ -371,6 +168,7 @@ def main():
 
     # buffers p/ gráficos em tempo real
     ts_hist, pos_err_hist, head_err_hist = [], [], []
+
     # estado do processo de plot
     plot_state = {"plot_proc": None, "plot_q": None}
 
@@ -445,9 +243,13 @@ def main():
     # instancia do editor de mapas
     editor_screen = MapEditorScreen(env, font, bigfont, SIDE_W)
 
+    # instancia do simulation screen
+    sim_screen = None
+
     running = True
     while running:
         dt = clock.tick(60) / 1000.0
+        
         if state == STATE_MENU:
             # eventos
             for event in pg.event.get():
@@ -455,46 +257,38 @@ def main():
                     running = False
                 elif event.type == pg.MOUSEBUTTONDOWN:
                     if btn_start.hit(event.pos):
-                        # cria sim conforme seleções
+
                         anchors_dyn = make_anchors()
+
                         sim = Simulator(
                             anchors=anchors_dyn.copy(),
                             baseline=getattr(config, "WHEEL_BASE", 0.65),
                             z_c=getattr(config, "TAG_HEIGHT", 0.5),
                             Q=np.diag([1e-4, 1e-4, 1e-4]),
-                            R=np.eye(max(1, 2 * anchors_dyn.shape[1])) * 0.0025 if anchors_dyn.shape[1] > 0 else np.eye(2) * 1e6,
+                            R=np.eye(max(1, 2 * anchors_dyn.shape[1])) * 0.0025
+                            if anchors_dyn.shape[1] > 0 else np.eye(2) * 1e6,
                             dt=DT,
                             config=config,
                             env=env
                         )
-                        waypoints = make_route()
-                        autopilot = len(waypoints) > 0
-                        wp_idx = 0
-                        path_true, path_pred, path_est = [], [], []
-                        recording = False
-                        recorded_points = []
-                        ts_hist.clear(); pos_err_hist.clear(); head_err_hist.clear()
-                        cam.reset_view()
+
+                        sim_screen = SimulationScreen(
+                            screen=screen,
+                            cam=cam,
+                            clock=clock,
+                            sim=sim,
+                            font=font,
+                            bigfont=bigfont,
+                            side_width=SIDE_W,
+                            plot_state=plot_state,
+                        )
+
+                        # inicializações específicas do SIM (rotas, âncoras etc)
+                        sim_screen.anchors_dyn = anchors_dyn.copy()
+                        sim_screen.waypoints = make_route()
+                        sim_screen.autopilot = len(sim_screen.waypoints) > 0
+
                         state = STATE_SIM
-                        sidebar_x = cam.viewport[0]
-
-                        # posição vertical de base para botões HUD
-                        hud_y0 = 260  # ajuste fino conforme botões adicionados
-                        btn_filelog = Button((sidebar_x + 16, hud_y0 + 160, 180, 32), "Log arquivo: OFF", font, bg=(240,240,255))
-                        btn_graphs  = Button((sidebar_x + 210, hud_y0 + 160, 180, 32), "Abrir gráficos", font, bg=(240,255,240))
-                        filelog_on = False
-                        file_logger = None
-
-                        # Campo de coordenadas das âncoras
-                        textbox_x = TextBoxDropdown(pg.Rect(0, 0, 80, 26), font, options=[])
-                        textbox_x.text = "0.0"
-                        textbox_x.cursor_pos = len(textbox_x.text)
-
-                        textbox_y = TextBoxDropdown(pg.Rect(0, 0, 80, 26), font, options=[])
-                        textbox_y.text = "0.0"
-                        textbox_y.cursor_pos = len(textbox_y.text)
-                        
-                        btn_place_anchor = Button((0, 0, 190, 30), "Adicionar Âncora (x,y)", font, bg=(235,250,235))
 
                     elif btn_logs.hit(event.pos):
                         # abre pasta de logs
@@ -636,417 +430,30 @@ def main():
             continue
                 
         # ======= ESTADO SIM =======
+        if state == STATE_SIM:
+            cam.set_viewport(screen.get_width() - SIDE_W, screen.get_height())
 
-        cam.set_viewport(screen.get_width() - SIDE_W, screen.get_height())
-
-        # eventos sim
-        for event in pg.event.get():
+            sim_screen.layout_hud()
             
-            if event.type == pg.QUIT:
+            events = pg.event.get()
+
+            actions = sim_screen.handle_events(events)
+
+            if actions.go_to_menu:
+                sim_screen.close()
+                sim_screen = None
+                state = STATE_MENU
+                continue
+
+            if actions.quite_app:
+                sim_screen.close()
                 running = False
+                continue
 
-            elif event.type == pg.KEYDOWN:
-                # Check Textboxes first
-                consumed = False
-                if textbox_x and textbox_x.handle_event(event):
-                    consumed = True
-                if not consumed and textbox_y and textbox_y.handle_event(event):
-                    consumed = True
-                
-                if consumed:
-                    # A tecla foi usada pelo TextBox (nmr, backspace, etc)
-                    # Não processa como tecla do HUD
-                    continue
+            sim_screen.update(dt)
+            sim_screen.draw()
 
-                if event.key == pg.K_ESCAPE:                    
-                    # quando voltar para o MENU (em KEYDOWN K_ESCAPE que troca o state) OU ao encerrar o programa:
-                    if file_logger:
-                        try: file_logger.close()
-                        except: pass
-                        file_logger = None
-                        filelog_on = False
-                    stop_plot_process(plot_state)
-                    state = STATE_MENU
-
-                elif event.key == pg.K_d:
-                    show_debug = not show_debug
-
-                elif event.key == pg.K_SPACE:
-                    autopilot = not autopilot
-
-                elif event.key == pg.K_LEFTBRACKET:
-                    speed_factor = max(1, speed_factor - 1)
-
-                elif event.key == pg.K_RIGHTBRACKET:
-                    speed_factor = min(20, speed_factor + 1)
-
-                elif event.key == pg.K_c:
-                    anchors_dyn = np.zeros((3, 0))
-                    sim.anchors = anchors_dyn
-                    sim.R = np.eye(2) * 1e6
-
-                elif event.key == pg.K_b:
-                    anchors_dyn = anchors_tectrol.copy()
-                    sim.anchors = anchors_dyn
-                    sim.R = np.eye(2 * anchors_dyn.shape[1]) * 0.0025
-
-                elif event.key == pg.K_r:
-                    cam.reset_view()
-
-                elif event.key == pg.K_g:
-                    recording = not recording
-                    if not recording and len(recorded_points) > 1:
-                        waypoints = np.array(recorded_points, dtype=float)
-                        wp_idx = 0
-                        autopilot = True
-
-                elif event.key == pg.K_RETURN:
-                    if recording and len(recorded_points) > 1:
-                        waypoints = np.array(recorded_points, dtype=float)
-                        wp_idx = 0
-                        autopilot = True
-                        recording = False
-
-                elif event.key == pg.K_DELETE:
-                    recorded_points = []
-
-            elif event.type == pg.MOUSEBUTTONDOWN:
-                mx, my = event.pos
-
-                # zoom sempre
-                if event.button == 4:
-                    cam.zoom_at((mx, my), 1.15)
-                    continue
-                elif event.button == 5:
-                    cam.zoom_at((mx, my), 1/1.15)
-                    continue
-
-                # pan (botão do meio) – independe de mapa ou HUD
-                if event.button == 2:
-                    panning = True
-                    pan_last = (mx, my)
-                    continue
-
-                # -----------------------------------------
-                # CLIQUE ESQUERDO (mapa OU HUD)
-                # -----------------------------------------
-                if event.button == 1:
-                    if mx < cam.viewport[0]:
-                        # >>> MAPA (LMB)
-                        wx, wy = cam.screen_to_world(mx, my)
-                        if recording:
-                            recorded_points.append((wx, wy))
-                        else:
-                            z = getattr(config, "TAG_HEIGHT", 0.5)
-                            anchors_dyn = np.hstack([anchors_dyn, np.array([[wx], [wy], [z]])])
-                            sim.anchors = anchors_dyn
-                            sim.R = np.eye(2 * anchors_dyn.shape[1]) * 0.0025
-                    else:
-                        # >>> HUD (LMB)
-                        
-                        if textbox_x and textbox_x.handle_event(event):
-                            continue
-                        if textbox_y and textbox_y.handle_event(event):
-                            continue
-
-                        if btn_filelog and btn_filelog.hit((mx, my)):
-                            if not filelog_on:
-                                from src.utils import RunLogger
-                                meta = {
-                                    "dt": DT,
-                                    "anchors": anchors_dyn[:2,:].T.tolist() if anchors_dyn is not None else [],
-                                    "z_c": float(getattr(config, "TAG_HEIGHT", 0.5)),
-                                    "baseline": float(getattr(config, "WHEEL_BASE", 0.65)),
-                                    "route_waypoints": waypoints.tolist() if waypoints is not None else [],
-                                    "config": {
-                                        "TIME_STEP": getattr(config, "TIME_STEP", None),
-                                        "NOISE_STD_V": getattr(config, "NOISE_STD_V", None),
-                                        "NOISE_STD_W": getattr(config, "NOISE_STD_W", None),
-                                        "UWB_BIAS_ENABLED": getattr(config, "UWB_BIAS_ENABLED", None),
-                                        "UWB_MISALIGNMENT_ENABLED": getattr(config, "UWB_MISALIGNMENT_ENABLED", None),
-                                    }
-                                }
-                                file_logger = RunLogger(
-                                    out_dir=getattr(config, "LOG_DIR", "resultados/logs"),
-                                    run_name=None,
-                                    meta=meta,
-                                    flush_every_n=getattr(config, "LOG_FLUSH_EVERY_N", 50),
-                                )
-                                filelog_on = True
-                                btn_filelog.text = "Log arquivo: ON"
-                            else:
-                                try:
-                                    if file_logger: file_logger.close()
-                                finally:
-                                    file_logger = None
-                                    filelog_on = False
-                                    btn_filelog.text = "Log arquivo: OFF"
-
-                        elif btn_graphs and btn_graphs.hit((mx, my)):
-                            # inicia/reativa a janela de gráficos (processo separado)
-                            start_plot_process(plot_state)
-
-                        if btn_place_anchor and btn_place_anchor.hit((mx, my)):
-                            try:
-                                x = float(textbox_x.text.replace(",", "."))
-                                y = float(textbox_y.text.replace(",", "."))
-                                z = getattr(config, "TAG_HEIGHT", 0.5)
-
-                                new_anchor = np.array([[x], [y], [z]])
-                                anchors_dyn = np.hstack([anchors_dyn, new_anchor])
-                                sim.anchors = anchors_dyn
-                                sim.R = np.eye(2 * anchors_dyn.shape[1]) * 0.0025
-                                print(f"Âncora adicionada em ({x}, {y})")
-                            except ValueError:
-                                print("Coordenadas inválidas para âncora.")
-                            continue
-
-                # -----------------------------------------
-                # CLIQUE DIREITO (mapa)
-                # -----------------------------------------
-                elif event.button == 3 and mx < cam.viewport[0]:
-                    if recording and recorded_points:
-                        recorded_points.pop()
-                    else:
-                        wx, wy = cam.screen_to_world(mx, my)
-                        if anchors_dyn.shape[1] > 0:
-                            dif = anchors_dyn[:2, :].T - np.array([wx, wy])[None, :]
-                            j = int(np.argmin(np.sum(dif**2, axis=1)))
-                            anchors_dyn = np.delete(anchors_dyn, j, axis=1)
-                            sim.anchors = anchors_dyn
-                            sim.R = (np.eye(2 * anchors_dyn.shape[1]) * 0.0025) if anchors_dyn.shape[1] > 0 else np.eye(2) * 1e6
-
-            elif event.type == pg.MOUSEBUTTONUP:
-                if event.button == 2:
-                    panning = False
-            elif event.type == pg.MOUSEMOTION and panning:
-                mx, my = event.pos
-                dx = mx - pan_last[0]
-                dy = my - pan_last[1]
-                cam.pan_pixels(dx, dy)
-                pan_last = (mx, my)
-
-        # teclas contínuas (manual)
-        keys = pg.key.get_pressed()
-        if not autopilot:
-            if keys[pg.K_UP]:
-                v_cmd = min(V_MAX, v_cmd + accel_lin)
-            elif keys[pg.K_DOWN]:
-                v_cmd = max(-V_MAX, v_cmd - accel_lin)
-            else:
-                v_cmd *= 0.90
-            if keys[pg.K_LEFT]:
-                w_cmd = max(-W_MAX, w_cmd - accel_ang)
-            elif keys[pg.K_RIGHT]:
-                w_cmd = min(W_MAX, w_cmd + accel_ang)
-            else:
-                w_cmd *= 0.86
-        else:
-            v_cmd, w_cmd, wp_idx = waypoint_controller(sim.x_est, waypoints, wp_idx, v_max=0.25, w_max=0.8)
-
-        # física
-        for _ in range(speed_factor):
-            sim.step(v_cmd, w_cmd, noisy=True)
-
-        innov_norm = None
-        nis = None
-        if getattr(sim, 'last_debug', None) and sim.last_debug['innov'] is not None:
-            y = sim.last_debug['innov']
-            S = sim.last_debug['S']
-            try:
-                nis = float(y.T @ np.linalg.inv(S) @ y)   # NIS: consistência da medição
-            except:
-                nis = None
-            innov_norm = float(np.linalg.norm(y))
-            
-        # logs
-        true_traj, est_traj = sim.get_logs()
-        pred_traj = np.array(sim.history_pred)
-
-        if len(true_traj) > 0:
-            p = (true_traj[-1, 0], true_traj[-1, 1])
-            if not path_true or p != path_true[-1]:
-                path_true.append(p)
-        if len(pred_traj) > 0:
-            path_pred.append((pred_traj[-1, 0], pred_traj[-1, 1]))
-        if len(est_traj) > 0:
-            path_est.append((est_traj[-1, 0], est_traj[-1, 1]))
-        path_true = path_true[-2500:]
-        path_pred = path_pred[-2500:]
-        path_est = path_est[-2500:]
-
-        # erros atuais
-        pos_err = 0.0
-        head_err = 0.0
-        if len(true_traj) > 0 and len(est_traj) > 0:
-            pos_err = float(np.linalg.norm(true_traj[-1, :2] - est_traj[-1, :2]))
-            dth = (true_traj[-1, 2] - est_traj[-1, 2])
-            dth = math.atan2(math.sin(dth), math.cos(dth))
-            head_err = abs(dth * 180.0 / math.pi)
-
-        # atualiza séries e envia ao processo de plot
-        if len(true_traj) > 0 and len(est_traj) > 0:
-            t_now = (len(ts_hist)) * sim.dt
-            ts_hist.append(t_now); pos_err_hist.append(pos_err); head_err_hist.append(head_err)
-            push_plot_data(plot_state, ts_hist, pos_err_hist, head_err_hist)
-
-        # logging em arquivo (se ativo)
-        if filelog_on and file_logger and len(true_traj) > 0 and len(est_traj) > 0:
-            true_state = true_traj[-1, :]
-            est_state  = est_traj[-1, :]
-            pred_state = sim.last_debug.get('x_pred', None) if getattr(sim, 'last_debug', None) else None
-            v_meas, w_meas = getattr(sim, 'last_meas', (float('nan'), float('nan')))
-            try:
-                file_logger.log_step(
-                    true_state=true_state,
-                    pred_state=pred_state,   # pode ser None; o RunLogger já trata
-                    est_state=est_state,
-                    v_cmd=v_cmd, w_cmd=w_cmd,
-                    v_meas=v_meas, w_meas=w_meas,
-                    pos_err=pos_err, heading_err_deg=head_err
-                )
-            except Exception as e:
-                # evita quebrar a simulação por erro de I/O
-                pass
-
-        # desenho
-        screen.fill(WHITE)
-        # mapa (esquerda)
-        map_rect = pg.Rect(0, 0, cam.viewport[0], cam.viewport[1])
-        pg.draw.rect(screen, WHITE, map_rect)
-        draw_grid(screen, cam)
-        draw_environment(screen, cam, sim.env)
-        draw_axes(screen, cam, font)
-        draw_anchors(screen, cam, anchors_dyn)
-
-        # rota planejada
-        if waypoints is not None and len(waypoints) > 1:
-            draw_path(screen, cam, waypoints, BLACK, 2, dashed=True)
-            # destaque do waypoint atual
-            if autopilot and 0 <= wp_idx < len(waypoints):
-                sx, sy = cam.world_to_screen(*waypoints[wp_idx])
-                pg.draw.circle(screen, GREEN, (sx, sy), 6)
-                pg.draw.circle(screen, BLACK, (sx, sy), 6, 1)
-        # rota gravada em curso (pontos)
-        if recording and len(recorded_points) > 0:
-            for pt in recorded_points:
-                sx, sy = cam.world_to_screen(*pt)
-                pg.draw.circle(screen, PURPLE, (sx, sy), 4)
-
-        # trilhas
-        draw_path(screen, cam, path_true, BLACK, 2)
-        draw_path(screen, cam, path_pred, BLUE, 2, dashed=True)
-        draw_path(screen, cam, path_est, ORANGE, 2, dashed=True)
-
-        # robôs
-        if len(true_traj) > 0:
-            xr, yr, tr = true_traj[-1]
-            draw_robot(screen, cam, xr, yr, tr, BLACK)
-        if len(est_traj) > 0:
-            xe, ye, te = est_traj[-1]
-            draw_robot(screen, cam, xe, ye, te, ORANGE)
-
-        # --- Overlay: indicador de waypoint no canto inferior-direito do MAPA ---
-        if waypoints is not None and len(waypoints) > 0:
-            wp_current = min(wp_idx + 1, len(waypoints))
-            label = f"WP: {wp_current}/{len(waypoints)}"
-            img = font.render(label, True, BLACK)
-
-            pad = 6
-            tx = cam.viewport[0] - img.get_width() - pad - 8
-            ty = cam.viewport[1] - img.get_height() - pad - 8
-
-            card = pg.Surface((img.get_width() + 2*pad, img.get_height() + 2*pad), pg.SRCALPHA)
-            card.fill((255, 255, 255, 210))  # branco com alpha
-            card.blit(img, (pad, pad))
-            screen.blit(card, (tx - pad, ty - pad))
-            pg.draw.rect(screen, BLACK, (tx - pad, ty - pad, card.get_width(), card.get_height()), 1)
-
-        ######################################
-        # HUD lateral (direita) - Estado SIM
-        ######################################
-        pg.draw.rect(screen, (245, 245, 245), (cam.viewport[0], 0, SIDE_W, cam.viewport[1]))
-        sidebar_x = cam.viewport[0] + 16
-        LINE_H = 22
-        y = 18
-        # título
-        draw_text(screen, "BC-EKF — Simulador", sidebar_x, y, bigfont); y += 34
-
-        # métricas gerais
-        draw_text(screen, f"FPS: {clock.get_fps():5.1f}", sidebar_x, y, font); y += LINE_H
-        draw_text(screen, f"Speed x: {speed_factor}", sidebar_x, y, font); y += LINE_H
-        draw_text(screen, f"Autopilot: {'ON' if autopilot else 'OFF'} (SPACE)", sidebar_x, y, font); y += LINE_H
-        draw_text(screen, f"Âncoras: {anchors_dyn.shape[1]}  (LMB add, RMB rem)", sidebar_x, y, font); y += LINE_H
-        draw_text(screen, f"Zoom: {cam.scale:.1f} px/m  (R reset view)", sidebar_x, y, font); y += LINE_H
-        draw_text(screen, f"Erro Pos (m): {pos_err:.3f}", sidebar_x, y, font); y += LINE_H
-        draw_text(screen, f"Erro Heading (°): {head_err:.2f}", sidebar_x, y, font); y += LINE_H
-        draw_text(screen, f"Gravar rota (G): {'ON' if recording else 'OFF'}", sidebar_x, y, font); y += LINE_H
-        draw_text(screen, "ENTER finaliza rota  |  DEL limpa", sidebar_x, y, font); y += LINE_H
-
-        # separador
-        y += 10
-        draw_text(screen, "Controles:", sidebar_x, y, bigfont); y += LINE_H
-        draw_text(screen, "↑/↓ acel. linear   ←/→ acel. angular", sidebar_x, y, font); y += LINE_H
-        draw_text(screen, "[ / ] velocidade simulação", sidebar_x, y, font); y += LINE_H
-        draw_text(screen, "Scroll: zoom  |  Botão do meio: pan", sidebar_x, y, font); y += LINE_H
-        draw_text(screen, "C: limpar âncoras  |  B: âncoras padrão", sidebar_x, y, font); y += LINE_H
-        draw_text(screen, "ESC: voltar ao menu", sidebar_x, y, font); y += LINE_H
-
-        # Posicionamento de Âncoras
-        y += 10
-        draw_text(screen, "Posicionar âncora em (x, y):", sidebar_x, y, font)
-        y += LINE_H
-
-        if textbox_x and textbox_y and btn_place_anchor:
-            textbox_x.rect.topleft = (sidebar_x, y)
-            textbox_x.update(dt)
-            textbox_x.draw(screen)
-
-            textbox_y.rect.topleft = (sidebar_x + textbox_x.rect.w + 10, y)
-            textbox_y.update(dt)
-            textbox_y.draw(screen)
-
-            y += textbox_x.rect.h + 8
-            btn_place_anchor.rect.topleft = (sidebar_x, y)
-            btn_place_anchor.draw(screen)
-            y += btn_place_anchor.rect.h + 10
-
-        # --- MÉTRICAS DE CANAL / NLOS ---
-        if sim.last_meas_meta:
-            y += 10
-            nlos = sum(1 for m in sim.last_meas_meta if m["mode"] == "NLOS")
-            total = len(sim.last_meas_meta)
-            draw_text(screen, f"Medições NLOS: {nlos}/{total}", sidebar_x, y, font); y += LINE_H
-        
-        # debug EKF
-        if show_debug:
-            y += 14
-            draw_text(screen, "DEBUG EKF", sidebar_x, y, bigfont); y += LINE_H
-            if innov_norm is not None:
-                draw_text(screen, f"||innov||: {innov_norm:.3f}", sidebar_x, y, font); y += LINE_H
-            else:
-                draw_text(screen, "||innov||: n/a", sidebar_x, y, font); y += LINE_H
-
-            if nis is not None:
-                draw_text(screen, f"NIS: {nis:.3f}", sidebar_x, y, font); y += LINE_H
-            else:
-                draw_text(screen, "NIS: n/a", sidebar_x, y, font); y += LINE_H
-
-            draw_text(screen, "D: mostra/oculta debug", sidebar_x, y, font); y += LINE_H
-
-        y += 10
-        draw_text(screen, "Ferramentas:", cam.viewport[0] + 16, y, bigfont); y += 26
-        # dicas
-        draw_text(screen, "Log em arquivo (meta.json + data.csv):", cam.viewport[0] + 16, y, font); y += 24
-        if btn_filelog:
-            btn_filelog.rect.topleft = (cam.viewport[0] + 16, y)  # manter alinhado se janela redimensionar
-            btn_filelog.draw(screen)
-        draw_text(screen, "Gráficos de erro em tempo real:", cam.viewport[0] + 16, y + 40, font); y += 64
-        if btn_graphs:
-            btn_graphs.rect.topleft = (cam.viewport[0] + 16, y)   # idem
-            btn_graphs.draw(screen)
-
-        pg.display.flip()
+            pg.display.flip()
 
     # sair: fecha logger e processo de plot
     if file_logger:
