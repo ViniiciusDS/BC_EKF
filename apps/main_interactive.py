@@ -17,9 +17,11 @@ from src.environment import Environment, Obstacle, draw_environment
 from src.utils import start_plot_process, stop_plot_process, push_plot_data, point_segment_distance, list_map_files, map_file_path
 from src.ui.ui_elements import TextBoxDropdown
 from src.ui.map_editor import MapEditorScreen
-from src.ui.simulation_screen import SimulationScreen
+from src.ui.simulation_screen import SimulationScreen 
+from src.ui.uwb_test_screen import UwbTestScreen
 from src.ui.drawing import draw_grid, draw_axes, draw_anchors, draw_path, draw_robot, draw_text
 from src.ui.botton import Button
+
 
 # ==========================
 # Environment setup
@@ -122,9 +124,10 @@ def open_folder(path):
 # ==========================
 # Estados
 # ==========================
-STATE_MENU = 0  # menu inicial
-STATE_SIM = 1   # simulação rodando
+STATE_MENU = 0          # menu inicial
+STATE_SIM = 1           # simulação rodando
 STATE_MAPEDITOR = 2     # editor de mapa
+STATE_UWB_TEST = 3      # tela de testes UWB
 
 # =========================
 # Main loop
@@ -152,22 +155,8 @@ def main():
     btn_anchor = Button((440, 420, 220, 40), f"Âncoras: {anchor_presets[sel_anchor]}", font)
     btn_route  = Button((720, 420, 220, 40), f"Rota: {route_presets[sel_route]}", font)
     btn_mapedit = Button((440, 580, 220, 44), "Editor de mapa", bigfont)
+    btn_uwbtest = Button((720, 580, 220, 44), "Testes UWB", bigfont)
     
-    # holders p/ botões do editor de mapas
-    btn_save_as = None
-    btn_load_by_name = None
-
-    # -------- SIM --------
-    # --- botões no HUD (estado SIM) ---
-    btn_filelog = None
-    btn_graphs  = None
-
-    # estado do file logging
-    filelog_on = False
-    file_logger = None
-
-    # buffers p/ gráficos em tempo real
-    ts_hist, pos_err_hist, head_err_hist = [], [], []
 
     # estado do processo de plot
     plot_state = {"plot_proc": None, "plot_q": None}
@@ -240,11 +229,11 @@ def main():
     textbox_y = None
     btn_place_anchor = None
 
-    # instancia do editor de mapas
-    editor_screen = MapEditorScreen(env, font, bigfont, SIDE_W)
+    # instancia do menu
+    editor_screen = MapEditorScreen(env, font, bigfont, SIDE_W)     # instancia do map editor
+    sim_screen = None                 # instancia do sim screen
+    uwb_screen = None                 # instancia do uwb test screen
 
-    # instancia do simulation screen
-    sim_screen = None
 
     running = True
     while running:
@@ -329,6 +318,21 @@ def main():
                         )
                         name_box.text = editor_filename
                         name_box.cursor_pos = len(editor_filename)
+                    
+                    elif btn_uwbtest.hit(event.pos):
+                        # muda para a aba de testes UWB
+                        state = STATE_UWB_TEST
+                        cam.reset_view()
+                        cam.set_viewport(screen.get_width() - SIDE_W, screen.get_height())
+
+                        uwb_screen = UwbTestScreen(
+                            screen=screen,
+                            cam=cam,
+                            clock=clock,
+                            font=font,
+                            bigfont=bigfont,
+                            side_width=SIDE_W,
+                        )
 
                 elif event.type == pg.KEYDOWN and event.key == pg.K_ESCAPE:
                     running = False
@@ -343,6 +347,7 @@ def main():
             btn_start.draw(screen)
             btn_logs.draw(screen)
             btn_mapedit.draw(screen)
+            btn_uwbtest.draw(screen)
             draw_text(screen, "ESC para sair", 20, screen.get_height()-30, font)
             pg.display.flip()
             continue
@@ -455,12 +460,30 @@ def main():
 
             pg.display.flip()
 
-    # sair: fecha logger e processo de plot
-    if file_logger:
-        try: file_logger.close()
-        except: pass
-    stop_plot_process(plot_state)
-    pg.quit()
+        # ======= ESTADO UWB_TEST =======
+        if state == STATE_UWB_TEST:
+            cam.set_viewport(screen.get_width() - SIDE_W, screen.get_height())
+
+            events = pg.event.get()
+            actions = uwb_screen.handle_events(events)
+
+            if actions.go_to_menu:
+                uwb_screen.close()
+                uwb_screen = None
+                state = STATE_MENU
+                continue
+
+            if actions.quite_app:
+                uwb_screen.close()
+                running = False
+                continue
+
+            uwb_screen.update(dt)
+            uwb_screen.draw()
+            pg.display.flip()
+            continue
+
+
 
 if __name__ == "__main__":
     import multiprocessing as mp    # Evita problemas no Windows multiprocessing

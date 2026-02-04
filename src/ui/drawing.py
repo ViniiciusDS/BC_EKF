@@ -2,6 +2,7 @@
 
 import math
 import pygame as pg
+
 # ==========================
 # UI helpers
 # ==========================
@@ -18,11 +19,6 @@ LBL = (40, 40, 40)
 GREEN = (50, 170, 80)
 
 
-
-# ==========================
-# Desenho mapa infinito
-# ==========================
-    
 def draw_robot(surface, cam, x, y, theta, color=BLACK):
     L = 0.5
     W = 0.32
@@ -38,6 +34,10 @@ def draw_robot(surface, cam, x, y, theta, color=BLACK):
 
 
 def draw_grid(surface, cam):
+    """
+    Desenha uma grade no plano do mundo, com linhas a cada 1 metro.
+    Linhas mais escuras a cada 5 metros.
+    """
     w, h = cam.viewport
     # calcula os limites de mundo visíveis
     x0, y0 = cam.screen_to_world(0, h)
