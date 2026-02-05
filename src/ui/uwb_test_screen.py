@@ -5,10 +5,12 @@ from dataclasses import dataclass
 from typing import Any
 import pygame as pg
 import math
+import numpy as np
 
 from src.ui.drawing import draw_axes, draw_grid
 from src.ui.ui_elements import TextBoxDropdown
 from src.ui.botton import Button
+from src.uwb.ranging_model import RangingConfig, UwbRangingModel
 
 # Cores 
 WHITE = (255, 255, 255)
@@ -86,6 +88,33 @@ class UwbTestScreen:
         self.anchor_line_h: int = 18
         self.anchor_list_rect: pg.Rect | None = None  # definido no layout_hud()
 
+        # ===== Configuração do modelo de ranging UWB =====
+        self.ranging_cfg = RangingConfig(dt=0.10)
+        self.ranging = UwbRangingModel(self.ranging_cfg, seed=123)
+
+        self._tick_acc = 0.0
+        self.last_ranges = []  # lista de dicts/resultados p/ HUD
+
+        # ===== HUD: dt entre medições =====
+        self.textbox_dt = TextBoxDropdown(pg.Rect(0, 0, 90, 26), self.font, options=[], placeholder="dt (s)")
+        self.textbox_dt.set_text(f"{self.ranging_cfg.dt:.2f}")
+
+        self.btn_apply_dt = Button(
+            rect=(0, 0, 120, 26),
+            text="Aplicar dt",
+            font=self.font,
+            bg=(235, 235, 250),
+        )
+
+        # ===== Lista rolável de Ranges =====
+        self.ranges_scroll: int = 0
+        self.ranges_visible: int = 6
+        self.ranges_line_h: int = 18
+        self.ranges_list_rect: pg.Rect | None = None
+
+        # ===== Toggle para exibir ranges =====
+        self.show_ranges: bool = False
+
 
 
     def handle_events(self, events) -> UwbActions:
@@ -103,30 +132,87 @@ class UwbTestScreen:
             # ===== ZOOM NO MAPA (scroll) =====
             if event.type == pg.MOUSEWHEEL:
                 mx, my = pg.mouse.get_pos()
+
+                # Se tiver na lista de âncoras: desca a lista
+                if self.anchor_list_rect and self.anchor_list_rect.collidepoint((mx, my)):
+                    self._scroll_anchor_list(-event.y)  # wheel up = +1 no event.y
+                    continue
+                
+                # Se tiver na lista de ranges: desca a lista
+                if self.ranges_list_rect and self.ranges_list_rect.collidepoint((mx, my)):
+                    self._scroll_ranges_list(-event.y)  # wheel up = +1 no event.y
+                    continue
+                
+                # Se tiver no mapa: zoom
                 if mx < cam_w:
                     factor = 1.15 if event.y > 0 else 1/1.15
                     self.cam.zoom_at((mx, my), factor)
                     continue
 
-            # compatibilidade wheel antigo (button 4/5)
+            # compatibilidade wheel (button 4/5)
             if event.type == pg.MOUSEBUTTONDOWN and event.button in (4, 5):
                 mx, my = event.pos
+
+                # Só permite interação no MAPA (lado esquerdo)
                 if mx < cam_w:
                     self.cam.zoom_at((mx, my), 1.15 if event.button == 4 else 1/1.15)
                     continue
+                
+                # Se tiver na lista de ranges: desca a lista  
+                if self.ranges_list_rect and self.ranges_list_rect.collidepoint((mx, my)):
+                    self._scroll_ranges_list(-1 if event.button == 4 else +1)
+                    continue
+
+                # Se tiver na lista de âncoras: desca a lista
+                if self.anchor_list_rect and self.anchor_list_rect.collidepoint((mx, my)):
+                    self._scroll_anchor_list(-1 if event.button == 4 else +1)
+                    continue
+
 
             if event.type == pg.KEYDOWN:
                 if event.key == pg.K_ESCAPE:
                     actions.go_to_menu = True
                     return actions
 
+                # TextBoxes primeiro 
                 consumed = False
                 if self.textbox_ax.handle_event(event):
                     consumed = True
                 if (not consumed) and self.textbox_ay.handle_event(event):
                     consumed = True
+                if (not consumed) and self.textbox_dt.handle_event(event):
+                    consumed = True
+
+                # ENTER aplica dt se dt box estiver ativa (ou se acabou de confirmar)
                 if consumed:
+                    # se o textbox_dt confirmou com ENTER, ele desativa e retornou True
+                    if event.key == pg.K_RETURN and (not self.textbox_dt.active):
+                        self._apply_dt_from_box()
                     continue
+
+                # Hotkeys para toggles
+                if event.key == pg.K_n:
+                    self.ranging_cfg.noise_enabled = not self.ranging_cfg.noise_enabled
+                    print(f"[UWB] Noise: {'ON' if self.ranging_cfg.noise_enabled else 'OFF'}")
+
+                elif event.key == pg.K_l:
+                    # alterna NLOS “ligado/desligado” via probabilidade
+                    self.ranging_cfg.nlos_prob = 0.0 if self.ranging_cfg.nlos_prob > 0 else 0.15
+                    print(f"[UWB] NLOS prob: {self.ranging_cfg.nlos_prob:.2f}")
+
+                elif event.key == pg.K_p:
+                    # alterna dropout
+                    self.ranging_cfg.dropout_prob = 0.0 if self.ranging_cfg.dropout_prob > 0 else 0.05
+                    print(f"[UWB] Dropout prob: {self.ranging_cfg.dropout_prob:.2f}")
+
+                elif event.key == pg.K_q:
+                    # alterna quantização
+                    self.ranging_cfg.quantize_step = None if self.ranging_cfg.quantize_step else 0.01
+                    q = self.ranging_cfg.quantize_step
+                    print(f"[UWB] Quantize: {'OFF' if q is None else f'{q:.3f}m'}")
+
+                elif event.key == pg.K_h:
+                    self.show_ranges = not self.show_ranges
             
             # ===== PAN COM BOTÃO DO MEIO =====
             if event.type == pg.MOUSEBUTTONDOWN and event.button == 2:
@@ -170,7 +256,15 @@ class UwbTestScreen:
 
                     if self.btn_clear_anchors.hit((mx, my)):
                         self.anchors.clear()
-                        self.anchors_scroll = 0
+                        self.anchor_scroll = 0
+                        self.ranges_scroll = 0
+                        continue
+
+                    if self.textbox_dt.handle_event(event):
+                        continue
+
+                    if self.btn_apply_dt.hit((mx, my)):
+                        self._apply_dt_from_box()
                         continue
 
             if event.type == pg.MOUSEBUTTONDOWN:
@@ -208,18 +302,19 @@ class UwbTestScreen:
                         self.anchors.pop(idx)
                     continue
 
-            # Scroll da lista de âncoras (mouse wheel)
-            if event.type == pg.MOUSEWHEEL:
-                mx, my = pg.mouse.get_pos()
-                if self.anchor_list_rect and self.anchor_list_rect.collidepoint((mx, my)):
-                    self._scroll_anchor_list(-event.y)  # wheel up = +1 no event.y
-                    continue
-
         return actions
 
     def update(self, dt: float) -> None:
         self.textbox_ax.update(dt)
         self.textbox_ay.update(dt)
+        self.textbox_dt.update(dt)
+
+        # tick do modelo de ranging UWB
+        self._tick_acc += dt
+        while self._tick_acc >= self.ranging_cfg.dt:
+            self._tick_acc -= self.ranging_cfg.dt
+            self._compute_ranges_tick()
+
         pass
 
     def draw(self) -> None:
@@ -249,6 +344,9 @@ class UwbTestScreen:
             pg.draw.line(self.screen, (170, 170, 170), (stx, sty), (sx, sy), 1)
             pg.draw.circle(self.screen, (55, 120, 220), (sx, sy), 6)   # azul
             pg.draw.circle(self.screen, BLACK, (sx, sy), 6, 1)
+
+        # Overlay de status (canto superior direito do mapa)
+        self._draw_map_overlay()
 
         # ===== Sidebar (direita) HUD / UI =====
         pg.draw.rect(self.screen, (245, 245, 245), (cam_w, 0, self.SIDE_W, cam_h))
@@ -282,31 +380,24 @@ class UwbTestScreen:
         self.btn_add_anchor_xy.draw(self.screen)
         self.btn_clear_anchors.draw(self.screen)
 
+        dt_label_y = self.textbox_dt.rect.y - 18
+        self.screen.blit(self.font.render("Intervalo entre medições UWB:", True, BLACK), (x, dt_label_y))
+        self.textbox_dt.draw(self.screen)
+        self.btn_apply_dt.draw(self.screen)
+
         # lista rolável
         self._draw_anchor_list()
+
+        if self.show_ranges:
+            self._draw_ranges_panel()
+
+
                 
 
     def close(self) -> None:
-        # Etapa 1 não tem processos/arquivos pra fechar
+        
         pass
 
-    def _find_nearest_anchor(self, wx: float, wy: float) -> tuple[int | None, float]:
-        """Retorna (idx, dist) da âncora mais próxima do ponto (wx,wy)."""
-        
-        if not self.anchors:
-            return None, float("inf")
-        
-        best_i = None
-        best_d2 = float("inf")
-
-        for i, (ax, ay) in enumerate(self.anchors):
-            d2 = (ax - wx) ** 2 + (ay - wy) ** 2
-            if d2 < best_d2:
-                best_d2 = d2
-                best_i = i
-                
-        return best_i, math.sqrt(best_d2)
-    
     def layout_hud(self):
         """Define posições dos elementos HUD/UI na sidebar direita."""
         cam_w = self.cam.viewport[0]
@@ -341,7 +432,12 @@ class UwbTestScreen:
         y += self.btn_add_anchor_xy.rect.h + 8
 
         self.btn_clear_anchors.rect.topleft = (sidebar_x, y)
-        y += self.btn_clear_anchors.rect.h + 14
+        y += self.btn_clear_anchors.rect.h + 24
+
+        # dt entre medições
+        self.textbox_dt.rect.topleft = (sidebar_x, y)
+        self.btn_apply_dt.rect.topleft = (sidebar_x + self.textbox_dt.rect.w + 10, y)
+        y += self.textbox_dt.rect.h + 14
 
         # marca onde termina a parte de ferramentas
         self._hud_y_after_tools = y
@@ -354,6 +450,36 @@ class UwbTestScreen:
         list_w = self.SIDE_W - 32
 
         self.anchor_list_rect = pg.Rect(sidebar_x, y_list, list_w, list_h)
+
+        # ===== área fixa da lista de ranges =====
+        y_ranges_title = self.anchor_list_rect.bottom + 14
+        y_ranges_list  = y_ranges_title + 22
+
+        ranges_h = self.ranges_visible * self.ranges_line_h + 10
+        ranges_w = list_w  # mesma largura das âncoras
+
+        self.ranges_list_rect = pg.Rect(sidebar_x, y_ranges_list, ranges_w, ranges_h)
+
+    ########################
+    ##  Helpers internos  ##
+    ########################
+
+    def _find_nearest_anchor(self, wx: float, wy: float) -> tuple[int | None, float]:
+        """Retorna (idx, dist) da âncora mais próxima do ponto (wx,wy)."""
+        
+        if not self.anchors:
+            return None, float("inf")
+        
+        best_i = None
+        best_d2 = float("inf")
+
+        for i, (ax, ay) in enumerate(self.anchors):
+            d2 = (ax - wx) ** 2 + (ay - wy) ** 2
+            if d2 < best_d2:
+                best_d2 = d2
+                best_i = i
+                
+        return best_i, math.sqrt(best_d2)
 
     def _scroll_anchor_list(self, delta: int) -> None:
         """delta > 0 desce, delta < 0 sobe."""
@@ -412,6 +538,149 @@ class UwbTestScreen:
             handle_h = max(10, int(bar_h * frac))
             max_scroll = n - self.anchor_visible
             t = 0.0 if max_scroll == 0 else (self.anchor_scroll / max_scroll)
+            handle_y = bar_y + int((bar_h - handle_h) * t)
+
+            pg.draw.rect(self.screen, (180, 180, 180), (bar_x, handle_y, bar_w, handle_h))
+
+    def _compute_ranges_tick(self) -> None:
+        '''Computa as medições de distância UWB para todas as âncoras na posição atual da TAG.'''
+        tag = np.array(self.tag_pos, dtype=float)
+
+        out = []
+        for i, (ax, ay) in enumerate(self.anchors):
+            a = np.array([ax, ay], dtype=float)
+            res = self.ranging.measure_range(a, tag)
+            out.append({
+                "i": i,
+                "r_true": res.r_true,
+                "r_meas": res.r_meas,
+                "nlos": res.is_nlos,
+                "bias": res.bias,
+                "noise": res.noise,
+            })
+
+        self.last_ranges = out
+        self._scroll_ranges_list(0)  # ajusta scroll se necessário
+
+    def _apply_dt_from_box(self) -> None:
+        '''Lê o valor do textbox_dt e aplica na configuração do modelo de ranging.'''
+        try:
+            dt_s = float(self.textbox_dt.text.replace(",", "."))
+            # limites pra evitar travar/ficar lento demais
+            dt_s = max(0.01, min(5.0, dt_s))
+            self.ranging_cfg.dt = dt_s
+            self.textbox_dt.set_text(f"{dt_s:.2f}")
+            # reinicia acumulador para não “disparar” múltiplos ticks de uma vez
+            self._tick_acc = 0.0
+            print(f"[UWB] dt entre medições = {dt_s:.2f}s")
+        except ValueError:
+            print("[UWB] dt inválido.")
+            # opcional: volta ao valor atual
+            self.textbox_dt.set_text(f"{self.ranging_cfg.dt:.2f}")
+
+    def _draw_map_overlay(self) -> None:
+        """Painel pequeno no canto superior direito do MAPA com status dos toggles."""
+        cam_w = self.cam.viewport[0]
+
+        noise_txt = "ON" if self.ranging_cfg.noise_enabled else "OFF"
+        nlos_on = self.ranging_cfg.nlos_prob > 0
+        drop_on = self.ranging_cfg.dropout_prob > 0
+        q = self.ranging_cfg.quantize_step
+        q_txt = "OFF" if q is None else f"{q:.3f}m"
+
+        lines = [
+            f"dt: {self.ranging_cfg.dt:.2f}s",
+            f"Noise [N]: {noise_txt}",
+            f"NLOS  [L]: {'ON' if nlos_on else 'OFF'}",
+            f"Drop  [P]: {'ON' if drop_on else 'OFF'}",
+            f"Quant [Q]: {q_txt}",
+            f"H: ranges {'ON' if self.show_ranges else 'OFF'}",
+        ]
+
+        pad = 8
+        line_h = 18
+
+        # tamanho do painel baseado no maior texto
+        w = max(self.font.size(s)[0] for s in lines) + 2 * pad
+        h = len(lines) * line_h + 2 * pad
+
+        # canto superior direito do MAPA (com margem)
+        x = cam_w - w - 12
+        y = 12
+
+        # fundo semi-transparente
+        panel = pg.Surface((w, h), pg.SRCALPHA)
+        panel.fill((255, 255, 255, 210))
+        self.screen.blit(panel, (x, y))
+        pg.draw.rect(self.screen, (40, 40, 40), (x, y, w, h), 1)
+
+        yy = y + pad
+        for s in lines:
+            self.screen.blit(self.font.render(s, True, (20, 20, 20)), (x + pad, yy))
+            yy += line_h
+
+    def _scroll_ranges_list(self, delta: int) -> None:
+        n = len(self.last_ranges)
+        if n <= self.ranges_visible:
+            self.ranges_scroll = 0
+            return
+
+        max_scroll = n - self.ranges_visible
+        self.ranges_scroll = max(0, min(max_scroll, self.ranges_scroll + delta))
+
+
+    def _draw_ranges_panel(self) -> None:
+        """Desenha painel rolável de ranges dentro de self.ranges_list_rect com clip."""
+        if not self.ranges_list_rect:
+            return
+
+        r = self.ranges_list_rect
+        x = r.x
+        y = r.y
+
+        # título acima do retângulo
+        title_y = y - 22
+        self.screen.blit(self.font.render("Ranges (último tick):", True, BLACK), (x, title_y))
+
+        # caixa
+        pg.draw.rect(self.screen, (255, 255, 255), r)
+        pg.draw.rect(self.screen, (200, 200, 200), r, 1)
+
+        # recorte (CLIP) para não “vazar” texto
+        prev_clip = self.screen.get_clip()
+        self.screen.set_clip(r)
+
+        start = self.ranges_scroll
+        end = min(len(self.last_ranges), start + self.ranges_visible)
+        visible = self.last_ranges[start:end]
+
+        pad = 6
+        yy = y + pad
+
+        for item in visible:
+            r_meas = item["r_meas"]
+            meas_txt = "drop" if r_meas is None else f"{r_meas:.3f}m"
+            flag = "NLOS" if item["nlos"] else "LOS"
+            line = f"{item['i']:02d}: true={item['r_true']:.3f}  meas={meas_txt}  {flag}"
+            self.screen.blit(self.font.render(line, True, BLACK), (x + pad, yy))
+            yy += self.ranges_line_h
+
+        self.screen.set_clip(prev_clip)
+
+        # mini scrollbar
+        n = len(self.last_ranges)
+        if n > self.ranges_visible:
+            bar_w = 6
+            bar_x = r.right - bar_w - 2
+            bar_y = r.y + 2
+            bar_h = r.height - 4
+
+            pg.draw.rect(self.screen, (235, 235, 235), (bar_x, bar_y, bar_w, bar_h))
+
+            frac = self.ranges_visible / n
+            handle_h = max(10, int(bar_h * frac))
+            max_scroll = n - self.ranges_visible
+            t = 0.0 if max_scroll == 0 else (self.ranges_scroll / max_scroll)
             handle_y = bar_y + int((bar_h - handle_h) * t)
 
             pg.draw.rect(self.screen, (180, 180, 180), (bar_x, handle_y, bar_w, handle_h))
