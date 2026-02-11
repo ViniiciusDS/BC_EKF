@@ -6,11 +6,15 @@ from typing import Any
 import pygame as pg
 import math
 import numpy as np
+import os
 
 from src.ui.drawing import draw_axes, draw_grid
 from src.ui.ui_elements import TextBoxDropdown
 from src.ui.botton import Button
 from src.uwb.ranging_model import RangingConfig, UwbRangingModel
+from src.uwb.twr_protocols import AntennaDelayModel, ClockModel, TWRConfig, TWRMode, DS_TWR_Protocol, SS_TWR_Protocol
+from src.uwb.dataset import UwbFrame, RangeSample, UwbDatasetLogger, UwbReplay
+from src.uwb.node_params import NodeParams
 
 # Cores 
 WHITE = (255, 255, 255)
@@ -49,6 +53,8 @@ class UwbTestScreen:
         self.font = font
         self.bigfont = bigfont
         self.SIDE_W = side_width
+
+        self.seed = 123  # semente para RNG (reprodutibilidade)
 
         # ===== Estado UWB Test =====
         self.anchors: list[tuple[float, float]] = []  # (x,y) em coordenadas de mundo
@@ -90,7 +96,7 @@ class UwbTestScreen:
 
         # ===== Configuração do modelo de ranging UWB =====
         self.ranging_cfg = RangingConfig(dt=0.10)
-        self.ranging = UwbRangingModel(self.ranging_cfg, seed=123)
+        self.ranging = UwbRangingModel(self.ranging_cfg, seed=self.seed)
 
         self._tick_acc = 0.0
         self.last_ranges = []  # lista de dicts/resultados p/ HUD
@@ -115,6 +121,64 @@ class UwbTestScreen:
         # ===== Toggle para exibir ranges =====
         self.show_ranges: bool = False
 
+        # ===== Protocolo TWR =====
+        self.twr_cfg = TWRConfig(mode=TWRMode.DS_TWR)
+        self.twr_ds = DS_TWR_Protocol(self.twr_cfg, seed=self.seed)
+        self.twr_ss = SS_TWR_Protocol(self.twr_cfg, seed=self.seed)
+        self.twr = self.twr_ds  # ativo
+
+        # ===== Step de ajustes (para hotkeys) =====
+        self.ppm_step = 1.0          # 1 ppm por tecla
+        self.delay_step_ns = 1.0     # 1 ns por tecla
+
+        # ===== Logger / Replay =====
+        self.logger = UwbDatasetLogger()
+        self.replay: UwbReplay | None = None
+        self.use_replay: bool = False
+        self.sim_time_s: float = 0.0
+
+        # caminho padrão 
+        self.last_saved_path: str | None = None
+
+        # ===== params por tag/âncora =====
+        self.tag_params = NodeParams()
+        self.anchor_params: dict[int, NodeParams] = {}  # key = anchor_id (índice)
+
+        # seleção de âncora (pra editar no painel)
+        self.selected_anchor: int | None = None
+
+        # duplo clique na lista de âncoras (seleção/edição)
+        self._last_anchor_click_ms: int = 0
+        self._last_anchor_click_id: int | None = None
+        self._double_click_ms: int = 350
+
+        # editor modal de parâmetros da âncora selecionada
+        self.anchor_editor_open: bool = False
+        self.anchor_editor_id: int | None = None
+        self.anchor_editor_rect: pg.Rect | None = None
+
+        self.textbox_a_ppm = TextBoxDropdown(pg.Rect(0, 0, 90, 26), self.font, options=[], placeholder="ppm")
+        self.textbox_a_tx = TextBoxDropdown(pg.Rect(0, 0, 90, 26), self.font, options=[], placeholder="tx (ns)")
+        self.textbox_a_rx = TextBoxDropdown(pg.Rect(0, 0, 90, 26), self.font, options=[], placeholder="rx (ns)")
+        self.textbox_a_bias = TextBoxDropdown(pg.Rect(0, 0, 90, 26), self.font, options=[], placeholder="bias (m)")
+
+        self.btn_anchor_apply = Button(
+            rect=(0, 0, 90, 26),
+            text="Aplicar",
+            font=self.font,
+            bg=(235, 250, 235),
+        )
+        self.btn_anchor_close = Button(
+            rect=(0, 0, 90, 26),
+            text="Fechar",
+            font=self.font,
+            bg=(250, 235, 235),
+        )
+
+        # ===== Seed/Reprodutibilidade =====
+        self.textbox_seed = TextBoxDropdown
+        
+
 
 
     def handle_events(self, events) -> UwbActions:
@@ -128,6 +192,61 @@ class UwbTestScreen:
                 return actions
             
             cam_w = self.cam.viewport[0]
+
+            # ============================
+            # MODAL: editor de âncora
+            # ============================
+            if self.anchor_editor_open:
+                # 1) Teclado: se algum textbox do editor está ativo, ele precisa receber KEYDOWN
+                if event.type == pg.KEYDOWN:
+                    for tb in (self.textbox_a_ppm, self.textbox_a_tx, self.textbox_a_rx, self.textbox_a_bias):
+                        if getattr(tb, "active", False):
+                            tb.handle_event(event)
+                            break
+                    # ESC fecha o modal
+                    if event.key == pg.K_ESCAPE:
+                        self._close_anchor_editor()
+                    # Se o modal está aberto, não deixa o resto do sistema “roubar” teclas
+                    continue
+
+                # 2) Mouse: clique para focar nos textboxes / botões
+                if event.type == pg.MOUSEBUTTONDOWN and event.button == 1:
+                    mx, my = event.pos
+
+                    # primeiro: clicar nos textboxes dá foco
+                    consumed = False
+                    for tb in (self.textbox_a_ppm, self.textbox_a_tx, self.textbox_a_rx, self.textbox_a_bias):
+                        before = getattr(tb, "active", False)
+                        tb.handle_event(event)
+                        after = getattr(tb, "active", False)
+                        if after and not before:
+                            consumed = True
+                            break
+                        # ou: se o clique foi dentro do rect dele, já consideramos consumido
+                        if tb.rect.collidepoint((mx, my)):
+                            consumed = True
+                            break
+                    if consumed:
+                        continue
+
+                    # botões
+                    if self.btn_anchor_apply.hit((mx, my)):
+                        self._apply_anchor_editor()
+                        continue
+                    if self.btn_anchor_close.hit((mx, my)):
+                        self._close_anchor_editor()
+                        continue
+
+                    # clique fora fecha
+                    if self.anchor_editor_rect and (not self.anchor_editor_rect.collidepoint((mx, my))):
+                        self._close_anchor_editor()
+                        continue
+
+                    # se clicou dentro mas não em textbox/botão, não propaga
+                    continue
+
+                # mouse wheel / outros eventos: não propaga enquanto modal está aberto
+                continue
 
             # ===== ZOOM NO MAPA (scroll) =====
             if event.type == pg.MOUSEWHEEL:
@@ -212,7 +331,72 @@ class UwbTestScreen:
                     print(f"[UWB] Quantize: {'OFF' if q is None else f'{q:.3f}m'}")
 
                 elif event.key == pg.K_h:
+                    # toggle de exibição do painel de ranges
                     self.show_ranges = not self.show_ranges
+                
+                elif event.key == pg.K_t:
+                    # alterna protocolo TWR
+                    new_mode = TWRMode.SS_TWR if self.twr_cfg.mode == TWRMode.DS_TWR else TWRMode.DS_TWR
+                    self._set_protocol(new_mode)
+                
+                elif event.key == pg.K_1:
+                    self._add_ppm("tag", -self.ppm_step)
+                elif event.key == pg.K_2:
+                    self._add_ppm("tag", +self.ppm_step)
+                elif event.key == pg.K_3:
+                    self._add_ppm("anchor", -self.ppm_step)
+                elif event.key == pg.K_4:
+                    self._add_ppm("anchor", +self.ppm_step)
+                elif event.key == pg.K_5:
+                    which = "rx" if (pg.key.get_mods() & pg.KMOD_SHIFT) else "tx"
+                    self._add_delay_ns("tag", -self.delay_step_ns, which=which)
+
+                elif event.key == pg.K_6:
+                    which = "rx" if (pg.key.get_mods() & pg.KMOD_SHIFT) else "tx"
+                    self._add_delay_ns("tag", +self.delay_step_ns, which=which)
+
+                elif event.key == pg.K_7:
+                    which = "rx" if (pg.key.get_mods() & pg.KMOD_SHIFT) else "tx"
+                    self._add_delay_ns("anchor", -self.delay_step_ns, which=which)
+
+                elif event.key == pg.K_8:
+                    which = "rx" if (pg.key.get_mods() & pg.KMOD_SHIFT) else "tx"
+                    self._add_delay_ns("anchor", +self.delay_step_ns, which=which)
+
+                elif event.key == pg.K_r:
+                    # R: start/stop recording
+                    if not self.logger.enabled:
+                        self.logger.start()
+                        print("[UWB] REC ON")
+                    else:
+                        self.logger.stop()
+                        print("[UWB] REC OFF")
+
+                elif event.key == pg.K_s:
+                    # S: save dataset
+                    out_dir = "datasets"
+                    os.makedirs(out_dir, exist_ok=True)
+                    path = os.path.join(out_dir, f"uwb_dataset_{int(pg.time.get_ticks())}.jsonl")
+                    self.last_saved_path = self.logger.save_jsonl(path)
+                    print(f"[UWB] Saved: {self.last_saved_path}")
+
+                elif event.key == pg.K_o:
+                    # O: load last saved and enable replay
+                    if self.last_saved_path:
+                        frames = UwbDatasetLogger.load_jsonl(self.last_saved_path)
+                        self.replay = UwbReplay(frames)
+                        self.replay.play()
+                        self.use_replay = True
+                        print(f"[UWB] Replay ON ({len(frames)} frames)")
+
+                elif event.key == pg.K_i:
+                    # I: toggle replay on/off (mantém carregado)
+                    if self.replay:
+                        self.use_replay = not self.use_replay
+                        print(f"[UWB] Replay {'ON' if self.use_replay else 'OFF'}")
+
+
+                
             
             # ===== PAN COM BOTÃO DO MEIO =====
             if event.type == pg.MOUSEBUTTONDOWN and event.button == 2:
@@ -240,6 +424,20 @@ class UwbTestScreen:
 
                 # clique no HUD
                 if mx >= cam_w:
+
+                    # clique na lista de âncoras (seleção / duplo clique para editar)
+                    if self.anchor_list_rect and self.anchor_list_rect.collidepoint((mx, my)):
+                        idx = self._anchor_list_index_at((mx, my))
+                        if idx is not None:
+                            now_ms = pg.time.get_ticks()
+                            if (self._last_anchor_click_id == idx) and ((now_ms - self._last_anchor_click_ms) <= self._double_click_ms):
+                                self._open_anchor_editor(idx)
+                            else:
+                                self.selected_anchor = idx
+                            self._last_anchor_click_id = idx
+                            self._last_anchor_click_ms = now_ms
+                            continue
+
                     if self.textbox_ax.handle_event(event):  # foco
                         continue
                     if self.textbox_ay.handle_event(event):
@@ -250,6 +448,9 @@ class UwbTestScreen:
                             x = float(self.textbox_ax.text.replace(",", "."))
                             y = float(self.textbox_ay.text.replace(",", "."))
                             self.anchors.append((x, y))
+                            aid = len(self.anchors) - 1
+                            self.anchor_params[aid] = NodeParams()
+                            self.selected_anchor = aid
                         except ValueError:
                             print("Coordenadas inválidas.")
                         continue
@@ -293,6 +494,9 @@ class UwbTestScreen:
                 # LMB: adiciona ÂNCORA
                 if event.button == 1:
                     self.anchors.append((wx, wy))
+                    aid = len(self.anchors) - 1
+                    self.anchor_params[aid] = NodeParams()
+                    self.selected_anchor = aid
                     continue
 
                 # RMB: remove ÂNCORA mais próxima (se estiver perto)
@@ -300,22 +504,78 @@ class UwbTestScreen:
                     idx, d = self._find_nearest_anchor(wx, wy)
                     if idx is not None and d <= self.remove_radius_m:
                         self.anchors.pop(idx)
+                        # reindexa params pois o índice mudou
+                        new_params: dict[int, NodeParams] = {}
+                        for new_i in range(len(self.anchors)):
+                            # o item antigo era new_i se new_i < idx, senão era new_i+1
+                            old_i = new_i if new_i < idx else new_i + 1
+                            if old_i in self.anchor_params:
+                                new_params[new_i] = self.anchor_params[old_i]
+                        self.anchor_params = new_params
+
+                        if self.selected_anchor is not None:
+                            if self.selected_anchor == idx:
+                                self.selected_anchor = None
+                            elif self.selected_anchor > idx:
+                                self.selected_anchor -= 1
                     continue
 
         return actions
 
     def update(self, dt: float) -> None:
+        ''' Atualiza o estado da simulação. Se estiver em replay, avança o tempo simulado e aplica os frames.'''
         self.textbox_ax.update(dt)
         self.textbox_ay.update(dt)
         self.textbox_dt.update(dt)
 
-        # tick do modelo de ranging UWB
-        self._tick_acc += dt
-        while self._tick_acc >= self.ranging_cfg.dt:
-            self._tick_acc -= self.ranging_cfg.dt
-            self._compute_ranges_tick()
+        # tempo simulado (opcional)
+        self.sim_time_s += dt
 
-        pass
+        # -------- Proteções anti-travamento --------
+        # 1) cap no dt do frame (evita alt-tab / troca de tela explodir)
+        dt = min(dt, 0.25)  # 250ms máximo por frame
+
+        # 2) dt do tick sempre válido
+        tick_dt = float(self.ranging_cfg.dt) if self.ranging_cfg.dt else 0.10
+        tick_dt = max(0.01, min(5.0, tick_dt))  # garante >0
+
+        # acumula
+        self._tick_acc += dt
+
+        # 3) cap de passos por frame (evita "spiral of death")
+        max_steps = 50
+        steps = 0
+
+        while self._tick_acc >= tick_dt and steps < max_steps:
+            self._tick_acc -= tick_dt
+            steps += 1
+
+            if self.use_replay and self.replay:
+                fr = self.replay.step()
+                if fr is not None:
+                    self.tag_pos = (fr.tag_xy[0], fr.tag_xy[1])
+                    self.anchors = list(fr.anchors_xy)
+                    self.last_ranges = [{
+                        "i": rs.anchor_id,
+                        "r_true": rs.r_true_m,
+                        "r_meas": rs.r_est_m,
+                        "nlos": rs.is_nlos,
+                        "dropped": rs.dropped,
+                        "tof_true": rs.tof_true_s,
+                        "tof_est": rs.tof_est_s,
+                    } for rs in fr.ranges]
+                    self._scroll_ranges_list(0)
+                else:
+                    self.use_replay = False
+            else:
+                self._compute_ranges_tick()
+
+        # se estourou o cap, descarta o resto (senão fica travando pra sempre)
+        if steps >= max_steps:
+            self._tick_acc = 0.0
+            print("[UWB] Warning: max_steps hit, dropping accumulated time")
+        
+        
 
     def draw(self) -> None:
         # Fundo geral
@@ -390,6 +650,10 @@ class UwbTestScreen:
 
         if self.show_ranges:
             self._draw_ranges_panel()
+
+        if self.anchor_editor_open and self.anchor_editor_rect:
+            self._draw_anchor_editor() 
+        
 
 
                 
@@ -518,9 +782,15 @@ class UwbTestScreen:
         yy = y + pad
 
         for i, (ax, ay) in enumerate(visible, start=start):
-            txt = self.font.render(f"{i:02d}: ({ax:.2f}, {ay:.2f})", True, BLACK)
+            # destaca se for a âncora selecionada
+            row_rect = pg.Rect(x + 1, yy - 2, r.w - 2, self.anchor_line_h)
+            if i == self.selected_anchor:
+                pg.draw.rect(self.screen, (225, 235, 255), row_rect)
+
+            txt = self.font.render(f"{i:02d}: x={ax:.2f}, y={ay:.2f}", True, BLACK)
             self.screen.blit(txt, (x + pad, yy))
             yy += self.anchor_line_h
+
 
         # mini “scrollbar” visual (opcional, mas ajuda muito)
         n = len(self.anchors)
@@ -542,6 +812,126 @@ class UwbTestScreen:
 
             pg.draw.rect(self.screen, (180, 180, 180), (bar_x, handle_y, bar_w, handle_h))
 
+    def _anchor_list_index_at(self, pos: tuple[int, int]) -> int | None:
+        """Retorna o índice global da âncora (0..N-1) sob o mouse na lista rolável."""
+        if not self.anchor_list_rect:
+            return None
+        r = self.anchor_list_rect
+        if not r.collidepoint(pos):
+            return None
+
+        pad = 6
+        x, y = pos
+        rel_y = y - (r.y + pad)
+        if rel_y < 0:
+            return None
+
+        row = int(rel_y // self.anchor_line_h)
+        idx = self.anchor_scroll + row
+        if 0 <= idx < len(self.anchors):
+            if idx < self.anchor_scroll + self.anchor_visible:
+                return idx
+        return None
+
+    def _open_anchor_editor(self, anchor_id: int) -> None:
+        """Abre editor modal para editar NodeParams da âncora anchor_id."""
+        if anchor_id < 0 or anchor_id >= len(self.anchors):
+            return
+
+        self.selected_anchor = anchor_id
+        self.anchor_editor_open = True
+        self.anchor_editor_id = anchor_id
+
+        # define rect do editor (modal) sobre a área da lista de âncoras
+        if self.anchor_list_rect:
+            r = self.anchor_list_rect
+            self.anchor_editor_rect = pg.Rect(r.x, r.y, r.w, 170)
+        else:
+            cam_w = self.cam.viewport[0]
+            self.anchor_editor_rect = pg.Rect(cam_w + 16, 200, self.SIDE_W - 32, 170)
+
+        p = self.anchor_params.get(anchor_id, NodeParams())
+
+        self.textbox_a_ppm.set_text(f"{float(p.clock.drift_ppm):.3f}")
+        self.textbox_a_tx.set_text(f"{float(p.ant.tx_ns):.3f}")
+        self.textbox_a_rx.set_text(f"{float(p.ant.rx_ns):.3f}")
+        self.textbox_a_bias.set_text(f"{float(p.range_bias_m):.4f}")
+
+        ex = self.anchor_editor_rect.x + 10
+        ey = self.anchor_editor_rect.y + 30
+
+        self.textbox_a_ppm.rect.topleft = (ex + 70, ey); ey += 32
+        self.textbox_a_tx.rect.topleft = (ex + 70, ey); ey += 32
+        self.textbox_a_rx.rect.topleft = (ex + 70, ey); ey += 32
+        self.textbox_a_bias.rect.topleft = (ex + 70, ey); ey += 40
+
+        self.btn_anchor_apply.rect.topleft = (ex, ey)
+        self.btn_anchor_close.rect.topleft = (ex + 100, ey)
+
+        # deixa o campo ppm já pronto pra digitar
+        for tb in (self.textbox_a_ppm, self.textbox_a_tx, self.textbox_a_rx, self.textbox_a_bias):
+            tb.active = False
+        self.textbox_a_ppm.active = True
+
+    def _close_anchor_editor(self) -> None:
+        '''Fecha o editor modal de âncora e descarta mudanças não aplicadas.'''
+        self.anchor_editor_open = False
+        self.anchor_editor_id = None
+        self.anchor_editor_rect = None
+        for tb in (self.textbox_a_ppm, self.textbox_a_tx, self.textbox_a_rx, self.textbox_a_bias):
+            tb.active = False
+
+    def _apply_anchor_editor(self) -> None:
+        """Aplica valores do editor em self.anchor_params[anchor_id]."""
+        if self.anchor_editor_id is None:
+            return
+        aid = self.anchor_editor_id
+        if aid < 0 or aid >= len(self.anchors):
+            return
+
+        p = self.anchor_params.get(aid, NodeParams())
+
+        def _to_float(s: str) -> float:
+            return float(s.replace(",", ".").strip())
+
+        try:
+            p.clock.drift_ppm = _to_float(self.textbox_a_ppm.text)
+            p.ant.tx_ns = _to_float(self.textbox_a_tx.text)
+            p.ant.rx_ns = _to_float(self.textbox_a_rx.text)
+            p.range_bias_m = _to_float(self.textbox_a_bias.text)
+            self.anchor_params[aid] = p
+        except ValueError:
+            print("[UWB] Valores inválidos no editor da âncora.")
+
+    def _draw_anchor_editor(self) -> None:
+        ''' Desenha o editor modal de parâmetros da âncora selecionada, se estiver aberto.'''
+        if not (self.anchor_editor_open and self.anchor_editor_rect):
+            return
+
+        r = self.anchor_editor_rect
+
+        pg.draw.rect(self.screen, (252, 252, 252), r)
+        pg.draw.rect(self.screen, (170, 170, 170), r, 1)
+
+        aid = self.anchor_editor_id if self.anchor_editor_id is not None else -1
+        title = self.font.render(f"Editar Âncora {aid:02d}", True, BLACK)
+        self.screen.blit(title, (r.x + 10, r.y + 8))
+
+        lx = r.x + 10
+        ly = r.y + 34
+        self.screen.blit(self.font.render("ppm:", True, BLACK), (lx, ly)); ly += 32
+        self.screen.blit(self.font.render("tx(ns):", True, BLACK), (lx, ly)); ly += 32
+        self.screen.blit(self.font.render("rx(ns):", True, BLACK), (lx, ly)); ly += 32
+        self.screen.blit(self.font.render("bias(m):", True, BLACK), (lx, ly))
+
+        self.textbox_a_ppm.draw(self.screen)
+        self.textbox_a_tx.draw(self.screen)
+        self.textbox_a_rx.draw(self.screen)
+        self.textbox_a_bias.draw(self.screen)
+
+        self.btn_anchor_apply.draw(self.screen)
+        self.btn_anchor_close.draw(self.screen)
+
     def _compute_ranges_tick(self) -> None:
         '''Computa as medições de distância UWB para todas as âncoras na posição atual da TAG.'''
         tag = np.array(self.tag_pos, dtype=float)
@@ -549,18 +939,81 @@ class UwbTestScreen:
         out = []
         for i, (ax, ay) in enumerate(self.anchors):
             a = np.array([ax, ay], dtype=float)
-            res = self.ranging.measure_range(a, tag)
+
+            # parâmetros por nó (âncora i e tag)
+            p_anc = self.anchor_params.get(i, NodeParams())
+            p_tag = self.tag_params
+
+            clock_anchor = ClockModel(ppm=float(p_anc.clock.drift_ppm))
+            clock_tag = ClockModel(ppm=float(p_tag.clock.drift_ppm))
+
+            delay_anchor = AntennaDelayModel(tx_s=float(p_anc.ant.tx_s()), rx_s=float(p_anc.ant.rx_s()))
+            delay_tag = AntennaDelayModel(tx_s=float(p_tag.ant.tx_s()), rx_s=float(p_tag.ant.rx_s()))
+
+            # bias por âncora, campo global do canal e restauramos ao final
+            _prev_bias = float(getattr(self.ranging, "global_bias", 0.0))
+            self.ranging.global_bias = float(p_anc.range_bias_m)
+
+            res = self.twr.simulate(
+                    a_xy=a, tag_xy=tag, channel=self.ranging,
+                    clock_anchor=clock_anchor,
+                    clock_tag=clock_tag,
+                    delay_anchor=delay_anchor,
+                    delay_tag=delay_tag,
+                )
+
+            self.ranging.global_bias = _prev_bias
+
             out.append({
                 "i": i,
-                "r_true": res.r_true,
-                "r_meas": res.r_meas,
+                "r_true": res.r_true_m,
+                "r_meas": res.r_est_m,   # estimativa via DS-TWR
                 "nlos": res.is_nlos,
-                "bias": res.bias,
-                "noise": res.noise,
+                "dropped": res.dropped,
+                # debug opcional:
+                "tof_true": res.tof_true_s,
+                "tof_est": res.tof_est_s,
             })
 
+        # salva também um frame padronizado (logger)
+        if self.logger.enabled:
+            protocol_name = type(self.twr).__name__  # ex: DS_TWR_Protocol
+            # snapshot de config 
+            cfg_snapshot = {
+                "dt": self.ranging_cfg.dt,
+                "noise_enabled": self.ranging_cfg.noise_enabled,
+                "sigma_los": self.ranging_cfg.sigma_los,
+                "sigma_nlos": self.ranging_cfg.sigma_nlos,
+                "nlos_prob": self.ranging_cfg.nlos_prob,
+                "dropout_prob": self.ranging_cfg.dropout_prob,
+                "quantize_step": self.ranging_cfg.quantize_step,
+                "protocol": protocol_name,
+            }
+
+            ranges = []
+            for item in out:
+                ranges.append(RangeSample(
+                    anchor_id=item["i"],
+                    r_true_m=float(item["r_true"]),
+                    r_est_m=None if item["r_meas"] is None else float(item["r_meas"]),
+                    is_nlos=bool(item["nlos"]),
+                    dropped=bool(item.get("dropped", item["r_meas"] is None)),
+                    tof_true_s=item.get("tof_true"),
+                    tof_est_s=item.get("tof_est"),
+                ))
+
+            frame = UwbFrame(
+                t_sim_s=float(self.sim_time_s),
+                tag_xy=(float(self.tag_pos[0]), float(self.tag_pos[1])),
+                anchors_xy=[(float(ax), float(ay)) for (ax, ay) in self.anchors],
+                protocol=protocol_name,
+                cfg=cfg_snapshot,
+                ranges=ranges,
+            )
+            self.logger.add(frame)
+
         self.last_ranges = out
-        self._scroll_ranges_list(0)  # ajusta scroll se necessário
+        self._scroll_ranges_list(0)
 
     def _apply_dt_from_box(self) -> None:
         '''Lê o valor do textbox_dt e aplica na configuração do modelo de ranging.'''
@@ -587,6 +1040,28 @@ class UwbTestScreen:
         drop_on = self.ranging_cfg.dropout_prob > 0
         q = self.ranging_cfg.quantize_step
         q_txt = "OFF" if q is None else f"{q:.3f}m"
+        proto_txt = self.twr_cfg.mode.value
+
+        # overlay baseado em NodeParams
+        tag_ppm = float(self.tag_params.clock.drift_ppm)
+
+        # âncora selecionada (fallback: 0)
+        sel = self.selected_anchor
+        if sel is None:
+            sel = 0 if len(self.anchors) > 0 else None
+
+        tag_tx_ns = float(self.tag_params.ant.tx_ns)
+        tag_rx_ns = float(self.tag_params.ant.rx_ns)
+
+        if sel is not None and sel in self.anchor_params:
+            ap = self.anchor_params[sel]
+            anc_ppm = float(ap.clock.drift_ppm)
+            anc_tx_ns = float(ap.ant.tx_ns)
+            anc_rx_ns = float(ap.ant.rx_ns)
+        else:
+            anc_ppm = 0.0
+            anc_tx_ns = 0.0
+            anc_rx_ns = 0.0
 
         lines = [
             f"dt: {self.ranging_cfg.dt:.2f}s",
@@ -595,6 +1070,11 @@ class UwbTestScreen:
             f"Drop  [P]: {'ON' if drop_on else 'OFF'}",
             f"Quant [Q]: {q_txt}",
             f"H: ranges {'ON' if self.show_ranges else 'OFF'}",
+            f"T: protocol {proto_txt}",
+            f"Tag ppm [1/2]: {tag_ppm:+.1f} ppm",
+            f"Anc ppm [3/4]: {anc_ppm:+.1f} ppm",
+            f"Tag delay tx/rx [5/6]: {tag_tx_ns:.1f}/{tag_rx_ns:.1f} ns",
+            f"Anc delay tx/rx [7/8]: {anc_tx_ns:.1f}/{anc_rx_ns:.1f} ns",
         ]
 
         pad = 8
@@ -620,6 +1100,7 @@ class UwbTestScreen:
             yy += line_h
 
     def _scroll_ranges_list(self, delta: int) -> None:
+        """delta > 0 desce, delta < 0 sobe."""
         n = len(self.last_ranges)
         if n <= self.ranges_visible:
             self.ranges_scroll = 0
@@ -684,3 +1165,67 @@ class UwbTestScreen:
             handle_y = bar_y + int((bar_h - handle_h) * t)
 
             pg.draw.rect(self.screen, (180, 180, 180), (bar_x, handle_y, bar_w, handle_h))
+
+    def _set_protocol(self, mode: TWRMode) -> None:
+        '''
+        Alterna entre os protocolos DS-TWR e SS-TWR.
+        '''
+        self.twr_cfg.mode = mode
+        self.twr = self.twr_ds if mode == TWRMode.DS_TWR else self.twr_ss
+        print(f"[UWB] Protocol = {mode.value}")
+
+    def _active_protocols(self):
+        # para manter DS/SS sincronizados (mesmos clocks/delays)
+        return [self.twr_ds, self.twr_ss]
+
+    def _add_ppm(self, target: str, delta_ppm: float) -> None:
+        """
+        Atualiza ppm (drift) de acordo com o alvo:
+        - target == "tag": altera self.tag_params.clock.drift_ppm
+        - target == "anchor": altera self.anchor_params[selected_anchor].clock.drift_ppm
+        """
+        if target == "tag":
+            self.tag_params.clock.drift_ppm = float(self.tag_params.clock.drift_ppm) + float(delta_ppm)
+            return
+
+        if target == "anchor":
+            aid = self.selected_anchor
+            if aid is None:
+                aid = 0 if len(self.anchors) > 0 else None
+            if aid is None:
+                return
+            p = self.anchor_params.get(aid, NodeParams())
+            p.clock.drift_ppm = float(p.clock.drift_ppm) + float(delta_ppm)
+            self.anchor_params[aid] = p
+            return
+
+    def _add_delay_ns(self, target: str, delta_ns: float, which: str = "tx") -> None:
+        """
+        Ajusta delay em ns para tag ou âncora selecionada.
+        which: "tx" ou "rx"
+        """
+        if which not in ("tx", "rx"):
+            return
+
+        if target == "tag":
+            if which == "tx":
+                self.tag_params.ant.tx_ns = float(self.tag_params.ant.tx_ns) + float(delta_ns)
+            else:
+                self.tag_params.ant.rx_ns = float(self.tag_params.ant.rx_ns) + float(delta_ns)
+            return
+
+        if target == "anchor":
+            aid = self.selected_anchor
+            if aid is None:
+                aid = 0 if len(self.anchors) > 0 else None
+            if aid is None:
+                return
+            p = self.anchor_params.get(aid, NodeParams())
+            if which == "tx":
+                p.ant.tx_ns = float(p.ant.tx_ns) + float(delta_ns)
+            else:
+                p.ant.rx_ns = float(p.ant.rx_ns) + float(delta_ns)
+            self.anchor_params[aid] = p
+            return
+
+
