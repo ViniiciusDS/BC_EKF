@@ -15,6 +15,7 @@ from src.uwb.ranging_model import RangingConfig, UwbRangingModel
 from src.uwb.twr_protocols import AntennaDelayModel, ClockModel, TWRConfig, TWRMode, DS_TWR_Protocol, SS_TWR_Protocol
 from src.uwb.dataset import UwbFrame, RangeSample, UwbDatasetLogger, UwbReplay
 from src.uwb.node_params import NodeParams
+from src.uwb.experiment import ExperimentConfig
 
 # Cores 
 WHITE = (255, 255, 255)
@@ -54,7 +55,43 @@ class UwbTestScreen:
         self.bigfont = bigfont
         self.SIDE_W = side_width
 
-        self.seed = 123  # semente para RNG (reprodutibilidade)
+        # ===== Top Bar =====
+        self.topbar_h = 36
+        self.topbar_rect = pg.Rect(0, 0, self.screen.get_width(), self.topbar_h)
+
+        # paths "últimos"
+        self.last_saved_dataset_path: str | None = None
+        self.last_saved_experiment_path: str | None = None
+
+        # botões topbar (texto)
+        self.btn_tb_rec = Button(rect=(0, 0, 80, 26), text="REC: OFF", font=self.font, bg=(250, 235, 235))
+        self.btn_tb_save_ds = Button(rect=(0, 0, 140, 26), text="Salvar dataset", font=self.font, bg=(235, 245, 255))
+        self.btn_tb_load_ds = Button(rect=(0, 0, 160, 26), text="Carregar último ds", font=self.font, bg=(235, 245, 255))
+
+        self.btn_tb_save_exp = Button(rect=(0, 0, 160, 26), text="Salvar experimento", font=self.font, bg=(235, 255, 235))
+        self.btn_tb_load_exp = Button(rect=(0, 0, 170, 26), text="Carregar último exp", font=self.font, bg=(235, 255, 235))
+
+        self.btn_tb_rerun = Button(rect=(0, 0, 150, 26), text="Rodar novamente", font=self.font, bg=(245, 245, 245))
+
+        # ===== Seed/Reprodutibilidade =====
+        self.seed = 123  
+        self.textbox_seed = TextBoxDropdown(pg.Rect(0, 0, 90, 26), self.font, options=[], placeholder="seed")
+        self.textbox_seed.set_text(str(self.seed))
+
+        self.btn_apply_seed = Button(
+            rect=(0, 0, 120, 26),
+            text="Aplicar seed",
+            font=self.font,
+            bg=(235, 235, 250),
+        )
+
+        self.btn_reset_run = Button(
+            rect=(0, 0, 180, 26),
+            text="Reset (mesma seed)",
+            font=self.font,
+            bg=(245, 245, 245),
+        )
+
 
         # ===== Estado UWB Test =====
         self.anchors: list[tuple[float, float]] = []  # (x,y) em coordenadas de mundo
@@ -175,16 +212,16 @@ class UwbTestScreen:
             bg=(250, 235, 235),
         )
 
-        # ===== Seed/Reprodutibilidade =====
-        self.textbox_seed = TextBoxDropdown
-        
+        # y markers do layout (evita AttributeError no draw)
+        self._y_tools_title = 0
+        self._y_dt_title = 0
+        self._y_seed_title = 0
+
 
 
 
     def handle_events(self, events) -> UwbActions:
         actions = UwbActions()
-
-        self.layout_hud()
 
         for event in events:
             if event.type == pg.QUIT:
@@ -192,6 +229,59 @@ class UwbTestScreen:
                 return actions
             
             cam_w = self.cam.viewport[0]
+
+            # Top bar captura cliques primeiro
+            if event.type == pg.MOUSEBUTTONDOWN and event.button == 1:
+                mx, my = event.pos
+                if self.topbar_rect.collidepoint((mx, my)):
+                    # REC
+                    if self.btn_tb_rec.hit((mx, my)):
+                        if not self.logger.enabled:
+                            self.logger.start()
+                            print("[UWB] REC ON")
+                        else:
+                            self.logger.stop()
+                            print("[UWB] REC OFF")
+                        continue
+
+                    # salvar dataset
+                    if self.btn_tb_save_ds.hit((mx, my)):
+                        out_dir = "datasets"
+                        os.makedirs(out_dir, exist_ok=True)
+                        path = os.path.join(out_dir, f"uwb_dataset_{int(pg.time.get_ticks())}.jsonl")
+                        self.last_saved_dataset_path = self.logger.save_jsonl(path)
+                        self.last_saved_path = self.last_saved_dataset_path  # mantém compatível com teu hotkey O
+                        print(f"[UWB] Saved dataset: {self.last_saved_dataset_path}")
+                        continue
+
+                    # carregar último dataset
+                    if self.btn_tb_load_ds.hit((mx, my)):
+                        if self.last_saved_dataset_path:
+                            frames = UwbDatasetLogger.load_jsonl(self.last_saved_dataset_path)
+                            self.replay = UwbReplay(frames)
+                            self.replay.play()
+                            self.use_replay = True
+                            print(f"[UWB] Replay ON ({len(frames)} frames)")
+                        else:
+                            print("[UWB] Nenhum dataset salvo ainda.")
+                        continue
+
+                    # salvar experimento
+                    if self.btn_tb_load_exp.hit((mx, my)):
+                        self._load_last_experiment()
+                        continue
+
+                    if self.btn_tb_load_exp.hit((mx, my)):
+                        self._load_last_experiment()
+                        continue
+
+                    # rodar novamente
+                    if self.btn_tb_rerun.hit((mx, my)):
+                        self._reset_run_same_seed()
+                        continue
+
+                    # clicou na topbar mas não em botão
+                    continue
 
             # ============================
             # MODAL: editor de âncora
@@ -300,6 +390,8 @@ class UwbTestScreen:
                 if (not consumed) and self.textbox_ay.handle_event(event):
                     consumed = True
                 if (not consumed) and self.textbox_dt.handle_event(event):
+                    consumed = True
+                if (not consumed) and self.textbox_seed.handle_event(event):
                     consumed = True
 
                 # ENTER aplica dt se dt box estiver ativa (ou se acabou de confirmar)
@@ -468,6 +560,17 @@ class UwbTestScreen:
                         self._apply_dt_from_box()
                         continue
 
+                    if self.textbox_seed.handle_event(event):
+                        continue
+
+                    if self.btn_apply_seed.hit((mx, my)):
+                        self._apply_seed_from_box()
+                        continue
+
+                    if self.btn_reset_run.hit((mx, my)):
+                        self._reset_run_same_seed()
+                        continue
+
             if event.type == pg.MOUSEBUTTONDOWN:
                 mx, my = event.pos
 
@@ -581,11 +684,34 @@ class UwbTestScreen:
         # Fundo geral
         self.screen.fill(WHITE)
 
+        # Top bar (layout + draw)
+        self.layout_topbar()
+        pg.draw.rect(self.screen, (235, 235, 235), self.topbar_rect)
+        pg.draw.line(self.screen, (190, 190, 190), (0, self.topbar_h), (self.screen.get_width(), self.topbar_h), 1)
+
+        # status visual REC
+        if self.logger.enabled:
+            self.btn_tb_rec.text = "REC: ON"
+            self.btn_tb_rec.bg = (235, 255, 235)
+        else:
+            self.btn_tb_rec.text = "REC: OFF"
+            self.btn_tb_rec.bg = (250, 235, 235)
+
+        self.btn_tb_rec.draw(self.screen)
+        self.btn_tb_save_ds.draw(self.screen)
+        self.btn_tb_load_ds.draw(self.screen)
+        self.btn_tb_save_exp.draw(self.screen)
+        self.btn_tb_load_exp.draw(self.screen)
+        self.btn_tb_rerun.draw(self.screen)
+
         # Área do "mapa" (esquerda)
         cam_w = self.cam.viewport[0]
         cam_h = self.cam.viewport[1]
-        map_rect = pg.Rect(0, 0, cam_w, cam_h)
+        map_rect = pg.Rect(0, self.topbar_h, cam_w, cam_h-self.topbar_h)
         pg.draw.rect(self.screen, WHITE, map_rect)
+
+        prev_clip = self.screen.get_clip()
+        self.screen.set_clip(map_rect)
 
         # Mapa: grid + eixos
         draw_grid(self.screen, self.cam)
@@ -608,14 +734,15 @@ class UwbTestScreen:
         # Overlay de status (canto superior direito do mapa)
         self._draw_map_overlay()
 
+        self.screen.set_clip(prev_clip)
+
         # ===== Sidebar (direita) HUD / UI =====
-        pg.draw.rect(self.screen, (245, 245, 245), (cam_w, 0, self.SIDE_W, cam_h))
-        self.layout_hud()
+        pg.draw.rect(self.screen, (245, 245, 245), (cam_w, self.topbar_h, self.SIDE_W, cam_h - self.topbar_h))
 
         x = cam_w + 16
-        y = 18
+        y = self.topbar_h + 18
 
-        # Header e instruções (agora só texto, sem mexer nos rects dos botões)
+        # Header e instruções só texto
         self.screen.blit(self.bigfont.render("UWB — Testes", True, BLACK), (x, y))
         y += 32
         self.screen.blit(self.font.render("ESC: voltar ao menu", True, BLACK), (x, y))
@@ -630,9 +757,12 @@ class UwbTestScreen:
         self.screen.blit(self.font.render(f"Tag: x={tx:.2f}, y={ty:.2f}", True, BLACK), (x, y)); y += 20
         self.screen.blit(self.font.render(f"Âncoras: {len(self.anchors)}", True, BLACK), (x, y)); y += 20
 
-        # label das ferramentas (posição alinhada com layout_hud)
-        tools_label_y = self.textbox_ax.rect.y - 22
-        self.screen.blit(self.font.render("Adicionar por coordenadas:", True, BLACK), (x, tools_label_y))
+        # define layout dos controles a partir daqui
+        self.layout_hud(start_y=y + 12)
+
+        # labels alinhados ao layout (agora já existem)
+        self.screen.blit(self.font.render("Adicionar por coordenadas:", True, BLACK),
+                        (x, self._y_tools_title))
 
         # desenhar UI ELEMENTS
         self.textbox_ax.draw(self.screen)
@@ -640,10 +770,19 @@ class UwbTestScreen:
         self.btn_add_anchor_xy.draw(self.screen)
         self.btn_clear_anchors.draw(self.screen)
 
-        dt_label_y = self.textbox_dt.rect.y - 18
-        self.screen.blit(self.font.render("Intervalo entre medições UWB:", True, BLACK), (x, dt_label_y))
+        self.screen.blit(self.font.render("Intervalo entre medições UWB:", True, BLACK),
+                        (x, self._y_dt_title))
         self.textbox_dt.draw(self.screen)
         self.btn_apply_dt.draw(self.screen)
+
+        self.screen.blit(self.font.render("Semente (seed):", True, BLACK),
+                        (x, self._y_seed_title))
+        self.textbox_seed.draw(self.screen)
+        self.btn_apply_seed.draw(self.screen)
+
+        self.screen.blit(self.font.render("Reset (mesma seed):", True, BLACK),
+                        (x, self.btn_reset_run.rect.y - 18))
+        self.btn_reset_run.draw(self.screen)
 
         # lista rolável
         self._draw_anchor_list()
@@ -653,76 +792,122 @@ class UwbTestScreen:
 
         if self.anchor_editor_open and self.anchor_editor_rect:
             self._draw_anchor_editor() 
-        
 
+    def layout_topbar(self) -> None:
+        w = self.screen.get_width()
+        self.topbar_rect = pg.Rect(0, 0, w, self.topbar_h)
 
-                
+        x = 10
+        y = 5
+        gap = 8
 
-    def close(self) -> None:
-        
-        pass
+        self.btn_tb_rec.rect.topleft = (x, y); x += self.btn_tb_rec.rect.w + gap
+        self.btn_tb_save_ds.rect.topleft = (x, y); x += self.btn_tb_save_ds.rect.w + gap
+        self.btn_tb_load_ds.rect.topleft = (x, y); x += self.btn_tb_load_ds.rect.w + gap
 
-    def layout_hud(self):
+        x += 12  # separador visual
+
+        self.btn_tb_save_exp.rect.topleft = (x, y); x += self.btn_tb_save_exp.rect.w + gap
+        self.btn_tb_load_exp.rect.topleft = (x, y); x += self.btn_tb_load_exp.rect.w + gap
+
+        x += 12
+
+        self.btn_tb_rerun.rect.topleft = (x, y)
+
+    def layout_hud(self, start_y: int = 0):
         """Define posições dos elementos HUD/UI na sidebar direita."""
         cam_w = self.cam.viewport[0]
+        cam_h = self.cam.viewport[1]
         sidebar_x = cam_w + 16
 
-        y = 18
+        y = max(start_y, 18)
 
-        # Header
-        y += 32          # título
-        y += 18          # "ESC: voltar..."
-        y += 16          # espaço
-
-        # Instruções (3 linhas)
-        y += 22 * 4      # "Mapa:" + 3 linhas
-        y += 18          # espaço
-
-        # Estado (2 linhas)
-        y += 20 * 2
-        y += 14
+        # defaults (sempre definidos)
+        self._y_tools_title = y
+        self._y_dt_title = y
+        self._y_seed_title = y
 
         # ===== Ferramentas / Inputs =====
-        y += 22  # "Adicionar por coordenadas:"
-        y += 10
+        self._y_tools_title = y
+        y += 18  # espaço para o título
 
-        # textboxes
         self.textbox_ax.rect.topleft = (sidebar_x, y)
         self.textbox_ay.rect.topleft = (sidebar_x + self.textbox_ax.rect.w + 10, y)
         y += self.textbox_ax.rect.h + 8
 
-        # botões
         self.btn_add_anchor_xy.rect.topleft = (sidebar_x, y)
         y += self.btn_add_anchor_xy.rect.h + 8
 
         self.btn_clear_anchors.rect.topleft = (sidebar_x, y)
-        y += self.btn_clear_anchors.rect.h + 24
+        y += self.btn_clear_anchors.rect.h + 18
 
-        # dt entre medições
+        # dt
+        self._y_dt_title = y
+        y += 18
+
         self.textbox_dt.rect.topleft = (sidebar_x, y)
         self.btn_apply_dt.rect.topleft = (sidebar_x + self.textbox_dt.rect.w + 10, y)
-        y += self.textbox_dt.rect.h + 14
+        y += self.textbox_dt.rect.h + 8
 
-        # marca onde termina a parte de ferramentas
-        self._hud_y_after_tools = y
+        # seed
+        self._y_seed_title = y
+        y += 18
 
-        # ===== área fixa da lista rolável =====
+        self.textbox_seed.rect.topleft = (sidebar_x, y)
+        self.btn_apply_seed.rect.topleft = (sidebar_x + self.textbox_seed.rect.w + 10, y)
+        y += self.textbox_seed.rect.h + 8
+
+        self.btn_reset_run.rect.topleft = (sidebar_x, y)
+        y += self.btn_reset_run.rect.h + 16
+
+        # ----- listas dinâmicas -----
+        list_w = self.SIDE_W - 32
+        pad_bottom = 14
+
+        # calcula quanto espaço sobrou na sidebar
+        usable_bottom = cam_h  # cam_h é altura total da tela/viewport
+        available = usable_bottom - y - pad_bottom  
+
+        # reserva um mínimo para ranges e âncoras
+        min_anchor_h = 90
+        min_ranges_h = 110
+
+        # se show_ranges, divide espaço; senão, usa tudo pra âncoras
+        if self.show_ranges:
+            # 45% âncoras, 55% ranges (ajustável)
+            anchor_h = max(min_anchor_h, int(available * 0.42))
+            ranges_h = max(min_ranges_h, available - anchor_h - 30)
+        else:
+            anchor_h = max(min_anchor_h, available)
+            ranges_h = 0
+
+        # âncoras
         y_title = y
         y_list = y_title + 22
+        self._y_anchor_title = y
+        self.anchor_list_rect = pg.Rect(sidebar_x, y_list, list_w, max(60, anchor_h - 22))
 
-        list_h = self.anchor_visible * self.anchor_line_h + 10
-        list_w = self.SIDE_W - 32
+        # ranges (se habilitado)
+        y_after_anchor = self.anchor_list_rect.bottom + 14
+        if self.show_ranges:
+            y_ranges_title = y_after_anchor
+            y_ranges_list = y_ranges_title + 22
+            self.ranges_list_rect = pg.Rect(
+                sidebar_x, y_ranges_list, list_w,
+                max(70, ranges_h - 22)
+            )
+        else:
+            self.ranges_list_rect = None
 
-        self.anchor_list_rect = pg.Rect(sidebar_x, y_list, list_w, list_h)
+        # atualiza quantas linhas cabem (dinâmico)
+        self.anchor_visible = max(3, int((self.anchor_list_rect.height - 10) // self.anchor_line_h))
+        if self.ranges_list_rect:
+            self.ranges_visible = max(3, int((self.ranges_list_rect.height - 10) // self.ranges_line_h))
 
-        # ===== área fixa da lista de ranges =====
-        y_ranges_title = self.anchor_list_rect.bottom + 14
-        y_ranges_list  = y_ranges_title + 22
-
-        ranges_h = self.ranges_visible * self.ranges_line_h + 10
-        ranges_w = list_w  # mesma largura das âncoras
-
-        self.ranges_list_rect = pg.Rect(sidebar_x, y_ranges_list, ranges_w, ranges_h)
+    def close(self) -> None:
+    
+        pass
+    
 
     ########################
     ##  Helpers internos  ##
@@ -1086,7 +1271,7 @@ class UwbTestScreen:
 
         # canto superior direito do MAPA (com margem)
         x = cam_w - w - 12
-        y = 12
+        y = self.topbar_h + 12
 
         # fundo semi-transparente
         panel = pg.Surface((w, h), pg.SRCALPHA)
@@ -1228,4 +1413,55 @@ class UwbTestScreen:
             self.anchor_params[aid] = p
             return
 
+    def _apply_seed_from_box(self) -> None:
+        """Aplica seed do textbox e reinicializa os geradores."""
+        try:
+            s = int(self.textbox_seed.text.strip())
+            self.seed = s
+            self.textbox_seed.set_text(str(self.seed))
+            self._reseed_everything(self.seed)
+            print(f"[UWB] seed = {self.seed}")
+        except ValueError:
+            print("[UWB] seed inválida.")
+            self.textbox_seed.set_text(str(self.seed))
 
+    def _reset_run_same_seed(self) -> None:
+        """Reseta estado do experimento, mantendo seed e parâmetros."""
+        self._tick_acc = 0.0
+        self.sim_time_s = 0.0
+        self.last_ranges = []
+        self.ranges_scroll = 0
+        # eeseed garante reprodutibilidade do ruído/dropout
+        self._reseed_everything(self.seed)
+        print("[UWB] Reset run (same seed)")
+
+    def _reseed_everything(self, seed: int) -> None:
+        """Recria objetos aleatórios (canal e protocolos) com a mesma seed."""
+        # recria ranging
+        self.ranging = UwbRangingModel(self.ranging_cfg, seed=seed)
+
+        # recria protocolos (mantém cfg)
+        self.twr_ds = DS_TWR_Protocol(self.twr_cfg, seed=seed)
+        self.twr_ss = SS_TWR_Protocol(self.twr_cfg, seed=seed)
+        self.twr = self.twr_ds if self.twr_cfg.mode == TWRMode.DS_TWR else self.twr_ss
+
+    def _save_experiment(self) -> None:
+        out_dir = "experiments"
+        os.makedirs(out_dir, exist_ok=True)
+        path = os.path.join(out_dir, f"exp_{int(pg.time.get_ticks())}.json")
+
+        cfg = ExperimentConfig.capture_from_screen(self)
+        self.last_saved_experiment_path = cfg.save_json(path)
+        print(f"[UWB] Saved experiment: {self.last_saved_experiment_path}")
+
+    def _load_last_experiment(self) -> None:
+        path = self.last_saved_experiment_path or ExperimentConfig.find_latest()
+        if not path:
+            print("[UWB] Nenhum experimento encontrado em experiments/.")
+            return
+
+        cfg = ExperimentConfig.load_json(path)
+        cfg.apply_to_screen(self)
+
+        self.last_saved_experiment_path = path
+        print(f"[UWB] Loaded experiment: {path}")
