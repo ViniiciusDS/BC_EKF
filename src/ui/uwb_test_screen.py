@@ -16,6 +16,7 @@ from src.uwb.twr_protocols import AntennaDelayModel, ClockModel, TWRConfig, TWRM
 from src.uwb.dataset import UwbFrame, RangeSample, UwbDatasetLogger, UwbReplay
 from src.uwb.node_params import NodeParams
 from src.uwb.experiment import ExperimentConfig
+from src.uwb.shared_state import SharedUwbState
 
 # Cores 
 WHITE = (255, 255, 255)
@@ -47,6 +48,8 @@ class UwbTestScreen:
         font: pg.font.Font,
         bigfont: pg.font.Font,
         side_width: int,
+        shared_uwb: SharedUwbState | None = None,
+        sim=None,
     ) -> None:
         self.screen = screen
         self.cam = cam
@@ -217,11 +220,40 @@ class UwbTestScreen:
         self._y_dt_title = 0
         self._y_seed_title = 0
 
+        ## Shared Simulação
+        self.shared = shared_uwb
+        self.sim = sim
+
+        # pipeline local (fallback) - evita AttributeError
+        self.uwb_pipeline = None
+
+        if self.shared is not None:
+            # Estado de geometria
+            self.tag_pos = self.shared.tag_xy
+            self.anchors = self.shared.anchors_xy
+
+            # Node params
+            self.tag_params = self.shared.tag_params
+            self.anchor_params = self.shared.anchor_params
+
+            # Pipeline/configs
+            self.uwb_pipeline = self.shared.pipeline
+
+            # garante consistência de indices/params
+            try:
+                self.shared.reindex_anchor_params()
+                self.shared.sync_pipeline_from_state()
+            except Exception:
+                pass
+
+        self._pull_shared()
+
 
 
 
     def handle_events(self, events) -> UwbActions:
         actions = UwbActions()
+        dirty = False
 
         for event in events:
             if event.type == pg.QUIT:
@@ -266,13 +298,14 @@ class UwbTestScreen:
                             print("[UWB] Nenhum dataset salvo ainda.")
                         continue
 
-                    # salvar experimento
+                    # Carregar ultimo experimento
                     if self.btn_tb_load_exp.hit((mx, my)):
                         self._load_last_experiment()
                         continue
 
-                    if self.btn_tb_load_exp.hit((mx, my)):
-                        self._load_last_experiment()
+                    # salvar experimento
+                    if self.btn_tb_save_exp.hit((mx, my)):
+                        self._save_experiment()
                         continue
 
                     # rodar novamente
@@ -296,7 +329,7 @@ class UwbTestScreen:
                     # ESC fecha o modal
                     if event.key == pg.K_ESCAPE:
                         self._close_anchor_editor()
-                    # Se o modal está aberto, não deixa o resto do sistema “roubar” teclas
+                    # Se o modal está aberto, não deixa o resto do sistema roubar teclas
                     continue
 
                 # 2) Mouse: clique para focar nos textboxes / botões
@@ -312,7 +345,7 @@ class UwbTestScreen:
                         if after and not before:
                             consumed = True
                             break
-                        # ou: se o clique foi dentro do rect dele, já consideramos consumido
+                        # ou: se o clique foi dentro do rect dele, já considera consumido
                         if tb.rect.collidepoint((mx, my)):
                             consumed = True
                             break
@@ -487,9 +520,6 @@ class UwbTestScreen:
                         self.use_replay = not self.use_replay
                         print(f"[UWB] Replay {'ON' if self.use_replay else 'OFF'}")
 
-
-                
-            
             # ===== PAN COM BOTÃO DO MEIO =====
             if event.type == pg.MOUSEBUTTONDOWN and event.button == 2:
                 mx, my = event.pos
@@ -539,32 +569,35 @@ class UwbTestScreen:
                         try:
                             x = float(self.textbox_ax.text.replace(",", "."))
                             y = float(self.textbox_ay.text.replace(",", "."))
-                            self.anchors.append((x, y))
+                            self.anchors.append((x, y));dirty = True
                             aid = len(self.anchors) - 1
                             self.anchor_params[aid] = NodeParams()
                             self.selected_anchor = aid
+                            self._sync_shared()
+
                         except ValueError:
                             print("Coordenadas inválidas.")
                         continue
 
                     if self.btn_clear_anchors.hit((mx, my)):
-                        self.anchors.clear()
+                        self.anchors.clear();dirty = True
                         self.anchor_scroll = 0
                         self.ranges_scroll = 0
+                        self._sync_shared()
                         continue
 
                     if self.textbox_dt.handle_event(event):
                         continue
 
                     if self.btn_apply_dt.hit((mx, my)):
-                        self._apply_dt_from_box()
+                        self._apply_dt_from_box();dirty = True
                         continue
 
                     if self.textbox_seed.handle_event(event):
                         continue
 
                     if self.btn_apply_seed.hit((mx, my)):
-                        self._apply_seed_from_box()
+                        self._apply_seed_from_box();dirty = True
                         continue
 
                     if self.btn_reset_run.hit((mx, my)):
@@ -592,6 +625,8 @@ class UwbTestScreen:
                 # SHIFT + LMB: move TAG
                 if event.button == 1 and (mods & pg.KMOD_SHIFT):
                     self.tag_pos = (wx, wy)
+                    self._sync_shared()
+                    dirty = True
                     continue
 
                 # LMB: adiciona ÂNCORA
@@ -600,6 +635,8 @@ class UwbTestScreen:
                     aid = len(self.anchors) - 1
                     self.anchor_params[aid] = NodeParams()
                     self.selected_anchor = aid
+                    self._sync_shared()
+                    dirty = True
                     continue
 
                 # RMB: remove ÂNCORA mais próxima (se estiver perto)
@@ -621,7 +658,12 @@ class UwbTestScreen:
                                 self.selected_anchor = None
                             elif self.selected_anchor > idx:
                                 self.selected_anchor -= 1
+                        self._sync_shared()
+                        dirty = True
                     continue
+
+        if dirty:
+            self._sync_shared()
 
         return actions
 
@@ -630,6 +672,8 @@ class UwbTestScreen:
         self.textbox_ax.update(dt)
         self.textbox_ay.update(dt)
         self.textbox_dt.update(dt)
+
+        self._pull_shared()
 
         # tempo simulado (opcional)
         self.sim_time_s += dt
@@ -1085,6 +1129,8 @@ class UwbTestScreen:
             p.ant.rx_ns = _to_float(self.textbox_a_rx.text)
             p.range_bias_m = _to_float(self.textbox_a_bias.text)
             self.anchor_params[aid] = p
+            self._sync_shared()
+
         except ValueError:
             print("[UWB] Valores inválidos no editor da âncora.")
 
@@ -1211,10 +1257,13 @@ class UwbTestScreen:
             # reinicia acumulador para não “disparar” múltiplos ticks de uma vez
             self._tick_acc = 0.0
             print(f"[UWB] dt entre medições = {dt_s:.2f}s")
+            self._sync_shared()
+
         except ValueError:
             print("[UWB] dt inválido.")
             # opcional: volta ao valor atual
             self.textbox_dt.set_text(f"{self.ranging_cfg.dt:.2f}")
+        
 
     def _draw_map_overlay(self) -> None:
         """Painel pequeno no canto superior direito do MAPA com status dos toggles."""
@@ -1358,6 +1407,8 @@ class UwbTestScreen:
         self.twr_cfg.mode = mode
         self.twr = self.twr_ds if mode == TWRMode.DS_TWR else self.twr_ss
         print(f"[UWB] Protocol = {mode.value}")
+        self._sync_shared()
+
 
     def _active_protocols(self):
         # para manter DS/SS sincronizados (mesmos clocks/delays)
@@ -1421,6 +1472,8 @@ class UwbTestScreen:
             self.textbox_seed.set_text(str(self.seed))
             self._reseed_everything(self.seed)
             print(f"[UWB] seed = {self.seed}")
+            self._sync_shared()
+
         except ValueError:
             print("[UWB] seed inválida.")
             self.textbox_seed.set_text(str(self.seed))
@@ -1434,6 +1487,8 @@ class UwbTestScreen:
         # eeseed garante reprodutibilidade do ruído/dropout
         self._reseed_everything(self.seed)
         print("[UWB] Reset run (same seed)")
+        self._sync_shared()
+
 
     def _reseed_everything(self, seed: int) -> None:
         """Recria objetos aleatórios (canal e protocolos) com a mesma seed."""
@@ -1444,6 +1499,8 @@ class UwbTestScreen:
         self.twr_ds = DS_TWR_Protocol(self.twr_cfg, seed=seed)
         self.twr_ss = SS_TWR_Protocol(self.twr_cfg, seed=seed)
         self.twr = self.twr_ds if self.twr_cfg.mode == TWRMode.DS_TWR else self.twr_ss
+        
+        self._sync_shared()
 
     def _save_experiment(self) -> None:
         out_dir = "experiments"
@@ -1465,3 +1522,44 @@ class UwbTestScreen:
 
         self.last_saved_experiment_path = path
         print(f"[UWB] Loaded experiment: {path}")
+
+    def _sync_shared(self):
+        if self.shared is None:
+            return
+
+        # TAG
+        self.shared.tag_xy = (float(self.tag_pos[0]), float(self.tag_pos[1]))
+
+        # Âncoras (IN-PLACE para não quebrar referências em outras telas)
+        new_anchors = [(float(x), float(y)) for (x, y) in self.anchors]
+        self.shared.anchors_xy[:] = new_anchors
+
+        # Reindexa params se mudou quantidade/ordem
+        self.shared.reindex_anchor_params()
+
+        # Params
+        self.shared.seed = int(getattr(self, "seed", self.shared.seed))
+        self.shared.tag_params = self.tag_params
+        self.shared.anchor_params = self.anchor_params
+
+        # Pipeline
+        self.shared.pipeline = getattr(self, "uwb_pipeline", self.shared.pipeline)
+        self.shared.sync_pipeline_from_state()
+
+        # Atualiza sim (se existir)
+        if self.sim is not None:
+            self.sim.anchors = self.shared.anchors_np3().copy()
+            if hasattr(self.sim, "uwb_pipeline"):
+                self.sim.uwb_pipeline = self.shared.pipeline
+
+    def _pull_shared(self) -> None:
+        if self.shared is None:
+            return
+        # pega as REFERÊNCIAS do shared (não copia)
+        self.tag_pos = self.shared.tag_xy
+        self.anchors = self.shared.anchors_xy
+        self.tag_params = self.shared.tag_params
+        self.anchor_params = self.shared.anchor_params
+        self.seed = int(getattr(self.shared, "seed", self.seed))
+        self.textbox_seed.set_text(str(self.seed))
+        self.uwb_pipeline = self.shared.pipeline

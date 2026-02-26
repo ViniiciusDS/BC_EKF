@@ -304,6 +304,11 @@ def run_bc_ekf_step(
         H[2*i + 1, :] = [(pr[0]-a[0]) / Dr, (pr[1]-a[1]) / Dr, Cr / Dr]
 
     # --- Atualização de Kalman robusta ---
+    # Checagem de dimensões
+    m = 2 * num_anchors
+    if z_k.shape[0] != m or R.shape != (m, m):
+        raise ValueError(f"z_k/R mismatch: z_k={z_k.shape}, R={R.shape}, expected m={m}")
+    
     S = H @ P_pred @ H.T + R
     # regularização leve em S (caso mal-condicionado)
     eps = 1e-9
@@ -314,11 +319,16 @@ def run_bc_ekf_step(
     # Use solve ao invés de inv
     try:
         assert S.shape[0] == S.shape[1] == H.shape[0], f"Dimensão inconsistente: S={S.shape}, H={H.shape}, P_pred={P_pred.shape}"
-        K = P_pred @ H.T @ np.linalg.inv(S)   # K = P_pred H^T S^{-1}
+        # S: (m,m), m = 2*num_anchors
+        # Queremos K = P_pred H^T S^{-1}
+        # Resolva:  S^T X^T = (P_pred H^T)^T  ->  X = P_pred H^T S^{-1}
+        PHt = P_pred @ H.T                 # (3,m)
+        # resolve S^T X^T = PHt^T  -> X = PHt @ S^{-1}
+        K = np.linalg.solve(S.T, PHt.T).T  # (3,m)  dimensões batem sempre
     except np.linalg.LinAlgError:
         # fallback numérico
         Sinv = np.linalg.pinv(S)
-        K = P_pred @ H.T @ Sinv
+        K = (P_pred @ H.T) @ Sinv
 
     x_upd = x_pred + K @ y
     x_upd[2] = np.arctan2(np.sin(x_upd[2]), np.cos(x_upd[2]))

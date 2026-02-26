@@ -325,3 +325,30 @@ class TextBoxDropdown:
         no main_interactive atual.
         """
         return self._handle_dropdown_click(pos)
+
+class ToggleRow:
+    '''Linha com um checkbox e um texto. Clicar na linha alterna o valor do checkbox.'''
+    def __init__(self, label, rect, font, value=False):
+        self.label = label
+        self.rect = pg.Rect(rect)
+        self.font = font
+        self.value = value
+        self.box = pg.Rect(self.rect.x, self.rect.y, 22, 22)
+
+    def hit(self, pos):
+        return self.rect.collidepoint(pos)
+
+    def toggle(self):
+        self.value = not self.value
+
+    def draw(self, surf):
+        # caixa
+        pg.draw.rect(surf, (255,255,255), self.box)
+        pg.draw.rect(surf, (0,0,0), self.box, 1)
+        if self.value:
+            pg.draw.line(surf, (0,0,0), (self.box.x+4, self.box.y+11), (self.box.x+9, self.box.y+17), 2)
+            pg.draw.line(surf, (0,0,0), (self.box.x+9, self.box.y+17), (self.box.x+18, self.box.y+5), 2)
+
+        # texto
+        txt = self.font.render(self.label, True, (0,0,0))
+        surf.blit(txt, (self.box.right + 10, self.rect.y + (self.rect.h - txt.get_height())//2))

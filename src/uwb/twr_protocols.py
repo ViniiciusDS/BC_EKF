@@ -10,7 +10,7 @@ C0 = 299_792_458.0  # velocidade da luz (m/s)
 
 
 class TWRMode(str, Enum):
-    ''' Modos de TWR suportados. Idealmente evoluir dps. '''
+    ''' Modos de TWR suportados. evoluir dps. '''
     SS_TWR = "SS_TWR"
     DS_TWR = "DS_TWR"
 

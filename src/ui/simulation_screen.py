@@ -6,15 +6,19 @@ from typing import Optional, List, Tuple, Any, Dict
 from dataclasses import dataclass
 import numpy as np
 import pygame as pg
+import os
+import json
+
 import src.config as config
 from src.scenarios import anchors_tectrol
 from src.utils import push_plot_data, RunLogger, start_plot_process, stop_plot_process
 from src.environment import draw_environment
 from src.trajectory import Trajectory  
-from src.ui.ui_elements import TextBoxDropdown  
+from src.ui.ui_elements import TextBoxDropdown, ToggleRow 
 from src.control.waypoint_controller import waypoint_controller
 from src.ui.drawing import draw_grid, draw_axes, draw_anchors, draw_path, draw_robot, draw_text
 from src.ui.botton import Button
+from src.uwb.shared_state import SharedUwbState
 
 BLACK   = (0, 0, 0)
 WHITE   = (255, 255, 255)
@@ -60,6 +64,7 @@ class SimulationScreen:
         bigfont: pg.font.Font,
         side_width: int,
         plot_state: dict,
+        shared_uwb: Optional[SharedUwbState] = None,
     ) -> None:
         
         self.screen = screen
@@ -76,6 +81,7 @@ class SimulationScreen:
         self.autopilot = False
         self.speed_factor = 5
         self.show_debug = False
+        self.perfect_motion = False
 
         # comandos de controle
         self.V_MAX = getattr(config, "V_MAX", 0.6)
@@ -85,8 +91,16 @@ class SimulationScreen:
         self.accel_lin = 0.02
         self.accel_ang = 0.08
 
-        # âncoras dinâmicas
-        self.anchors_dyn = np.zeros((3, 0))
+        self.modal_mode = None
+        
+        self.robot_cfg = {
+            "perfect_motion": False,
+            "perfect_odometry": False,
+            "perfect_uwb": False,
+            "perfect_filter_model": False,
+        }
+
+        self.robot_rows = []
 
         # gravação de rota e autopilot
         self.recording = False
@@ -118,6 +132,7 @@ class SimulationScreen:
         self.btn_filelog = None
         self.btn_graphs = None
         self.btn_place_anchor = None
+        self.btn_tectrol = None
         self.textbox_x = None
         self.textbox_y = None
 
@@ -146,6 +161,51 @@ class SimulationScreen:
             bg=(235, 250, 235),
         )
 
+        self.shared_uwb = shared_uwb
+    
+        # Usar anchors do shared
+        if shared_uwb is not None:
+            self.anchors_dyn = shared_uwb.anchors_np3()
+        else:
+            self.anchors_dyn = np.zeros((3, 0))
+
+        # âncoras dinâmicas
+        self.anchors_dyn = self.shared_uwb.anchors_np3() if self.shared_uwb is not None else np.zeros((3, 0))
+
+        # ---- Topbar (rotas/âncoras) ----
+        self.topbar_h = 36
+        self.topbar_rect = pg.Rect(0, 0, self.cam.viewport[0], self.topbar_h)
+
+        self.routes_dir = "routes"
+        self.anchors_dir = "anchor_sets"
+        os.makedirs(self.routes_dir, exist_ok=True)
+        os.makedirs(self.anchors_dir, exist_ok=True)
+
+        self.btn_tb_load_route  = Button((0,0,130,26), "Carregar Rotas", self.font, bg=(235,245,255))
+        self.btn_tb_save_route  = Button((0,0,120,26), "Salvar Rotas",   self.font, bg=(235,255,235))
+        self.btn_tb_load_anchor = Button((0,0,150,26), "Carregar Âncoras", self.font, bg=(235,245,255))
+        self.btn_tb_save_anchor = Button((0,0,140,26), "Salvar Âncoras",   self.font, bg=(235,255,235))
+
+        # ---- Modal (genérico) ----
+        self.modal_open = False
+        self.modal_mode = None  # "load_route" | "save_route" | "load_anchors" | "save_anchors"
+        self.modal_rect = None
+
+        self.modal_dropdown = TextBoxDropdown(pg.Rect(0,0,260,26), self.font, options=[])
+        self.modal_namebox  = TextBoxDropdown(pg.Rect(0,0,260,26), self.font, options=[], placeholder="nome")
+
+        self.btn_modal_ok = Button((0,0,90,26), "OK", self.font, bg=(235,250,235))
+        self.btn_modal_cancel = Button((0,0,90,26), "Cancelar", self.font, bg=(250,235,235))
+        
+
+        self.btn_tb_robot = Button((0,0,110,26), "Robô", self.font, bg=(245,235,255))
+
+        self._pm_seg_i = 0
+        self._pm_s = 0.0
+        self._pm_vref = 0.6  # velocidade ao longo do caminho quando perfect
+
+
+
 
     # ------------------------------------------------------------------
     # Interface principal que o main_interactive vai chamar
@@ -166,6 +226,59 @@ class SimulationScreen:
                 # deixe o main decidir sair do programa inteiro
                 actions.quite_app = True
                 return actions
+
+            # 1) Se modal aberto, ele tem prioridade total
+            if self.modal_open:
+                if event.type == pg.KEYDOWN:
+                    if event.key == pg.K_ESCAPE:
+                        self._close_modal()
+                        continue
+
+                    # repassa teclado pro campo certo
+                    if self.modal_mode in ("load_route", "load_anchors"):
+                        self.modal_dropdown.handle_event(event)
+                    else:
+                        self.modal_namebox.handle_event(event)
+
+                    if event.key == pg.K_RETURN:
+                        self._modal_confirm()
+                    continue
+
+                if event.type == pg.MOUSEBUTTONDOWN and event.button == 1:
+                    mx, my = event.pos
+
+                    # OK / Cancel
+                    if self.btn_modal_ok.hit((mx, my)):
+                        self._modal_confirm()
+                        continue
+                    if self.btn_modal_cancel.hit((mx, my)):
+                        self._close_modal()
+                        continue
+
+                    # clique no campo (ativa)
+                    if self.modal_mode in ("load_route", "load_anchors"):
+                        self.modal_dropdown.active = self.modal_dropdown.rect.collidepoint((mx, my))
+                        self.modal_namebox.active = False
+                        self.modal_dropdown.handle_event(event)
+                    else:
+                        self.modal_namebox.active = self.modal_namebox.rect.collidepoint((mx, my))
+                        self.modal_dropdown.active = False
+                        self.modal_namebox.handle_event(event)
+                    
+                    if self.modal_mode == "robot_cfg":
+                        # toggles
+                        for row in self.robot_rows:
+                            if row.hit((mx,my)):
+                                row.toggle()
+                                continue
+
+                    # clique fora fecha
+                    if self.modal_rect and (not self.modal_rect.collidepoint((mx, my))):
+                        self._close_modal()
+                    continue
+
+                # enquanto modal aberto, ignora o resto
+                continue
 
             if event.type == pg.KEYDOWN:
                 # Check Textboxes first
@@ -212,11 +325,13 @@ class SimulationScreen:
                     self.anchors_dyn = np.zeros((3, 0))
                     self.sim.anchors = self.anchors_dyn
                     self.sim.R = np.eye(2) * 1e6
+                    self.shared_uwb.anchors_xy = []
 
                 elif event.key == pg.K_b:
                     self.anchors_dyn = anchors_tectrol.copy()
                     self.sim.anchors = self.anchors_dyn
                     self.sim.R = np.eye(2 * self.anchors_dyn.shape[1]) * 0.0025
+                    self.shared_uwb.anchors_xy = [(float(self.anchors_dyn[0,i]), float(self.anchors_dyn[1,i])) for i in range(self.anchors_dyn.shape[1])]
 
                 elif event.key == pg.K_r:
                     self.cam.reset_view()
@@ -226,7 +341,9 @@ class SimulationScreen:
                     if not self.recording and len(self.recorded_points) > 1:
                         self.waypoints = np.array(self.recorded_points, dtype=float)
                         self.wp_idx = 0
-                        self.autopilot = True
+                        self.autopilot = True                    
+                        self._pm_seg_i = 0
+                        self._pm_s = 0.0
 
                 elif event.key == pg.K_RETURN:
                     if self.recording and len(self.recorded_points) > 1:
@@ -237,12 +354,46 @@ class SimulationScreen:
 
                 elif event.key == pg.K_DELETE:
                     self.recorded_points = []
+                
+                elif event.key == pg.K_p:
+                    self.robot_cfg["perfect_motion"] = not self.robot_cfg.get("perfect_motion", False)
+                    print(f"[SIM] Perfect motion: {'ON' if self.robot_cfg['perfect_motion'] else 'OFF'}")
                     
 
             if event.type == pg.MOUSEBUTTONDOWN:
                 mx, my = event.pos
 
                 if event.button == 1:  # botão esquerdo
+                    mx, my = event.pos
+                    # garante que os rects estão atualizados mesmo antes do draw()
+                    self._layout_topbar_buttons()
+
+                    # --- TOPBAR: intercepta clique e não deixa cair no mapa ---
+                    if mx < self.cam.viewport[0] and my <= self.topbar_h:
+                        print(f"[SIM] click topbar em ({mx},{my})")
+                        if self.btn_tb_load_route.hit((mx, my)):
+                            print("[SIM] Click: Carregar Rotas")
+                            self._open_modal_load("route")
+                            continue
+                        if self.btn_tb_save_route.hit((mx, my)):
+                            print("[SIM] Click: Salvar Rotas")
+                            self._open_modal_save("route")
+                            continue
+                        if self.btn_tb_load_anchor.hit((mx, my)):
+                            print("[SIM] Click: Carregar Âncoras")
+                            self._open_modal_load("anchors")
+                            continue
+                        if self.btn_tb_save_anchor.hit((mx, my)):
+                            print("[SIM] Click: Salvar Âncoras")
+                            self._open_modal_save("anchors")
+                            continue
+                        if self.btn_tb_robot.hit((mx, my)):
+                            self._open_modal_robot()
+                            continue
+
+                        # clicou na área da topbar mas não em botão: não faz nada no mapa
+                        continue
+
                     if self.textbox_x and self.textbox_x.rect.collidepoint((mx, my)):
                         self.textbox_x.active = True
                         if self.textbox_y:
@@ -289,6 +440,7 @@ class SimulationScreen:
                             self.anchors_dyn = np.hstack([self.anchors_dyn, np.array([[wx], [wy], [z]])])
                             self.sim.anchors = self.anchors_dyn
                             self.sim.R = np.eye(2 * self.anchors_dyn.shape[1]) * 0.0025
+                            self.shared_uwb.anchors_xy = [(float(self.anchors_dyn[0,i]), float(self.anchors_dyn[1,i])) for i in range(self.anchors_dyn.shape[1])]
                     else:
                         # >>> HUD (LMB)
 
@@ -344,10 +496,21 @@ class SimulationScreen:
                                 self.anchors_dyn = np.hstack([self.anchors_dyn, new_anchor])
                                 self.sim.anchors = self.anchors_dyn
                                 self.sim.R = np.eye(2 * self.anchors_dyn.shape[1]) * 0.0025
+                                self.shared_uwb.anchors_xy = [(float(self.anchors_dyn[0,i]), float(self.anchors_dyn[1,i])) for i in range(self.anchors_dyn.shape[1])]
                                 print(f"Âncora adicionada em ({x}, {y})")
                             except ValueError:
                                 print("Coordenadas inválidas para âncora.")
                             continue
+
+                        if self.btn_tectrol and self.btn_tectrol.hit((mx, my)):
+                            from src.scenarios import anchors_tectrol
+                            if self.shared_uwb:
+                                xy = [(float(anchors_tectrol[0,i]), float(anchors_tectrol[1,i])) 
+                                    for i in range(anchors_tectrol.shape[1])]
+                                self.shared_uwb.anchors_xy = xy
+                                self.shared_uwb.reindex_anchor_params()
+                                self.shared_uwb.sync_pipeline_from_state()
+                                self.anchors_dyn = self.shared_uwb.anchors_np3()
 
                 # -----------------------------------------
                 # CLIQUE DIREITO (mapa)
@@ -363,6 +526,7 @@ class SimulationScreen:
                             self.anchors_dyn = np.delete(self.anchors_dyn, j, axis=1)
                             self.sim.anchors = self.anchors_dyn
                             self.sim.R = (np.eye(2 * self.anchors_dyn.shape[1]) * 0.0025) if self.anchors_dyn.shape[1] > 0 else np.eye(2) * 1e6
+                            self.shared_uwb.anchors_xy = [(float(self.anchors_dyn[0,i]), float(self.anchors_dyn[1,i])) for i in range(self.anchors_dyn.shape[1])]
             if event.type == pg.MOUSEBUTTONUP:
                 if event.button == 2:
                     self.panning = False
@@ -404,13 +568,52 @@ class SimulationScreen:
             else:
                 self.w_cmd *= 0.86
         else:
-            self.v_cmd, self.w_cmd, self.wp_idx = waypoint_controller(self.sim.x_est, self.waypoints, self.wp_idx, v_max=0.25, w_max=0.8)
+            x_for_ctrl = getattr(self.sim, "x_true", self.sim.x_est)
+            self.v_cmd, self.w_cmd, self.wp_idx = waypoint_controller(
+                x_for_ctrl, self.waypoints, self.wp_idx,
+                v_max=0.25, w_max=0.8
+            )
 
         # física
+        noisy = not self.perfect_motion
+        cfg = getattr(self, "robot_cfg", {})
+        pm = bool(cfg.get("perfect_motion", False))
+        po = bool(cfg.get("perfect_odometry", False))
+        pu = bool(cfg.get("perfect_uwb", False))
+        pf = bool(cfg.get("perfect_filter_model", False))
+
+
         for _ in range(self.speed_factor):
-            self.sim.step(self.v_cmd, self.w_cmd, noisy=True)
+            # 1) Se perfect motion estiver ligado, o ground-truth deve vir da rota perfeita
+            true_override = None
+            if pm:
+                # Usa o dt real do simulador (não o dt do pygame), porque você está sub-steppando
+                true_override = self._perfect_pose_from_waypoints(self.sim.dt)
+
+            # 2) Controle (recalcula a cada substep)
+            if self.autopilot and self.waypoints is not None and len(self.waypoints) > 1:
+                # quando pm=True, controle deve enxergar o "true" perfeito (override)
+                x_for_ctrl = true_override if (pm and true_override is not None) else getattr(self.sim, "x_true", self.sim.x_est)
+
+                self.v_cmd, self.w_cmd, self.wp_idx = waypoint_controller(
+                    x_for_ctrl, self.waypoints, self.wp_idx,
+                    v_max=0.25, w_max=0.8
+                )
+
+            self.sim.step(
+                self.v_cmd, self.w_cmd,
+                perfect_motion=pm, perfect_odometry=po,
+                perfect_uwb=pu, perfect_filter_model=pf,
+                true_override=true_override,
+            )
+
+        if self.waypoints is not None and self.wp_idx >= len(self.waypoints):
+            self.autopilot = False
+            self.v_cmd = 0.0
+            self.w_cmd = 0.0
         innov_norm = None
         nis = None
+
         if getattr(self.sim, 'last_debug', None) and self.sim.last_debug['innov'] is not None:
             y = self.sim.last_debug['innov']
             S = self.sim.last_debug['S']
@@ -488,8 +691,26 @@ class SimulationScreen:
         """
         # desenho
         self.screen.fill(WHITE)
+
+        # --- TOPBAR (no MAPA) ---
+        cam_w = self.cam.viewport[0]
+        self.topbar_rect = pg.Rect(0, 0, cam_w, self.topbar_h)
+        pg.draw.rect(self.screen, (235,235,235), self.topbar_rect)
+        pg.draw.line(self.screen, (190,190,190), (0,self.topbar_h), (cam_w,self.topbar_h), 1)
+
+        # layout botões
+        self._layout_topbar_buttons()
+
+        self.btn_tb_load_route.draw(self.screen)
+        self.btn_tb_save_route.draw(self.screen)
+        self.btn_tb_load_anchor.draw(self.screen)
+        self.btn_tb_save_anchor.draw(self.screen)
+        self.btn_tb_robot.draw(self.screen)
+
         # mapa (esquerda)
-        map_rect = pg.Rect(0, 0, self.cam.viewport[0], self.cam.viewport[1])
+        map_rect = pg.Rect(0, self.topbar_h, cam_w, self.cam.viewport[1] - self.topbar_h)
+        prev_clip = self.screen.get_clip()
+        self.screen.set_clip(map_rect)
         pg.draw.rect(self.screen, WHITE, map_rect)
         draw_grid(self.screen, self.cam)
         draw_environment(self.screen, self.cam, self.sim.env)
@@ -516,12 +737,13 @@ class SimulationScreen:
         draw_path(self.screen, self.cam, self.path_est, ORANGE, 2, dashed=True)
 
         # robôs
+        robot_l = getattr(self.sim, 'l', 0.325)   # metade do baseline
         if len(self.true_traj) > 0:
             xr, yr, tr = self.true_traj[-1]
-            draw_robot(self.screen, self.cam, xr, yr, tr, BLACK)
+            draw_robot(self.screen, self.cam, xr, yr, tr, BLACK, l=robot_l)
         if len(self.est_traj) > 0:
             xe, ye, te = self.est_traj[-1]
-            draw_robot(self.screen, self.cam, xe, ye, te, ORANGE)
+            draw_robot(self.screen, self.cam, xe, ye, te, ORANGE, l=robot_l)
 
         # --- Overlay: indicador de waypoint no canto inferior-direito do MAPA ---
         if self.waypoints is not None and len(self.waypoints) > 0:
@@ -539,9 +761,52 @@ class SimulationScreen:
             self.screen.blit(card, (tx - pad, ty - pad))
             pg.draw.rect(self.screen, BLACK, (tx - pad, ty - pad, card.get_width(), card.get_height()), 1)
 
+        self.screen.set_clip(prev_clip)
         # HUD lateral (direita)
         self._draw_hud()
 
+        if self.modal_open:
+            self._draw_modal()
+    
+    def setup_hud_elements(
+        self,
+        btn_filelog,
+        btn_graphs,
+        textbox_x,
+        textbox_y,
+        btn_place_anchor,
+        ):
+        '''Configura referências aos elementos do HUD (botões, textboxes) para uso em eventos e desenho.
+        Deve ser chamado pelo main_interactive após criar os botões/textboxes.'''
+        self.btn_filelog = btn_filelog
+        self.btn_graphs = btn_graphs
+        self.textbox_x = textbox_x
+        self.textbox_y = textbox_y
+        self.btn_place_anchor = btn_place_anchor
+
+    def layout_hud(self):
+        """Atualiza posições dos elementos do HUD (rects) antes de processar eventos."""
+        cam_w = self.cam.viewport[0]
+        sidebar_x = cam_w + 16
+
+        # você precisa manter o MESMO y usado no draw
+        y = 18
+        y += 34                 # header
+        y += 22*6 + 10          # metrics (ajuste se seu layout mudou)
+        y += 22*6 + 10          # controls (ajuste também)
+
+        # âncoras
+        y += 22                 # título "Posicionar âncora"
+        y += 22                 # linha abaixo do título
+
+        if self.textbox_x and self.textbox_y:
+            self.textbox_x.rect.topleft = (sidebar_x, y)
+            self.textbox_y.rect.topleft = (sidebar_x + self.textbox_x.rect.w + 10, y)
+
+            y += self.textbox_x.rect.h + 8
+
+        if self.btn_place_anchor:
+            self.btn_place_anchor.rect.topleft = (sidebar_x, y)
     # ------------------------------------------------------------------
     # Métodos auxiliares (internos)
     # ------------------------------------------------------------------
@@ -579,6 +844,9 @@ class SimulationScreen:
         stop_plot_process(self.plot_state)
         
     def _draw_hud(self):
+        '''
+        Desenha o HUD lateral direito, com métricas, botões e textboxes.
+        '''
         cam_w = self.cam.viewport[0]
         cam_h = self.cam.viewport[1]
 
@@ -598,7 +866,7 @@ class SimulationScreen:
 
         # Métricas
         self._draw_hud_metrics(sidebar_x, y, LINE_H)
-        y += LINE_H * 6 + 10
+        y += LINE_H * 7 + 10
 
         # Controles
         self._draw_hud_controls(sidebar_x, y, LINE_H)
@@ -617,9 +885,11 @@ class SimulationScreen:
         self._draw_hud_tools(sidebar_x, y)
 
     def _draw_hud_header(self, x, y, LINE_H):
+        '''Desenha o título do HUD e separador abaixo.'''
         draw_text(self.screen, "BC-EKF — Simulador", x, y, self.bigfont)
 
     def _draw_hud_metrics(self, x, y, LINE_H):
+        '''Desenha as métricas atuais (FPS, velocidade, erros) no HUD lateral.'''
         draw_text(self.screen, f"FPS: {self.clock.get_fps():5.1f}", x, y, self.font)
         y += LINE_H
         draw_text(self.screen, f"Speed x: {self.speed_factor}", x, y, self.font)
@@ -631,8 +901,13 @@ class SimulationScreen:
         draw_text(self.screen, f"Erro Pos (m): {self.pos_err:.3f}", x, y, self.font)
         y += LINE_H
         draw_text(self.screen, f"Erro Heading (°): {self.head_err:.2f}", x, y, self.font)
+        y += LINE_H
+        pm = bool(self.robot_cfg.get("perfect_motion", False))
+        draw_text(self.screen, f"Perfect Motion: {'ON' if pm else 'OFF'}", x, y, self.font)
+
     
     def _draw_hud_tools(self, x, y):
+        '''Desenha os botões de ferramentas (log em arquivo, gráficos, preset de âncoras) no HUD lateral.'''
         draw_text(self.screen, "Ferramentas:", x, y, self.bigfont)
         y += 26
         self.btn_filelog = Button(
@@ -658,15 +933,24 @@ class SimulationScreen:
             self.btn_graphs.rect.topleft = (x, y)
             self.btn_graphs.draw(self.screen)
 
+        y += 44
+
+        # Botão de preset de âncoras
+        self.btn_tectrol = Button((x, y, 160, 28), "Preset: Tectrol", self.font)
+        self.btn_tectrol.draw(self.screen)
+
     def _draw_hud_controls(self, x, y, LINE_H):
+        '''Desenha as instruções de controle (teclas) no HUD lateral.'''
         draw_text(self.screen, "Controles:", x, y, self.bigfont); y += LINE_H
         draw_text(self.screen, "↑/↓ acel. linear   ←/→ acel. angular", x, y, self.font); y += LINE_H
         draw_text(self.screen, "[ / ] velocidade simulação", x, y, self.font); y += LINE_H
         draw_text(self.screen, "Scroll: zoom  |  Botão do meio: pan", x, y, self.font); y += LINE_H
         draw_text(self.screen, "C: limpar âncoras  |  B: âncoras padrão", x, y, self.font); y += LINE_H
-        draw_text(self.screen, "ESC: voltar ao menu", x, y, self.font)
+        draw_text(self.screen, "ESC: voltar ao menu", x, y, self.font); y += LINE_H
+        draw_text(self.screen, "P: perfect motion (sem ruído)", x, y, self.font); y += LINE_H
 
     def _draw_hud_anchor_tools(self, x, y):
+        '''Desenha os campos de texto e botão para posicionar âncoras.'''
         draw_text(self.screen, "Posicionar âncora (x, y):", x, y, self.font)
         y += 22
 
@@ -685,6 +969,7 @@ class SimulationScreen:
             self.btn_place_anchor.draw(self.screen)
     
     def _draw_hud_debug(self, x, y, LINE_H):
+        '''Desenha métricas de debug do EKF (norma da inovação, NIS) no HUD lateral, se show_debug estiver ativo.'''
         draw_text(self.screen, "DEBUG EKF", x, y, self.bigfont); y += LINE_H
 
         if self.innov_norm is not None:
@@ -701,41 +986,406 @@ class SimulationScreen:
 
         draw_text(self.screen, "D: mostra/oculta debug", x, y, self.font)
 
-    def setup_hud_elements(
-        self,
-        btn_filelog,
-        btn_graphs,
-        textbox_x,
-        textbox_y,
-        btn_place_anchor,
-    ):
-        self.btn_filelog = btn_filelog
-        self.btn_graphs = btn_graphs
-        self.textbox_x = textbox_x
-        self.textbox_y = textbox_y
-        self.btn_place_anchor = btn_place_anchor
+    def _list_json_files(self, folder: str):
+        '''Retorna lista de arquivos .json em um diretório, ordenada alfabeticamente. Retorna lista vazia se houver erro 
+        (ex: diretório não existe).'''
+        try:
+            files = [f for f in os.listdir(folder) if f.lower().endswith(".json")]
+            files.sort()
+            return files
+        except Exception:
+            return []
 
-    def layout_hud(self):
-        """Atualiza posições dos elementos do HUD (rects) antes de processar eventos."""
+    def _open_modal_load(self, which: str):
+        '''Abre o modal de carregamento, preenchendo a dropdown com os arquivos disponíveis.
+         O parâmetro "which" indica se é para carregar rotas ou âncoras, e ajusta o título e a lista de arquivos de acordo.'''
+        self.modal_open = True
+        self.modal_mode = "load_route" if which == "route" else "load_anchors"
+
+        folder = self.routes_dir if which == "route" else self.anchors_dir
+        opts = self._list_json_files(folder)
+
+        # >>> ATUALIZA DO JEITO CERTO (classe usa options_all) <<<
+        self.modal_dropdown.options_all = list(opts)
+        self.modal_dropdown.options_filtered = list(opts)
+
+        # seleciona primeiro se existir
+        self.modal_dropdown.set_text(opts[0] if opts else "")
+
+        # abre e ativa (pra já poder usar setinha/teclado)
+        self.modal_dropdown.active = True
+        self.modal_dropdown.dropdown_open = True if opts else False
+
+        self.modal_namebox.active = False
+
+    def _open_modal_save(self, which: str):
+        '''Abre o modal de salvamento, preparando o campo de texto para o nome do arquivo. 
+        O parâmetro "which" indica se é para salvar rotas ou âncoras, e ajusta o título de acordo.'''
+        self.modal_open = True
+        self.modal_mode = "save_route" if which == "route" else "save_anchors"
+
+        self.modal_namebox.set_text("")
+        self.modal_namebox.active = True
+        self.modal_namebox.dropdown_open = False
+
+        self.modal_dropdown.active = False
+        self.modal_dropdown.dropdown_open = False
+
+    def _close_modal(self):
+        '''Fecha o modal de carregamento/salvamento, limpando estado e desativando elementos.'''
+        self.modal_open = False
+        self.modal_mode = None
+        self.modal_dropdown.active = False
+        self.modal_namebox.active = False
+
+    def _apply_loaded_anchors(self, anchors_xy):
+        '''Aplica as âncoras carregadas do arquivo, atualizando o estado compartilhado, a simulação e o desenho.'''
+        # anchors_xy: list[(x,y)]
+        if not self.shared_uwb:
+            return
+
+        # atualiza shared IN-PLACE pra manter referência
+        self.shared_uwb.anchors_xy[:] = [(float(x), float(y)) for (x,y) in anchors_xy]
+        self.shared_uwb.reindex_anchor_params()
+        self.shared_uwb.sync_pipeline_from_state()
+
+        # atualiza sim + draw
+        self.anchors_dyn = self.shared_uwb.anchors_np3()
+        self.sim.anchors = self.anchors_dyn
+
+        # atualiza R conforme N
+        n = self.anchors_dyn.shape[1]
+        self.sim.R = (np.eye(2*n) * 0.0025) if n > 0 else (np.eye(2) * 1e6)
+
+    def _save_anchors_to_file(self, name: str):
+        '''Salva as âncoras atuais em um arquivo JSON, com o nome fornecido. 
+         O nome é ajustado para garantir extensão .json e evitar erros.
+         O conteúdo salvo inclui as coordenadas das âncoras e metadados como contagem.'''
+        name = name.strip()
+        if not name:
+            return
+        if not name.lower().endswith(".json"):
+            name += ".json"
+
+        anchors_xy = []
+        if self.shared_uwb and self.shared_uwb.anchors_xy:
+            anchors_xy = [(float(x), float(y)) for (x,y) in self.shared_uwb.anchors_xy]
+
+        payload = {
+            "anchors_xy": anchors_xy,
+            "meta": {"count": len(anchors_xy)}
+        }
+
+        path = os.path.join(self.anchors_dir, name)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+        print(f"[SIM] Âncoras salvas em: {path}")
+
+    def _load_anchors_from_file(self, filename: str):
+        '''Carrega âncoras de um arquivo JSON, atualizando o estado compartilhado, a simulação e o desenho.'''
+        if not filename:
+            return
+        path = os.path.join(self.anchors_dir, filename)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            anchors_xy = data.get("anchors_xy", [])
+            self._apply_loaded_anchors(anchors_xy)
+            print(f"[SIM] Âncoras carregadas: {path}")
+        except Exception as e:
+            print(f"[SIM] Falha ao carregar âncoras ({path}): {e}")
+
+    def _save_route_to_file(self, name: str):
+        '''Salva a rota atual (waypoints) em um arquivo JSON, com o nome fornecido.'''
+        name = name.strip()
+        if not name:
+            return
+        if not name.lower().endswith(".json"):
+            name += ".json"
+
+        wps = []
+        if self.waypoints is not None and len(self.waypoints) > 0:
+            wps = [[float(x), float(y)] for (x,y) in np.array(self.waypoints).tolist()]
+
+        payload = {
+            "waypoints": wps,
+            "robot_config":  self.robot_cfg,
+            "meta": {"count": len(wps)},
+        }
+
+        path = os.path.join(self.routes_dir, name)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+        print(f"[SIM] Rota salva em: {path}")
+
+    def _load_route_from_file(self, filename: str):
+        '''Carrega uma rota de um arquivo JSON, atualizando os waypoints, configuração do robô e ativando o autopilot.'''
+        if not filename:
+            return
+        path = os.path.join(self.routes_dir, filename)
+
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            wps = data.get("waypoints", [])
+
+            cfg = data.get("robot_config", {})
+            if isinstance(cfg, dict):
+                self.robot_cfg.update(cfg)
+                self._apply_robot_config_to_sim()
+
+            if len(wps) >= 2:
+                self.waypoints = np.array(wps, dtype=float)
+                self.wp_idx = 0
+                self.autopilot = True
+            else:
+                self.waypoints = None
+                self.wp_idx = 0
+                self.autopilot = False
+                self._pm_seg_i = 0
+                self._pm_s = 0.0
+
+            print(f"[SIM] Rota carregada: {path}")
+
+        except Exception as e:
+            print(f"[SIM] Falha ao carregar rota ({path}): {e}")
+
+    def _draw_modal(self):
+        ''' Desenha o modal de carregamento/salvamento, 
+        com backdrop, caixa, título, conteúdo (dropdown ou textbox) e botões OK/Cancel.'''
         cam_w = self.cam.viewport[0]
-        sidebar_x = cam_w + 16
+        cam_h = self.cam.viewport[1]
 
-        # você precisa manter o MESMO y usado no draw
-        y = 18
-        y += 34                 # header
-        y += 22*6 + 10          # metrics (ajuste se seu layout mudou)
-        y += 22*6 + 10          # controls (ajuste também)
+        # Aumenta um pouco a altura pro robot_cfg caber bonito
+        w = 420
+        h = 230 if self.modal_mode == "robot_cfg" else 170
+        x = cam_w//2 - w//2
+        y = self.topbar_h + 30
+        self.modal_rect = pg.Rect(x, y, w, h)
 
-        # âncoras
-        y += 22                 # título "Posicionar âncora"
-        y += 22                 # linha abaixo do título
+        dt = getattr(self, "_last_dt", 0.0)
+        self.modal_dropdown.update(dt)
+        self.modal_namebox.update(dt)
 
-        if self.textbox_x and self.textbox_y:
-            self.textbox_x.rect.topleft = (sidebar_x, y)
-            self.textbox_y.rect.topleft = (sidebar_x + self.textbox_x.rect.w + 10, y)
+        overlay = pg.Surface((cam_w, cam_h), pg.SRCALPHA)
+        overlay.fill((0,0,0,80))
+        self.screen.blit(overlay, (0,0))
 
-            y += self.textbox_x.rect.h + 8
+        pg.draw.rect(self.screen, (252,252,252), self.modal_rect)
+        pg.draw.rect(self.screen, (170,170,170), self.modal_rect, 1)
 
-        if self.btn_place_anchor:
-            self.btn_place_anchor.rect.topleft = (sidebar_x, y)
+        # --- ROBOT CFG: desenha e sai ---
+        if self.modal_mode == "robot_cfg":
+            title = "Configurações do robô"
+            self.screen.blit(self.bigfont.render(title, True, (20,20,20)), (x+12, y+10))
 
+            cx = x + 20
+            cy = y + 55
+
+            for i, row in enumerate(self.robot_rows):
+                row.rect.topleft = (cx, cy + i*30)
+                row.box.topleft = (row.rect.x, row.rect.y + 2)
+                row.draw(self.screen)
+
+            # botões
+            by = y + h - 38
+            self.btn_modal_ok.rect.topleft = (x + w - 200, by)
+            self.btn_modal_cancel.rect.topleft = (x + w - 100, by)
+            self.btn_modal_ok.draw(self.screen)
+            self.btn_modal_cancel.draw(self.screen)
+            return
+
+        # --- resto (load/save route/anchors) continua aqui ---
+        title = "Modal"
+        if self.modal_mode == "load_route": title = "Carregar rota"
+        if self.modal_mode == "save_route": title = "Salvar rota"
+        if self.modal_mode == "load_anchors": title = "Carregar âncoras"
+        if self.modal_mode == "save_anchors": title = "Salvar âncoras"
+        self.screen.blit(self.bigfont.render(title, True, (20,20,20)), (x+12, y+10))
+
+        cx = x + 12
+        cy = y + 55
+        if self.modal_mode in ("load_route", "load_anchors"):
+            self.screen.blit(self.font.render("Arquivo:", True, (20,20,20)), (cx, cy))
+            self.modal_dropdown.rect.topleft = (cx+70, cy-3)
+            self.modal_dropdown.draw(self.screen)
+        else:
+            self.screen.blit(self.font.render("Nome:", True, (20,20,20)), (cx, cy))
+            self.modal_namebox.rect.topleft = (cx+70, cy-3)
+            self.modal_namebox.draw(self.screen)
+
+        by = y + h - 38
+        self.btn_modal_ok.rect.topleft = (x + w - 200, by)
+        self.btn_modal_cancel.rect.topleft = (x + w - 100, by)
+        self.btn_modal_ok.draw(self.screen)
+        self.btn_modal_cancel.draw(self.screen)
+
+        # conteúdo
+        cx = x + 12
+        cy = y + 55
+
+        if self.modal_mode in ("load_route", "load_anchors"):
+            self.screen.blit(self.font.render("Arquivo:", True, (20,20,20)), (cx, cy))
+            self.modal_dropdown.rect.topleft = (cx+70, cy-3)
+            self.modal_dropdown.draw(self.screen)
+        else:
+            self.screen.blit(self.font.render("Nome:", True, (20,20,20)), (cx, cy))
+            self.modal_namebox.rect.topleft = (cx+70, cy-3)
+            self.modal_namebox.draw(self.screen)
+
+        # botões
+        by = y + h - 38
+        self.btn_modal_ok.rect.topleft = (x + w - 200, by)
+        self.btn_modal_cancel.rect.topleft = (x + w - 100, by)
+        self.btn_modal_ok.draw(self.screen)
+        self.btn_modal_cancel.draw(self.screen)
+
+    def _modal_confirm(self):
+        '''Lógica executada ao clicar em OK no modal, dependendo do modo atual (carregar/salvar rota/âncoras).'''
+        if self.modal_mode == "load_route":
+            fn = self.modal_dropdown.text.strip()
+            self._load_route_from_file(fn)
+            self._close_modal()
+            return
+
+        if self.modal_mode == "save_route":
+            name = self.modal_namebox.text.strip()
+            self._save_route_to_file(name)
+            self._close_modal()
+            return
+
+        if self.modal_mode == "load_anchors":
+            fn = self.modal_dropdown.text.strip()
+            self._load_anchors_from_file(fn)
+            self._close_modal()
+            return
+
+        if self.modal_mode == "save_anchors":
+            name = self.modal_namebox.text.strip()
+            self._save_anchors_to_file(name)
+            self._close_modal()
+            return
+        
+        if self.modal_mode == "robot_cfg":
+            # grava do UI pro estado
+            self.robot_cfg["perfect_motion"] = self.robot_rows[0].value
+            self.robot_cfg["perfect_odometry"] = self.robot_rows[1].value
+            self.robot_cfg["perfect_uwb"] = self.robot_rows[2].value
+            self.robot_cfg["perfect_filter_model"] = self.robot_rows[3].value
+
+            if self.robot_cfg["perfect_uwb"]:
+                self.robot_cfg["perfect_filter_model"] = True
+                self.robot_rows[3].value = True
+
+            # aplica imediatamente no sim (próximo passo)
+            self._apply_robot_config_to_sim()
+
+            self._close_modal()
+            return
+                
+    def _layout_topbar_buttons(self):
+        '''Define as posições dos botões na topbar do mapa. 
+        Deve ser chamado no draw antes de desenhar os botões,
+        para garantir que os rects estejam atualizados para detecção de clique.'''
+        x = 10
+        y = 5
+        gap = 10
+        self.btn_tb_load_route.rect.topleft  = (x, y); x += self.btn_tb_load_route.rect.w + gap
+        self.btn_tb_save_route.rect.topleft  = (x, y); x += self.btn_tb_save_route.rect.w + gap
+        self.btn_tb_load_anchor.rect.topleft = (x, y); x += self.btn_tb_load_anchor.rect.w + gap
+        self.btn_tb_save_anchor.rect.topleft = (x, y); x += self.btn_tb_save_anchor.rect.w + gap
+        self.btn_tb_robot.rect.topleft = (x, y)
+    
+    def _open_modal_robot(self):
+        '''Abre o modal de configuração do robô, que permite alternar opções como "perfect motion", "perfect odometry", etc.'''
+        self.modal_open = True
+        self.modal_mode = "robot_cfg"
+
+        # cria as linhas (posições reais serão ajustadas no _draw_modal)
+        self.robot_rows = [
+            ToggleRow("Perfect Motion", (0,0,340,26), self.font, self.robot_cfg["perfect_motion"]),
+            ToggleRow("Perfect Odometry", (0,0,340,26), self.font, self.robot_cfg["perfect_odometry"]),
+            ToggleRow("Perfect UWB", (0,0,340,26), self.font, self.robot_cfg["perfect_uwb"]),
+            ToggleRow("Perfect Filter Model", (0,0,340,26), self.font, self.robot_cfg["perfect_filter_model"]),
+        ]
+
+    def _apply_robot_config_to_sim(self) -> None:
+        """
+        Aplica as configs do robô ao estado da simulação.
+        Quem usa essas flags é o SimulationScreen.update() ao chamar self.sim.step(...).
+        Então aqui só garante consistência e reseta históricos quando muda modo.
+        """
+
+        self.perfect_motion = bool(self.robot_cfg.get("perfect_motion", False))
+        
+        # garante chaves
+        for k in ("perfect_motion", "perfect_odometry", "perfect_uwb", "perfect_filter_model"):
+            if k not in self.robot_cfg:
+                self.robot_cfg[k] = False
+
+        pm = bool(self.robot_cfg["perfect_motion"])
+        po = bool(self.robot_cfg["perfect_odometry"])
+        pu = bool(self.robot_cfg["perfect_uwb"])
+        pf = bool(self.robot_cfg["perfect_filter_model"])
+
+        print(f"[SIM] Robot cfg aplicado: motion={pm}, odo={po}, uwb={pu}, filter={pf}")
+
+        self.sim.history_true.clear()
+        self.sim.history_est.clear()
+        self.sim.history_pred.clear()
+        self.path_true.clear()
+        self.path_pred.clear()
+        self.path_est.clear()
+        self.ts_hist.clear()
+        self.pos_err_hist.clear()
+        self.head_err_hist.clear()
+
+    def _perfect_pose_from_waypoints(self, dt: float):
+        '''Calcula a pose "perfeita" do robô seguindo os waypoints, avançando ao longo da rota com velocidade constante vref.'''
+        if self.waypoints is None or len(self.waypoints) < 2:
+            return None
+
+        wps = self.waypoints
+        i = self._pm_seg_i
+        s = self._pm_s
+
+        remaining = self._pm_vref * dt
+
+        while remaining > 0 and i < len(wps) - 1:
+            p0 = wps[i]
+            p1 = wps[i+1]
+            d = float(np.linalg.norm(p1 - p0))
+            if d < 1e-9:
+                i += 1
+                s = 0.0
+                continue
+
+            left = d - s
+            step = min(left, remaining)
+            s += step
+            remaining -= step
+
+            if s >= d - 1e-9:
+                i += 1
+                s = 0.0
+
+        # clamp
+        if i >= len(wps) - 1:
+            i = len(wps) - 2
+            s = float(np.linalg.norm(wps[i+1] - wps[i]))
+
+        p0 = wps[i]
+        p1 = wps[i+1]
+        d = float(np.linalg.norm(p1 - p0))
+        t = 0.0 if d < 1e-9 else (s / d)
+        pos = (1 - t) * p0 + t * p1
+
+        theta = float(math.atan2(p1[1] - p0[1], p1[0] - p0[0]))
+
+        self._pm_seg_i = i
+        self._pm_s = s
+        # wp_idx pro HUD (bolinha verde)
+        self.wp_idx = min(i + 1, len(wps) - 1)
+
+        return np.array([float(pos[0]), float(pos[1]), theta], dtype=float)

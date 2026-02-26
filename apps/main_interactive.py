@@ -19,8 +19,13 @@ from src.ui.ui_elements import TextBoxDropdown
 from src.ui.map_editor import MapEditorScreen
 from src.ui.simulation_screen import SimulationScreen 
 from src.ui.uwb_test_screen import UwbTestScreen
+from src.ui.algo_test_screen import AlgoTestScreen
 from src.ui.drawing import draw_grid, draw_axes, draw_anchors, draw_path, draw_robot, draw_text
 from src.ui.botton import Button
+from src.uwb.algoritmos_estaticos import ANCHORS_LAB_CBA, SALA_LAB
+from src.uwb.algoritmos_step import ALGORITMOS, NOMES_UI, criar_localizadores
+from src.uwb.uwb_sim import UwbSimPipeline, UwbSimConfig
+from src.uwb.shared_state import SharedUwbState
 
 
 # ==========================
@@ -128,6 +133,7 @@ STATE_MENU = 0          # menu inicial
 STATE_SIM = 1           # simulação rodando
 STATE_MAPEDITOR = 2     # editor de mapa
 STATE_UWB_TEST = 3      # tela de testes UWB
+STATE_ALGO_TEST = 4     # comparação de algoritmos (dataset ou step)
 
 # =========================
 # Main loop
@@ -144,18 +150,12 @@ def main():
     # -------- MENU --------
     state = STATE_MENU
 
-    # presets
-    anchor_presets = ["Tectrol", "Nenhuma"]
-    route_presets = ["Quadrado", "Círculo", "Oito", "Nenhuma"]
-    sel_anchor = 0
-    sel_route = 0
-
     btn_start = Button((440, 520, 180, 44), "Iniciar simulação", bigfont, bg=(240,250,240), fg=GREEN, border=GREEN)
     btn_logs  = Button((720, 520, 180, 44), "Abrir pasta de logs", bigfont)
-    btn_anchor = Button((440, 420, 220, 40), f"Âncoras: {anchor_presets[sel_anchor]}", font)
-    btn_route  = Button((720, 420, 220, 40), f"Rota: {route_presets[sel_route]}", font)
     btn_mapedit = Button((440, 580, 220, 44), "Editor de mapa", bigfont)
     btn_uwbtest = Button((720, 580, 220, 44), "Testes UWB", bigfont)
+    btn_algos   = Button((440, 636, 500, 44), "Comparar Algoritmos (Dataset / Step)", bigfont,
+                         bg=(235, 240, 255), fg=(40, 60, 180), border=(40, 60, 180))
     
 
     # estado do processo de plot
@@ -166,25 +166,9 @@ def main():
 
     DT = getattr(config, "TIME_STEP", 0.05)
 
-    def make_anchors():
-        if anchor_presets[sel_anchor] == "Tectrol":
-            return anchors_tectrol.copy()
-        else:
-            return np.zeros((3, 0))
-
-    def make_route():
-        if route_presets[sel_route] == "Quadrado":
-            return np.array(Trajectory.square(size=10, start=(-5,-5)).waypoints)
-        elif route_presets[sel_route] == "Círculo":
-            return np.array(Trajectory.circle(radius=7, points=90, center=(0,0)).waypoints)
-        elif route_presets[sel_route] == "Oito":
-            return np.array(Trajectory.figure_eight(radius=5, points=120, center=(0,0)).waypoints)
-        else:
-            return np.zeros((0,2))
 
     # placeholders
     sim = None
-    anchors_dyn = make_anchors()
     env = make_environment()
     waypoints = None
     autopilot = True
@@ -192,6 +176,7 @@ def main():
     path_true, path_pred, path_est = [], [], []
     speed_factor = 1
     show_debug = False
+    shared_uwb = SharedUwbState.make_default(seed=123)
 
     # pan/zoom
     panning = False
@@ -234,6 +219,7 @@ def main():
     sim_screen = None                 # instancia do sim screen
     uwb_screen = None                 # instancia do uwb test screen
 
+    shared_uwb = SharedUwbState.make_default(seed=123)
 
     running = True
     while running:
@@ -247,10 +233,28 @@ def main():
                 elif event.type == pg.MOUSEBUTTONDOWN:
                     if btn_start.hit(event.pos):
 
-                        anchors_dyn = make_anchors()
+                        anchors_dyn = shared_uwb.anchors_np3()
 
+                        # sincroniza shared com o preset inicial
+                        shared_uwb.anchors_xy = [(float(anchors_dyn[0,i]), float(anchors_dyn[1,i])) for i in range(anchors_dyn.shape[1])]
+                        shared_uwb.reindex_anchor_params()
+                        shared_uwb.sync_pipeline_from_state()
+
+                        num_anchors = 0 if anchors_dyn is None else anchors_dyn.shape[1]
+
+                        uwb_pipeline = None
+                        if num_anchors > 0:
+                            # seed fixa por enquanto 
+                            uwb_seed = 123
+
+                            # defaults = DS-TWR + canal básico (você pode trocar via UwbSimConfig depois)
+                            sim_cfg = UwbSimConfig()
+                            uwb_pipeline = UwbSimPipeline.from_config(sim_cfg, seed=uwb_seed)
+                            # alternativa mínima:
+                            # uwb_pipeline = UwbSimPipeline.from_defaults(seed=uwb_seed)
+                            
                         sim = Simulator(
-                            anchors=anchors_dyn.copy(),
+                            anchors=shared_uwb.anchors_np3().copy(),
                             baseline=getattr(config, "WHEEL_BASE", 0.65),
                             z_c=getattr(config, "TAG_HEIGHT", 0.5),
                             Q=np.diag([1e-4, 1e-4, 1e-4]),
@@ -258,7 +262,8 @@ def main():
                             if anchors_dyn.shape[1] > 0 else np.eye(2) * 1e6,
                             dt=DT,
                             config=config,
-                            env=env
+                            env=env,
+                            uwb_pipeline=uwb_pipeline
                         )
 
                         sim_screen = SimulationScreen(
@@ -270,26 +275,23 @@ def main():
                             bigfont=bigfont,
                             side_width=SIDE_W,
                             plot_state=plot_state,
+                            shared_uwb=shared_uwb,
                         )
+                        
+                        # garante que o sim usa o pipeline do shared
+                        sim.uwb_pipeline = shared_uwb.pipeline
 
                         # inicializações específicas do SIM (rotas, âncoras etc)
-                        sim_screen.anchors_dyn = anchors_dyn.copy()
-                        sim_screen.waypoints = make_route()
-                        sim_screen.autopilot = len(sim_screen.waypoints) > 0
+                        sim_screen.anchors_dyn = shared_uwb.anchors_np3()
+                        sim_screen.waypoints = None
+                        sim_screen.autopilot = False
 
                         state = STATE_SIM
 
                     elif btn_logs.hit(event.pos):
                         # abre pasta de logs
                         open_folder(getattr(config, "LOG_DIR", "logs"))
-                    elif btn_anchor.hit(event.pos):
-                        # muda preset de âncoras
-                        sel_anchor = (sel_anchor + 1) % len(anchor_presets)
-                        btn_anchor.text = f"Âncoras: {anchor_presets[sel_anchor]}"
-                    elif btn_route.hit(event.pos):
-                        # muda preset de rota
-                        sel_route = (sel_route + 1) % len(route_presets)
-                        btn_route.text = f"Rota: {route_presets[sel_route]}"
+
                     elif btn_mapedit.hit(event.pos):
                         # muda para o editor de mapas
                         state = STATE_MAPEDITOR
@@ -332,6 +334,26 @@ def main():
                             font=font,
                             bigfont=bigfont,
                             side_width=SIDE_W,
+                            shared_uwb=shared_uwb,
+                            sim=locals().get("sim", None),  # opcional, pode ser None; se presente, mostra a simulação junto com os testes de UWB
+                        )
+
+                    elif btn_algos.hit(event.pos):
+                        # muda para tela de comparação de algoritmos
+                        state = STATE_ALGO_TEST
+                        cam.reset_view()
+                        cam.set_viewport(screen.get_width() - SIDE_W, screen.get_height())
+
+                        anchors_dyn = shared_uwb.anchors_np3()
+
+                        algo_screen = AlgoTestScreen(
+                            screen     = screen,
+                            cam        = cam,
+                            clock      = clock,
+                            font       = font,
+                            bigfont    = bigfont,
+                            side_width = SIDE_W,
+                            anchors    = anchors_dyn.copy() if anchors_dyn is not None else None,
                         )
 
                 elif event.type == pg.KEYDOWN and event.key == pg.K_ESCAPE:
@@ -342,12 +364,11 @@ def main():
             title = pg.font.SysFont("arial", 34, bold=True).render("BC-EKF — Simulador 2D (Menu)", True, BLACK)
             screen.blit(title, (screen.get_width()//2 - title.get_width()//2, 120))
             draw_text(screen, "Selecione presets e inicie a simulação:", 440, 240, bigfont)
-            btn_anchor.draw(screen)
-            btn_route.draw(screen)
             btn_start.draw(screen)
             btn_logs.draw(screen)
             btn_mapedit.draw(screen)
             btn_uwbtest.draw(screen)
+            btn_algos.draw(screen)
             draw_text(screen, "ESC para sair", 20, screen.get_height()-30, font)
             pg.display.flip()
             continue
@@ -483,6 +504,29 @@ def main():
             pg.display.flip()
             continue
 
+        # ======= ESTADO ALGO_TEST =======
+        if state == STATE_ALGO_TEST:
+            cam.set_viewport(screen.get_width() - SIDE_W, screen.get_height())
+            dt = clock.tick(FPS) / 1000.0
+
+            events = pg.event.get()
+            actions = algo_screen.handle_events(events)
+
+            if actions.go_to_menu:
+                algo_screen.close()
+                algo_screen = None
+                state = STATE_MENU
+                continue
+
+            if actions.quit_app:
+                algo_screen.close()
+                running = False
+                continue
+
+            algo_screen.update(dt)
+            algo_screen.draw()
+            continue
+
 
 
 if __name__ == "__main__":
@@ -496,7 +540,3 @@ if __name__ == "__main__":
         pass
 
     main()
-
-
-
-

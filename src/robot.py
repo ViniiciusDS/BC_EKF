@@ -5,15 +5,45 @@ try:
 except Exception:
     import utils
 import numpy as np
+import math
 
 class Robot:
     """
     Classe que representa o estado do robô e seu modelo cinemático.
+
+    Geometria:
+        - Dois UWB (front e rear) separados por baseline (l)
+        - tag_front: POI + l * [cos(theta), sin(theta)]
+        - tag_rear:  POI - l * [cos(theta), sin(theta)]
+        - POI: ponto de interesse (centro do robô, onde o EKF estima a pose)
     """
     def __init__(self, config):
         self.x = self.y = self.theta = 0.0
         self.v = self.omega = 0.0
         self.config = config
+        # Baseline
+        self.l = getattr(config, "UWB_BASELINE", 0.65) / 2.0
+
+    @property
+    def poi_pose(self):
+        """Retorna a pose do ponto de interesse (POI) do robô."""
+        return (self.x, self.y, self.theta)
+    
+    @property
+    def tag_front_pos(self):
+        """Posição 2D da tag frontal."""
+        return (
+            self.x + self._l * math.cos(self.theta),
+            self.y + self._l * math.sin(self.theta),
+        )
+
+    @property
+    def tag_rear_pos(self):
+        """Posição 2D da tag traseira."""
+        return (
+            self.x - self._l * math.cos(self.theta),
+            self.y - self._l * math.sin(self.theta),
+        )
 
     def update(self, v_target, omega_target, dt):
         """Atualiza o estado do robô aplicando limites físicos."""
@@ -59,7 +89,8 @@ def simulate_trajectory_motion(
     anchors,
     baseline,
     z_c=0.5,
-    debug=False
+    debug=False,
+    uwb_pipeline=None # None = legado
 ):
     """
     Simula execução de uma trajetória real com ruído.
@@ -107,13 +138,24 @@ def simulate_trajectory_motion(
         x_hist_true[:, k] = x_true
 
         if num_anchors > 0:
-            pf = [x_true[0] + baseline * np.cos(x_true[2]),
-                  x_true[1] + baseline * np.sin(x_true[2]), z_c]
-            pr = [x_true[0] - baseline * np.cos(x_true[2]),
-                  x_true[1] - baseline * np.sin(x_true[2]), z_c]
-            for i in range(num_anchors):
-                z_hist[2*i, k]     = utils.apply_uwb_errors(np.linalg.norm(pf - anchors[:, i]), sigma_uwb)
-                z_hist[2*i + 1, k] = utils.apply_uwb_errors(np.linalg.norm(pr - anchors[:, i]), sigma_uwb)
+            l = baseline / 2.0
+            pf_xy = np.array([x_true[0] + l * np.cos(x_true[2]),
+                               x_true[1] + l * np.sin(x_true[2])])
+            pr_xy = np.array([x_true[0] - l * np.cos(x_true[2]),
+                               x_true[1] - l * np.sin(x_true[2])])
+
+            if uwb_pipeline is not None:
+                # --- Novo pipeline TWR ---
+                z_k = uwb_pipeline.measure(x_true, anchors, l, z_c)
+                z_hist[:, k] = z_k
+            else:
+                # --- Legado ---
+                pf = [pf_xy[0], pf_xy[1], z_c]
+                pr = [pr_xy[0], pr_xy[1], z_c]
+                for i in range(num_anchors):
+                    z_hist[2*i, k]     = utils.apply_uwb_errors(np.linalg.norm(pf - anchors[:, i]), sigma_uwb)
+                    z_hist[2*i + 1, k] = utils.apply_uwb_errors(np.linalg.norm(pr - anchors[:, i]), sigma_uwb)
+
 
         if debug:
             print(f"[step {k}] pos=({x_true[0]:.2f},{x_true[1]:.2f}) θ={x_true[2]:.2f} v={v_cmd:.2f} w={w_cmd:.2f}")

@@ -19,19 +19,68 @@ LBL = (40, 40, 40)
 GREEN = (50, 170, 80)
 
 
-def draw_robot(surface, cam, x, y, theta, color=BLACK):
-    L = 0.5
-    W = 0.32
-    p_front = (x + L * math.cos(theta), y + L * math.sin(theta))
-    p_l = (x + W * math.cos(theta + 2.5), y + W * math.sin(theta + 2.5))
-    p_r = (x + W * math.cos(theta - 2.5), y + W * math.sin(theta - 2.5))
-    pts = [cam.world_to_screen(*p) for p in (p_front, p_l, p_r)]
-    pg.draw.polygon(surface, color, pts)
-    # nariz
-    a = cam.world_to_screen(x, y)
-    b = cam.world_to_screen(x + (L + 0.25) * math.cos(theta), y + (L + 0.25) * math.sin(theta))
-    pg.draw.line(surface, WHITE, a, b, 2)
+def draw_robot(surface, cam, x, y, theta, color=BLACK, l=0.325):
+    """
+    Desenha o robô:
+      - Linha conectando tag frontal e traseira (eixo do robô)
+      - Dois círculos vermelhos nas posições das tags UWB
+      - Estrela azul no ponto de interesse (POI = centro entre as tags)
+      - Seta indicando a direção (heading)
 
+    Parâmetros:
+        x, y, theta : pose do POI (ponto de interesse = centro do robô)
+        l           : metade do baseline (distância do POI até cada tag)
+        color       : cor do contorno/seta (preto = real, laranja = estimado)
+    """
+    TAG_COLOR  = (210, 40,  40)   # vermelho — tags UWB
+    TAG_RING   = color            # anel externo com a cor do robô (real/estimado)
+    POI_COLOR  = (40,  90, 210)   # azul — ponto de interesse
+    BODY_COLOR = color            # linha do corpo
+
+    # Posições mundo das duas tags
+    tf_x = x + l * math.cos(theta)
+    tf_y = y + l * math.sin(theta)
+    tr_x = x - l * math.cos(theta)
+    tr_y = y - l * math.sin(theta)
+
+    # Conversão para tela
+    sf  = cam.world_to_screen(tf_x, tf_y)   # tag front (tela)
+    sr  = cam.world_to_screen(tr_x, tr_y)   # tag rear  (tela)
+    sp  = cam.world_to_screen(x, y)          # POI       (tela)
+
+    # Raio dos elementos em pixels (escala com zoom, com clamp)
+    r_tag = max(5, min(12, int(cam.scale * 0.18)))
+    r_poi = max(3, min(8,  int(cam.scale * 0.10)))
+    star_r = max(5, min(14, int(cam.scale * 0.22)))
+
+    # 1) Linha do corpo (tag traseira → tag frontal) 
+    pg.draw.line(surface, BODY_COLOR, sr, sf, max(1, r_tag // 3))
+
+    # 2) Tags UWB (círculos vermelhos com anel de cor do robô) 
+    for s in (sf, sr):
+        pg.draw.circle(surface, TAG_COLOR, s, r_tag)
+        pg.draw.circle(surface, TAG_RING,  s, r_tag, max(1, r_tag // 4))
+
+    # 3) POI — estrela de 4 pontas 
+    _draw_star4(surface, sp, star_r, POI_COLOR, color)
+
+    # 4) Seta de heading (do POI na direção theta) 
+    arrow_len = max(star_r + r_tag + 2, int(cam.scale * 0.30))
+    tip_x = int(sp[0] + arrow_len * math.cos(theta))
+    tip_y = int(sp[1] - arrow_len * math.sin(theta))   # Y invertido na tela
+    pg.draw.line(surface, color, sp, (tip_x, tip_y), max(1, r_tag // 4))
+    # ponta da seta
+    aw = max(3, r_tag // 2)
+    perp_cos = math.cos(theta + math.pi * 0.75)
+    perp_sin = math.sin(theta + math.pi * 0.75)
+    perp_cos2 = math.cos(theta - math.pi * 0.75)
+    perp_sin2 = math.sin(theta - math.pi * 0.75)
+    pg.draw.line(surface, color,
+                 (tip_x, tip_y),
+                 (int(tip_x + aw * perp_cos),  int(tip_y - aw * perp_sin)),  max(1, r_tag // 4))
+    pg.draw.line(surface, color,
+                 (tip_x, tip_y),
+                 (int(tip_x + aw * perp_cos2), int(tip_y - aw * perp_sin2)), max(1, r_tag // 4))
 
 def draw_grid(surface, cam):
     """
@@ -178,3 +227,25 @@ def draw_path(surface, cam, path_xy, color, width=2, dashed=False):
 def draw_text(surface, txt, x, y, font, color=LBL):
     img = font.render(txt, True, color)
     surface.blit(img, (x, y))
+
+def _draw_star4(surface, center, radius, fill_color, outline_color):
+    """
+    Desenha uma estrela de 4 pontas centrada em 'center' com raio 'radius'.
+    Alinhada com os eixos (pontas em 0°, 90°, 180°, 270°).
+    """
+    cx, cy = center
+    inner = max(2, radius // 3)  # raio interno (entre pontas)
+
+    # 8 vértices: ponta, lateral, ponta, lateral, ...
+    # ângulos: 0°(direita), 45°, 90°(cima), 135°, 180°, 225°, 270°, 315°
+    pts = []
+    for i in range(8):
+        angle = math.radians(i * 45)
+        r = radius if (i % 2 == 0) else inner
+        pts.append((
+            int(cx + r * math.cos(angle)),
+            int(cy - r * math.sin(angle)),
+        ))
+
+    pg.draw.polygon(surface, fill_color,   pts)
+    pg.draw.polygon(surface, outline_color, pts, max(1, radius // 6))
