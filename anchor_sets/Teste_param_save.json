@@ -1,0 +1,78 @@
+{
+  "anchors_xy": [
+    [
+      0.5454545454545454,
+      2.909090909090909
+    ],
+    [
+      0.5454545454545454,
+      -3.6363636363636362
+    ],
+    [
+      -4.954545454545454,
+      0.0
+    ],
+    [
+      5.2272727272727275,
+      -0.09090909090909091
+    ]
+  ],
+  "tag_params": {
+    "clock": {
+      "drift_ppm": 0.0
+    },
+    "ant": {
+      "tx_ns": 0.0,
+      "rx_ns": 0.0
+    },
+    "range_bias_m": 0.0
+  },
+  "anchor_params": {
+    "0": {
+      "clock": {
+        "drift_ppm": 20.0
+      },
+      "ant": {
+        "tx_ns": 0.0,
+        "rx_ns": 0.0
+      },
+      "range_bias_m": 0.0
+    },
+    "1": {
+      "clock": {
+        "drift_ppm": 0.0
+      },
+      "ant": {
+        "tx_ns": 10.0,
+        "rx_ns": 0.0
+      },
+      "range_bias_m": 0.0
+    },
+    "2": {
+      "clock": {
+        "drift_ppm": 0.0
+      },
+      "ant": {
+        "tx_ns": 0.0,
+        "rx_ns": 10.0
+      },
+      "range_bias_m": 0.0
+    },
+    "3": {
+      "clock": {
+        "drift_ppm": 0.0
+      },
+      "ant": {
+        "tx_ns": 0.0,
+        "rx_ns": 0.0
+      },
+      "range_bias_m": 0.1
+    }
+  },
+  "meta": {
+    "count": 4,
+    "timestamp": "2026-02-27T15:36:02.268405",
+    "version": "1.0",
+    "description": "Anchor set: Teste_param_save.json"
+  }
+}

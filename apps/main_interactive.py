@@ -10,7 +10,6 @@ import pygame as pg
 
 
 from src.simulator import Simulator
-from src.trajectory import Trajectory
 from src.scenarios import anchors_tectrol
 import src.config as config
 from src.environment import Environment, Obstacle, draw_environment
@@ -235,11 +234,6 @@ def main():
 
                         anchors_dyn = shared_uwb.anchors_np3()
 
-                        # sincroniza shared com o preset inicial
-                        shared_uwb.anchors_xy = [(float(anchors_dyn[0,i]), float(anchors_dyn[1,i])) for i in range(anchors_dyn.shape[1])]
-                        shared_uwb.reindex_anchor_params()
-                        shared_uwb.sync_pipeline_from_state()
-
                         num_anchors = 0 if anchors_dyn is None else anchors_dyn.shape[1]
 
                         uwb_pipeline = None
@@ -354,6 +348,7 @@ def main():
                             bigfont    = bigfont,
                             side_width = SIDE_W,
                             anchors    = anchors_dyn.copy() if anchors_dyn is not None else None,
+                            shared_uwb = shared_uwb,
                         )
 
                 elif event.type == pg.KEYDOWN and event.key == pg.K_ESCAPE:
@@ -525,6 +520,7 @@ def main():
 
             algo_screen.update(dt)
             algo_screen.draw()
+            pg.display.flip()
             continue
 
 

@@ -72,6 +72,9 @@ class Simulator:
         # Se none, o simulador gera medições UWB simples com ruído gaussiano. (legado)
         self.uwb_pipeline = uwb_pipeline
 
+        self.last_zk = None  # para debug e HUD
+
+
     def step(
         self,
         v_cmd: float,
@@ -81,7 +84,8 @@ class Simulator:
         perfect_odometry: bool = False,
         perfect_uwb: bool = False,
         perfect_filter_model: bool = False,
-        true_override: Optional[np.ndarray] = None
+        true_override: Optional[np.ndarray] = None,
+        use_odometry: bool = True 
     ) -> None:
         """Executa um passo: integra robô, simula sensores, roda EKF e loga."""
 
@@ -112,7 +116,10 @@ class Simulator:
         # ----------------------------
         # 2) Odometria medida
         # ----------------------------
-        if perfect_odometry:
+        if not use_odometry:
+            # modo "sem odometria": filtro não recebe v,w medidos
+            v_meas, w_meas = 0.0, 0.0
+        elif perfect_odometry:
             v_meas, w_meas = v_applied, w_applied
         else:
             v_meas = v_applied + np.random.randn() * self.sigma_v
@@ -188,16 +195,25 @@ class Simulator:
         # ----------------------------
         EPS_Q = 1e-6  # para evitar singularidade em Q do filtro quando modelo perfeito
 
+        no_odo = (not use_odometry)
 
         u_for_filter = np.array([v_meas, w_meas], dtype=float)
         Q_for_filter = self.Q
 
-        if perfect_filter_model:
+        # --- entrada do filtro ---
+        if no_odo:
+            u_for_filter = np.array([0.0, 0.0], dtype=float)
+
+            # quando não tem odometria, o modelo fica muito mais incerto:
+            # aumenta Q para o filtro conseguir "andar" via correção do UWB
+            Q_for_filter = self.Q * float(getattr(config, "Q_NO_ODOMETRY_SCALE", 25.0))
+
+        elif perfect_filter_model:
             u_for_filter = np.array([v_applied, w_applied], dtype=float)
-            Q_for_filter = np.eye(self.Q.shape[0]) * EPS_Q  # modelo perfeito, sem incerteza de processo
+            Q_for_filter = np.eye(self.Q.shape[0]) * EPS_Q
         else:
             u_for_filter = np.array([v_meas, w_meas], dtype=float)
-            Q_for_filter = self.Q  # modelo não-perfeito, mantém Q configurado
+            Q_for_filter = self.Q
 
         # Garante formato de z_k
         if num_anchors > 0:
@@ -255,6 +271,14 @@ class Simulator:
                 v_meas=float(v_meas), w_meas=float(w_meas),
                 pos_err=pos_err, heading_err_deg=head_err_deg
             )
+
+        if self.uwb_pipeline and self.anchors is not None:
+            z_k = self.uwb_pipeline.measure(
+                np.array([x_true, y_true, theta_true], dtype=float),
+                self.anchors, self.l, self.z_c,
+                return_meta=False
+            )
+            self.last_zk = z_k  # para debug e HUD
 
         return {
             "true": np.array([x_true, y_true, theta_true], dtype=float),
@@ -323,3 +347,37 @@ class Simulator:
         z[0::2] = Df
         z[1::2] = Dr
         return z
+
+    def compute_gdop(self, x: float, y: float) -> float:
+        """
+        GDOP 2D baseado nas âncoras e posição (x,y).
+        Implementa a ideia do artigo: GDOP = tr((B^T B)^-1).  :contentReference[oaicite:2]{index=2}
+
+        Observação: em literatura GNSS às vezes aparece sqrt(trace(...)).
+        Aqui seguimos o artigo (sem sqrt).
+        """
+        if self.anchors is None or self.anchors.size == 0 or self.anchors.shape[1] < 3:
+            return float("nan")
+
+        xa = self.anchors[0, :]
+        ya = self.anchors[1, :]
+
+        dx = xa - float(x)
+        dy = ya - float(y)
+        r = np.sqrt(dx * dx + dy * dy)
+
+        # evita divisão por zero (robô em cima de âncora)
+        eps = 1e-9
+        r = np.maximum(r, eps)
+
+        # B: n x 2 (direção unitária)
+        B = np.stack([dx / r, dy / r], axis=1)  # shape (n,2)
+
+        BtB = B.T @ B
+        try:
+            inv = np.linalg.inv(BtB)
+        except np.linalg.LinAlgError:
+            return float("inf")
+
+        gdop = float(np.trace(inv))
+        return gdop

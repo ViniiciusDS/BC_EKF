@@ -122,6 +122,9 @@ class UwbSimPipeline:
         default_params: NodeParams,
         seed:          Optional[int] = None,
     ) -> None:
+        self.seed = None
+
+        # Inicializa o modelo de canal e o protocolo TWR
         self.ranging_model = UwbRangingModel(ranging_cfg, seed=seed)
 
         if twr_cfg.mode == TWRMode.DS_TWR:
@@ -129,9 +132,31 @@ class UwbSimPipeline:
         else:
             self.protocol = SS_TWR_Protocol(twr_cfg, seed=seed)
 
+        # Parâmetros de nó
         self.tag_params     = tag_params
         self.anchor_params  = anchor_params   # Dict[anchor_idx → NodeParams]
         self.default_params = default_params  # fallback para âncoras sem override
+
+        # Seta Seed 
+        self.seed = seed
+
+    @property
+    def seed(self) -> Optional[int]:
+        return self._seed
+
+    @seed.setter
+    def seed(self, value: Optional[int]) -> None:
+        self._seed = None if value is None else int(value)
+
+        # reseed de verdade (se os objetos existirem)
+        if hasattr(self, "ranging_model") and self.ranging_model is not None:
+            import numpy as np
+            self.ranging_model.rng = np.random.default_rng(self._seed)
+
+        if hasattr(self, "protocol") and self.protocol is not None:
+            import numpy as np
+            self.protocol.rng = np.random.default_rng(self._seed)
+
 
     # Construtor conveniente 
     @classmethod
@@ -277,6 +302,112 @@ class UwbSimPipeline:
                 })
 
         return (z_k, meta_list) if return_meta else z_k
+    
+    def measure_ranges_and_sigmas(
+        self,
+        x_state: np.ndarray,          # [x,y,theta]
+        anchors: np.ndarray,          # 3 x N
+        l: float,                     # metade do baseline
+        tag: str = "mid",             # "front" | "rear" | "mid"
+        return_meta: bool = False,
+        dropout_sigma: float = 10.0,  # sigma reportado quando dropped (pra dataset)
+    ):
+        """
+        Mede range para UMA tag (front/rear/mid) e retorna:
+          ranges_m: (N,)
+          sigmas_m: (N,)
+          meta (opcional): lista com N dicts
+
+        O sigma_i é escolhido de forma compatível com o canal:
+          - LOS  -> sigma_los
+          - NLOS -> sigma_nlos
+          - drop -> sigma grande (dropout_sigma)
+        """
+        if anchors is None or anchors.shape[1] == 0:
+            empty = np.empty((0,), dtype=float)
+            return (empty, empty, []) if return_meta else (empty, empty)
+
+        xk, yk, th = float(x_state[0]), float(x_state[1]), float(x_state[2])
+
+        if tag == "front":
+            tag_xy = np.array([xk + l*np.cos(th), yk + l*np.sin(th)], dtype=float)
+        elif tag == "rear":
+            tag_xy = np.array([xk - l*np.cos(th), yk - l*np.sin(th)], dtype=float)
+        else:  # "mid"
+            tag_xy = np.array([xk, yk], dtype=float)
+
+        num_anchors = anchors.shape[1]
+        ranges = np.zeros((num_anchors,), dtype=float)
+        sigmas = np.zeros((num_anchors,), dtype=float)
+        meta_list = []
+
+        # tag params (uma vez)
+        twr_clock_tag = _node_to_twr_clock(self.tag_params)
+        twr_delay_tag = _node_to_twr_delay(self.tag_params)
+
+        # tenta capturar sigma_los/nlos do ranging_model 
+        sigma_los = float(getattr(self.ranging_model, "sigma_los", 0.03))
+        sigma_nlos = float(getattr(self.ranging_model, "sigma_nlos", 0.15))
+        # se seu UwbRangingModel guarda config em .cfg, prefere ela:
+        cfg = getattr(self.ranging_model, "cfg", None)
+        if cfg is not None:
+            sigma_los = float(getattr(cfg, "sigma_los", sigma_los))
+            sigma_nlos = float(getattr(cfg, "sigma_nlos", sigma_nlos))
+
+        for i in range(num_anchors):
+            a_xy = anchors[:2, i]
+
+            anc_p = self.anchor_params.get(i, self.default_params)
+            twr_clock_anc = _node_to_twr_clock(anc_p)
+            twr_delay_anc = _node_to_twr_delay(anc_p)
+            range_bias = float(anc_p.range_bias_m)
+
+            res: TWRResult = self.protocol.simulate(
+                a_xy          = a_xy,
+                tag_xy        = tag_xy,
+                channel       = self.ranging_model,
+                clock_anchor  = twr_clock_anc,
+                clock_tag     = twr_clock_tag,
+                delay_anchor  = twr_delay_anc,
+                delay_tag     = twr_delay_tag,
+            )
+
+            r_true = float(np.linalg.norm(tag_xy - a_xy))
+
+            dropped = bool(getattr(res, "dropped", False))
+            is_nlos = bool(getattr(res, "is_nlos", False))
+
+            # range medido 
+            if (getattr(res, "r_est_m", None) is None) or dropped:
+                z = r_true
+            else:
+                z = float(res.r_est_m)
+
+            z = float(z) + range_bias
+            ranges[i] = z
+
+            # sigma_i (reportado)
+            if dropped:
+                sig = float(dropout_sigma)
+            else:
+                sig = float(sigma_nlos if is_nlos else sigma_los)
+
+            sigmas[i] = sig
+
+            if return_meta:
+                meta_list.append({
+                    "anchor_idx": i,
+                    "tag": tag,
+                    "r_true": float(getattr(res, "r_true_m", r_true)),
+                    "r_est": getattr(res, "r_est_m", None),
+                    "is_nlos": is_nlos,
+                    "dropped": dropped,
+                    "ppm_anchor": float(anc_p.clock.drift_ppm),
+                    "bias_m": float(range_bias),
+                    "sigma_i": float(sig),
+                })
+
+        return (ranges, sigmas, meta_list) if return_meta else (ranges, sigmas)
 
     # Atualização dinâmica de parâmetros 
     def update_anchor_params(self, anchor_idx: int, params: NodeParams) -> None:

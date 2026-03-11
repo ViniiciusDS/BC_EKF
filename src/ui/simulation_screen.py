@@ -10,7 +10,6 @@ import os
 import json
 
 import src.config as config
-from src.scenarios import anchors_tectrol
 from src.utils import push_plot_data, RunLogger, start_plot_process, stop_plot_process
 from src.environment import draw_environment
 from src.trajectory import Trajectory  
@@ -19,6 +18,8 @@ from src.control.waypoint_controller import waypoint_controller
 from src.ui.drawing import draw_grid, draw_axes, draw_anchors, draw_path, draw_robot, draw_text
 from src.ui.botton import Button
 from src.uwb.shared_state import SharedUwbState
+from src.uwb.node_params_serialization import shared_state_to_dict, dict_to_node_params, upgrade_anchors_file_format, validate_anchors_data
+from src.experiments.dataset_export import export_uwb_dataset_from_sim, DatasetConfig                            
 
 BLACK   = (0, 0, 0)
 WHITE   = (255, 255, 255)
@@ -52,8 +53,8 @@ class SimulationScreen:
       - HUD lateral (botões, textboxes, debug)
       - logging em arquivo (RunLogger)
       - envio de dados para gráficos (push_plot_data)
-    """
-
+    """ 
+        ####        TP INIT       #####
     def __init__(
         self,
         screen: pg.Surface,
@@ -98,6 +99,7 @@ class SimulationScreen:
             "perfect_odometry": False,
             "perfect_uwb": False,
             "perfect_filter_model": False,
+            "use_odometry": True,
         }
 
         self.robot_rows = []
@@ -123,6 +125,21 @@ class SimulationScreen:
         self.head_err = 0.0
         self.innov_norm: Optional[float] = None
         self.nis: Optional[float] = None
+        self.gdop = float("nan")
+
+        # ----------------------------
+        # GDOP stats para debug e análise (média, min, max)
+        # ----------------------------
+        self.gdop = float("nan")
+        self._gdop_sum = 0.0
+        self._gdop_count = 0
+        self._gdop_min = float("inf")
+        self._gdop_max = float("-inf")
+        self.gdop_avg = float("nan")
+
+        # (opcional) histórico pra plot
+        self.gdop_hist = []
+        self.gdop_hist_maxlen = 5000
 
         # logging em arquivo
         self.filelog_on = False
@@ -132,7 +149,6 @@ class SimulationScreen:
         self.btn_filelog = None
         self.btn_graphs = None
         self.btn_place_anchor = None
-        self.btn_tectrol = None
         self.textbox_x = None
         self.textbox_y = None
 
@@ -159,6 +175,20 @@ class SimulationScreen:
             text="Adicionar Âncora (x,y)",
             font=self.font,
             bg=(235, 250, 235),
+        )  
+
+        # ---- HUD: ferramentas  ----
+        self.btn_filelog = Button(
+            rect=(0, 0, 190, 30),
+            text="Log arquivo: OFF",
+            font=self.font,
+            bg=(235, 250, 235),
+        )
+        self.btn_graphs = Button(
+            rect=(0, 0, 190, 30),
+            text="Mostrar Gráficos",
+            font=self.font,
+            bg=(235, 235, 250),
         )
 
         self.shared_uwb = shared_uwb
@@ -204,6 +234,24 @@ class SimulationScreen:
         self._pm_s = 0.0
         self._pm_vref = 0.6  # velocidade ao longo do caminho quando perfect
 
+        self.btn_gen_dataset = Button((0,0,190,30), "Gerar Dataset", self.font, bg=(245,235,210))
+        self.dataset_tag_mode = "mid"   # "front" | "rear" | "mid"
+        # --- Modal Robô: seleção de tag do dataset (dropdown) ---
+        self.dataset_tag_dropdown = TextBoxDropdown(
+            pg.Rect(0, 0, 160, 26),
+            self.font,
+            options=["mid", "front", "rear"],
+        )
+        self.dataset_tag_dropdown.set_text(self.dataset_tag_mode)
+        self.dataset_tag_dropdown.active = False
+        self.dataset_tag_dropdown.dropdown_open = False
+        # --- Dataset recording (ao vivo, sem travar UI) ---
+        self.dataset_recording = False
+        self.dataset_fp = None
+        self.dataset_sample_dt = 0.10   # 10 Hz (ajuste como quiser)
+        self._dataset_acc = 0.0
+        self.dataset_out_path = None
+
 
 
 
@@ -221,6 +269,10 @@ class SimulationScreen:
 
         actions = SimActions()
 
+        # garante que hitboxes estejam atualizadas antes dos cliques
+        self.layout_hud()
+        self._layout_topbar_buttons()
+
         for event in events:
             if event.type == pg.QUIT:
                 # deixe o main decidir sair do programa inteiro
@@ -235,10 +287,28 @@ class SimulationScreen:
                         continue
 
                     # repassa teclado pro campo certo
-                    if self.modal_mode in ("load_route", "load_anchors"):
-                        self.modal_dropdown.handle_event(event)
-                    else:
-                        self.modal_namebox.handle_event(event)
+
+                        # 1) dropdown dataset tag
+                        if self.dataset_tag_dropdown:
+                            # Se o dropdown estiver aberto, deixe ele processar o clique SEMPRE
+                            # (isso permite clicar nas opções "front/rear")
+                            if self.dataset_tag_dropdown.dropdown_open:
+                                self.dataset_tag_dropdown.handle_event(event)
+
+                                # se depois do clique ele fechou (escolheu algo), desativa foco
+                                if not self.dataset_tag_dropdown.dropdown_open:
+                                    self.dataset_tag_dropdown.active = False
+                                continue
+
+                            # Caso dropdown esteja fechado, clique no campo abre
+                            inside = self.dataset_tag_dropdown.rect.collidepoint((mx, my))
+                            self.dataset_tag_dropdown.active = inside
+                            if inside:
+                                self.dataset_tag_dropdown.options_filtered = list(self.dataset_tag_dropdown.options_all)
+                                self.dataset_tag_dropdown.dropdown_open = True
+                                self.dataset_tag_dropdown.handle_event(event)
+                            else:
+                                self.dataset_tag_dropdown.dropdown_open = False
 
                     if event.key == pg.K_RETURN:
                         self._modal_confirm()
@@ -271,6 +341,46 @@ class SimulationScreen:
                             if row.hit((mx,my)):
                                 row.toggle()
                                 continue
+
+                    # dropdown tag dataset
+                    if self.dataset_tag_dropdown:
+                        # 1) Se a lista estiver aberta, ela tem prioridade total (permite clicar em front/rear)
+                        if self.dataset_tag_dropdown.dropdown_open:
+                            self.dataset_tag_dropdown.handle_event(event)
+
+                            # aplica imediatamente no estado (sem depender do OK)
+                            chosen = (self.dataset_tag_dropdown.text or "").strip().lower()
+                            if chosen in ("front", "rear", "mid"):
+                                self.dataset_tag_mode = chosen
+
+                            # se após clique a lista fechou, tira foco
+                            if not self.dataset_tag_dropdown.dropdown_open:
+                                self.dataset_tag_dropdown.active = False
+
+                            # NÃO fecha o modal neste clique
+                            continue
+
+                        # 2) Se lista estiver fechada: clique no campo abre
+                        if self.dataset_tag_dropdown.rect.collidepoint((mx, my)):
+                            self.dataset_tag_dropdown.active = True
+                            self.dataset_tag_dropdown.options_filtered = list(self.dataset_tag_dropdown.options_all)
+                            self.dataset_tag_dropdown.dropdown_open = True
+                            self.dataset_tag_dropdown.handle_event(event)
+                            continue
+                        else:
+                            self.dataset_tag_dropdown.active = False
+                            # não force dropdown_open=False aqui — deixa fechado como já está
+
+                    # --- robot_cfg: dropdown deve capturar clique mesmo fora do modal_rect ---
+                    if self.modal_mode == "robot_cfg" and getattr(self, "dataset_tag_dropdown", None):
+                        # se dropdown estiver aberto, dê prioridade TOTAL pra ele tratar o clique
+                        if self.dataset_tag_dropdown.dropdown_open:
+                            self.dataset_tag_dropdown.handle_event(event)
+                            # se escolheu uma opção, ele normalmente fecha sozinho
+                            if not self.dataset_tag_dropdown.dropdown_open:
+                                self.dataset_tag_dropdown.active = False
+                            # não fecha o modal neste clique
+                            continue
 
                     # clique fora fecha
                     if self.modal_rect and (not self.modal_rect.collidepoint((mx, my))):
@@ -306,8 +416,6 @@ class SimulationScreen:
                         actions.go_to_menu = True
                         return actions
 
-                    state = STATE_MENU
-
 
                 elif event.key == pg.K_d:
                     self.show_debug = not self.show_debug
@@ -327,12 +435,6 @@ class SimulationScreen:
                     self.sim.R = np.eye(2) * 1e6
                     self.shared_uwb.anchors_xy = []
 
-                elif event.key == pg.K_b:
-                    self.anchors_dyn = anchors_tectrol.copy()
-                    self.sim.anchors = self.anchors_dyn
-                    self.sim.R = np.eye(2 * self.anchors_dyn.shape[1]) * 0.0025
-                    self.shared_uwb.anchors_xy = [(float(self.anchors_dyn[0,i]), float(self.anchors_dyn[1,i])) for i in range(self.anchors_dyn.shape[1])]
-
                 elif event.key == pg.K_r:
                     self.cam.reset_view()
 
@@ -344,6 +446,7 @@ class SimulationScreen:
                         self.autopilot = True                    
                         self._pm_seg_i = 0
                         self._pm_s = 0.0
+                        self._reset_gdop_stats()
 
                 elif event.key == pg.K_RETURN:
                     if self.recording and len(self.recorded_points) > 1:
@@ -358,6 +461,13 @@ class SimulationScreen:
                 elif event.key == pg.K_p:
                     self.robot_cfg["perfect_motion"] = not self.robot_cfg.get("perfect_motion", False)
                     print(f"[SIM] Perfect motion: {'ON' if self.robot_cfg['perfect_motion'] else 'OFF'}")
+
+                elif event.key == pg.K_1:
+                    self.dataset_tag_mode = "front"; print("[SIM] Dataset tag: front")
+                elif event.key == pg.K_2:
+                    self.dataset_tag_mode = "rear"; print("[SIM] Dataset tag: rear")
+                elif event.key == pg.K_3:
+                    self.dataset_tag_mode = "mid"; print("[SIM] Dataset tag: mid")
                     
 
             if event.type == pg.MOUSEBUTTONDOWN:
@@ -374,6 +484,7 @@ class SimulationScreen:
                         if self.btn_tb_load_route.hit((mx, my)):
                             print("[SIM] Click: Carregar Rotas")
                             self._open_modal_load("route")
+                            self._reset_gdop_stats()
                             continue
                         if self.btn_tb_save_route.hit((mx, my)):
                             print("[SIM] Click: Salvar Rotas")
@@ -382,6 +493,7 @@ class SimulationScreen:
                         if self.btn_tb_load_anchor.hit((mx, my)):
                             print("[SIM] Click: Carregar Âncoras")
                             self._open_modal_load("anchors")
+                            self._reset_gdop_stats()
                             continue
                         if self.btn_tb_save_anchor.hit((mx, my)):
                             print("[SIM] Click: Salvar Âncoras")
@@ -451,7 +563,6 @@ class SimulationScreen:
 
                         if self.btn_filelog and self.btn_filelog.hit((mx, my)):
                             if not self.filelog_on:
-                                from src.utils import RunLogger
                                 meta = {
                                     "dt": float(self.sim.dt),
                                     "anchors": self.anchors_dyn[:2,:].T.tolist() if self.anchors_dyn is not None else [],
@@ -502,15 +613,25 @@ class SimulationScreen:
                                 print("Coordenadas inválidas para âncora.")
                             continue
 
-                        if self.btn_tectrol and self.btn_tectrol.hit((mx, my)):
-                            from src.scenarios import anchors_tectrol
-                            if self.shared_uwb:
-                                xy = [(float(anchors_tectrol[0,i]), float(anchors_tectrol[1,i])) 
-                                    for i in range(anchors_tectrol.shape[1])]
-                                self.shared_uwb.anchors_xy = xy
-                                self.shared_uwb.reindex_anchor_params()
-                                self.shared_uwb.sync_pipeline_from_state()
-                                self.anchors_dyn = self.shared_uwb.anchors_np3()
+                        elif self.btn_gen_dataset and self.btn_gen_dataset.hit((mx, my)):
+                            # precisa ter rota + anchors
+                            if self.waypoints is None or len(self.waypoints) < 2:
+                                print("[SIM] Gere uma rota antes.")
+                                continue
+                            if not self.shared_uwb or len(self.shared_uwb.anchors_xy) == 0:
+                                print("[SIM] Posicione âncoras antes.")
+                                continue
+
+                            import time
+                            stamp = time.strftime("%Y%m%d_%H%M%S")
+
+
+                            try:
+                                self._start_dataset_recording()
+                                print(f"[SIM] Dataset salvo em: {self.dataset_out_path}")
+                            except Exception as e:
+                                print(f"[SIM] Falha ao gerar dataset: {e}")
+                            continue
 
                 # -----------------------------------------
                 # CLIQUE DIREITO (mapa)
@@ -600,12 +721,34 @@ class SimulationScreen:
                     v_max=0.25, w_max=0.8
                 )
 
+            use_odo = bool(cfg.get("use_odometry", True))
+
             self.sim.step(
                 self.v_cmd, self.w_cmd,
                 perfect_motion=pm, perfect_odometry=po,
                 perfect_uwb=pu, perfect_filter_model=pf,
                 true_override=true_override,
+                use_odometry=use_odo,
             )
+
+        # GDOP (usa pose estimada por padrão; pode trocar por x_true se quiser)
+        try:
+            self.gdop = self.sim.compute_gdop(self.sim.x_est[0], self.sim.x_est[1])
+        except Exception:
+            self.gdop = float("nan")
+
+        # acumula stats se for finito
+        if np.isfinite(self.gdop):
+            self._gdop_sum += float(self.gdop)
+            self._gdop_count += 1
+            self._gdop_min = min(self._gdop_min, float(self.gdop))
+            self._gdop_max = max(self._gdop_max, float(self.gdop))
+            self.gdop_avg = self._gdop_sum / max(1, self._gdop_count)
+
+            # (opcional) histórico pra plot
+            self.gdop_hist.append(float(self.gdop))
+            if len(self.gdop_hist) > self.gdop_hist_maxlen:
+                self.gdop_hist.pop(0)
 
         if self.waypoints is not None and self.wp_idx >= len(self.waypoints):
             self.autopilot = False
@@ -677,6 +820,41 @@ class SimulationScreen:
         self.innov_norm = innov_norm
         self.nis = nis
         self._last_dt = dt
+
+        # ----------------------------
+        # Dataset recording (ao vivo)
+        # ----------------------------
+        if self.dataset_recording and self.dataset_fp and self.shared_uwb and self.shared_uwb.pipeline:
+            self._dataset_acc += float(self.sim.dt)
+
+            while self._dataset_acc >= self.dataset_sample_dt:
+                self._dataset_acc -= self.dataset_sample_dt
+
+                anchors = self.anchors_dyn
+                if anchors is None or anchors.shape[1] == 0:
+                    continue
+
+                l = float(getattr(self.sim, "l", 0.325))
+                x_state = np.array(getattr(self.sim, "x_true", self.sim.x_est), dtype=float)
+                tag = getattr(self, "dataset_tag_mode", "mid")
+
+                ranges_m, sigmas_m = self.shared_uwb.pipeline.measure_ranges_and_sigmas(
+                    x_state=x_state,
+                    anchors=anchors,
+                    l=l,
+                    tag=tag
+                )
+
+                # linha: r0 s0 r1 s1 ... (igual dataset real)
+                row = []
+                for r, s in zip(ranges_m.tolist(), sigmas_m.tolist()):
+                    row.append(f"{float(r):.6f}")
+                    row.append(f"{float(s):.6f}")
+                self.dataset_fp.write(" ".join(row) + "\n")
+
+            # terminou rota? fecha arquivo
+            if self.waypoints is not None and self.wp_idx >= len(self.waypoints):
+                self._stop_dataset_recording()
 
     def draw(self) -> None:
         """
@@ -785,41 +963,53 @@ class SimulationScreen:
         self.btn_place_anchor = btn_place_anchor
 
     def layout_hud(self):
-        """Atualiza posições dos elementos do HUD (rects) antes de processar eventos."""
+        """Atualiza posições (rects) do HUD antes de processar eventos e antes de desenhar."""
         cam_w = self.cam.viewport[0]
         sidebar_x = cam_w + 16
+        y = 14
+        LINE_H = 18
 
-        # você precisa manter o MESMO y usado no draw
-        y = 18
-        y += 34                 # header
-        y += 22*6 + 10          # metrics (ajuste se seu layout mudou)
-        y += 22*6 + 10          # controls (ajuste também)
+        # Header
+        y += 30
 
-        # âncoras
-        y += 22                 # título "Posicionar âncora"
-        y += 22                 # linha abaixo do título
+        # Métricas: você desenha 7 linhas e depois +14
+        y += LINE_H * 7 + 14
 
+        # Controles: você desenha 7 linhas e depois +10
+        y += LINE_H * 7 + 10
+
+        # Âncoras (x,y): título + 22
+        y += 22  # "Posicionar âncora (x, y):"
+        # linha dos textboxes
         if self.textbox_x and self.textbox_y:
             self.textbox_x.rect.topleft = (sidebar_x, y)
             self.textbox_y.rect.topleft = (sidebar_x + self.textbox_x.rect.w + 10, y)
-
             y += self.textbox_x.rect.h + 8
 
         if self.btn_place_anchor:
             self.btn_place_anchor.rect.topleft = (sidebar_x, y)
+            y += self.btn_place_anchor.rect.h + 16
+
+        # Debug EKF (se tiver)
+        if self.show_debug:
+            y += (LINE_H * 4 + 10)
+
+        # Ferramentas
+        y += 26  # título "Ferramentas:" ocupa um pouco (mesmo offset do draw)
+        if self.btn_filelog:
+            self.btn_filelog.rect.topleft = (sidebar_x, y)
+            y += 44
+
+        if self.btn_graphs:
+            self.btn_graphs.rect.topleft = (sidebar_x, y)
+            y += 44
+
+        if self.btn_gen_dataset:
+            self.btn_gen_dataset.rect.topleft = (sidebar_x, y)
+            y += 44
     # ------------------------------------------------------------------
     # Métodos auxiliares (internos)
     # ------------------------------------------------------------------
-
-    def _handle_keydown(self, event: pg.event.Event) -> Optional[bool]:
-        """Lógica de teclas únicas (ESC, D, SPACE, [, ], C, B, R, G, ENTER, DEL)."""
-        # Aqui você pode copiar o miolo de:
-        #   elif event.type == pg.KEYDOWN:
-        #       if textbox_x ... (consumed)
-        #       if event.key == pg.K_ESCAPE: ...
-        #       elif event.key == pg.K_d: ...
-        #       ...
-        return None
 
     def _handle_mouse_button_down(self, event: pg.event.Event) -> None:
         """Clique de mouse (zoom, pan, add/rem anchors, HUD)."""
@@ -857,16 +1047,16 @@ class SimulationScreen:
         )
 
         sidebar_x = cam_w + 16
-        y = 18
-        LINE_H = 22
+        y = 14
+        LINE_H = 18
 
         # Header
         self._draw_hud_header(sidebar_x, y, LINE_H)
-        y += 34
+        y += 30
 
         # Métricas
         self._draw_hud_metrics(sidebar_x, y, LINE_H)
-        y += LINE_H * 7 + 10
+        y += LINE_H * 7 + 14
 
         # Controles
         self._draw_hud_controls(sidebar_x, y, LINE_H)
@@ -898,6 +1088,10 @@ class SimulationScreen:
         y += LINE_H
         draw_text(self.screen, f"Âncoras: {self.anchors_dyn.shape[1]}", x, y, self.font)
         y += LINE_H
+        gdop_txt = "inf" if (self.gdop == float("inf")) else (f"{self.gdop:.3f}" if np.isfinite(self.gdop) else "N/A")
+        avg_txt = f"{self.gdop_avg:.3f}" if np.isfinite(self.gdop_avg) else "N/A"
+        draw_text(self.screen, f"GDOP: {gdop_txt} | avg: {avg_txt}", x, y, self.font)
+        y += LINE_H
         draw_text(self.screen, f"Erro Pos (m): {self.pos_err:.3f}", x, y, self.font)
         y += LINE_H
         draw_text(self.screen, f"Erro Heading (°): {self.head_err:.2f}", x, y, self.font)
@@ -907,37 +1101,20 @@ class SimulationScreen:
 
     
     def _draw_hud_tools(self, x, y):
-        '''Desenha os botões de ferramentas (log em arquivo, gráficos, preset de âncoras) no HUD lateral.'''
+        '''Desenha as ferramentas (botões) do HUD lateral. O texto dos botões é atualizado dinamicamente (ex: log ON/OFF).'''
         draw_text(self.screen, "Ferramentas:", x, y, self.bigfont)
         y += 26
-        self.btn_filelog = Button(
-            rect=(0, 0, 190, 30),
-            text="Log arquivo: ON" if self.filelog_on else "Log arquivo: OFF",
-            font=self.font,
-            bg=(235, 250, 235),
-        )
-        self.btn_graphs = Button(
-            rect=(0, 0, 190, 30),
-            text="Mostrar Gráficos",
-            font=self.font,
-            bg=(235, 235, 250),
-        )
-        
+
+        # atualiza texto dinamicamente
         if self.btn_filelog:
-            self.btn_filelog.rect.topleft = (x, y)
+            self.btn_filelog.text = "Log arquivo: ON" if self.filelog_on else "Log arquivo: OFF"
             self.btn_filelog.draw(self.screen)
 
-        y += 44
-
         if self.btn_graphs:
-            self.btn_graphs.rect.topleft = (x, y)
             self.btn_graphs.draw(self.screen)
 
-        y += 44
-
-        # Botão de preset de âncoras
-        self.btn_tectrol = Button((x, y, 160, 28), "Preset: Tectrol", self.font)
-        self.btn_tectrol.draw(self.screen)
+        if self.btn_gen_dataset:
+            self.btn_gen_dataset.draw(self.screen)
 
     def _draw_hud_controls(self, x, y, LINE_H):
         '''Desenha as instruções de controle (teclas) no HUD lateral.'''
@@ -950,22 +1127,20 @@ class SimulationScreen:
         draw_text(self.screen, "P: perfect motion (sem ruído)", x, y, self.font); y += LINE_H
 
     def _draw_hud_anchor_tools(self, x, y):
-        '''Desenha os campos de texto e botão para posicionar âncoras.'''
+        '''Desenha as ferramentas de posicionamento de âncoras (instruções, textboxes, botão) no HUD lateral.'''
         draw_text(self.screen, "Posicionar âncora (x, y):", x, y, self.font)
         y += 22
 
         if self.textbox_x and self.textbox_y and self.btn_place_anchor:
             dt = getattr(self, "_last_dt", 0.0)
-            self.textbox_x.rect.topleft = (x, y)
+
+            # NÃO mover rect aqui — o layout_hud() já posicionou
             self.textbox_x.update(dt)
             self.textbox_x.draw(self.screen)
 
-            self.textbox_y.rect.topleft = (x + self.textbox_x.rect.w + 10, y)
             self.textbox_y.update(dt)
             self.textbox_y.draw(self.screen)
 
-            y += self.textbox_x.rect.h + 8
-            self.btn_place_anchor.rect.topleft = (x, y)
             self.btn_place_anchor.draw(self.screen)
     
     def _draw_hud_debug(self, x, y, LINE_H):
@@ -1005,12 +1180,8 @@ class SimulationScreen:
         folder = self.routes_dir if which == "route" else self.anchors_dir
         opts = self._list_json_files(folder)
 
-        # >>> ATUALIZA DO JEITO CERTO (classe usa options_all) <<<
         self.modal_dropdown.options_all = list(opts)
         self.modal_dropdown.options_filtered = list(opts)
-
-        # seleciona primeiro se existir
-        self.modal_dropdown.set_text(opts[0] if opts else "")
 
         # abre e ativa (pra já poder usar setinha/teclado)
         self.modal_dropdown.active = True
@@ -1058,42 +1229,59 @@ class SimulationScreen:
         self.sim.R = (np.eye(2*n) * 0.0025) if n > 0 else (np.eye(2) * 1e6)
 
     def _save_anchors_to_file(self, name: str):
-        '''Salva as âncoras atuais em um arquivo JSON, com o nome fornecido. 
-         O nome é ajustado para garantir extensão .json e evitar erros.
-         O conteúdo salvo inclui as coordenadas das âncoras e metadados como contagem.'''
-        name = name.strip()
-        if not name:
+        """Salva âncoras + parâmetros completos."""
+        if not self.shared_uwb:
             return
-        if not name.lower().endswith(".json"):
-            name += ".json"
-
-        anchors_xy = []
-        if self.shared_uwb and self.shared_uwb.anchors_xy:
-            anchors_xy = [(float(x), float(y)) for (x,y) in self.shared_uwb.anchors_xy]
-
-        payload = {
-            "anchors_xy": anchors_xy,
-            "meta": {"count": len(anchors_xy)}
-        }
-
-        path = os.path.join(self.anchors_dir, name)
+        
+        # Usa o método to_dict() do shared_uwb
+        payload = self.shared_uwb.to_dict()
+        
+        # Remove campos desnecessários
+        payload.pop("seed", None)  # seed é do pipeline, não das âncoras
+        
+        path = os.path.join(self.anchors_dir, name + ".json")
         with open(path, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2, ensure_ascii=False)
-        print(f"[SIM] Âncoras salvas em: {path}")
+        
+        print(f"[SIM] Âncoras + parâmetros salvos: {path}")
 
     def _load_anchors_from_file(self, filename: str):
-        '''Carrega âncoras de um arquivo JSON, atualizando o estado compartilhado, a simulação e o desenho.'''
-        if not filename:
-            return
+        """Carrega âncoras + parâmetros completos."""
         path = os.path.join(self.anchors_dir, filename)
+        
         try:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            anchors_xy = data.get("anchors_xy", [])
-            self._apply_loaded_anchors(anchors_xy)
-            print(f"[SIM] Âncoras carregadas: {path}")
+            
+            # Carrega no shared_uwb usando from_dict()
+            if self.shared_uwb:
+                # Mantém seed atual
+                current_seed = self.shared_uwb.pipeline.seed
+                
+                # Atualiza campos
+                self.shared_uwb.anchors_xy = data.get("anchors_xy", [])
+                
+                if "tag_params" in data:
+                    self.shared_uwb.tag_params = dict_to_node_params(data["tag_params"])
+                
+                if "anchor_params" in data:
+                    self.shared_uwb.anchor_params = {
+                        int(k): dict_to_node_params(v)
+                        for k, v in data["anchor_params"].items()
+                    }
+                
+                # Reaplica seed e sincroniza
+                self.shared_uwb.pipeline.seed = current_seed
+                self.shared_uwb.reindex_anchor_params()
+                self.shared_uwb.sync_pipeline_from_state()
+                
+                # Atualiza visualização
+                self.anchors_dyn = self.shared_uwb.anchors_np3()
+            
+            print(f"[SIM] Âncoras + parâmetros carregados: {path}")
+        
         except Exception as e:
-            print(f"[SIM] Falha ao carregar âncoras ({path}): {e}")
+            print(f"[SIM] Erro ao carregar âncoras: {e}")
 
     def _save_route_to_file(self, name: str):
         '''Salva a rota atual (waypoints) em um arquivo JSON, com o nome fornecido.'''
@@ -1117,6 +1305,26 @@ class SimulationScreen:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2, ensure_ascii=False)
         print(f"[SIM] Rota salva em: {path}")
+
+    def _export_shared_uwb_complete(self, name: str):
+        '''Exporta shared_uwb COMPLETO (incluindo seed) para backup.'''
+        name = name.strip()
+        if not name.lower().endswith(".json"):
+            name += ".json"
+        
+        if not self.shared_uwb:
+            return
+        
+        # Exporta tudo (incluindo seed)
+        payload = shared_state_to_dict(self.shared_uwb)
+        
+        path = os.path.join(self.anchors_dir, "backups", name)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+        
+        print(f"[SIM] Backup completo salvo: {path}")
 
     def _load_route_from_file(self, filename: str):
         '''Carrega uma rota de um arquivo JSON, atualizando os waypoints, configuração do robô e ativando o autopilot.'''
@@ -1157,9 +1365,16 @@ class SimulationScreen:
         cam_w = self.cam.viewport[0]
         cam_h = self.cam.viewport[1]
 
-        # Aumenta um pouco a altura pro robot_cfg caber bonito
-        w = 420
-        h = 230 if self.modal_mode == "robot_cfg" else 170
+        # --- dimensões ---
+        w = 460
+
+        # altura dinâmica pro robot_cfg (rows + dropdown + botões)
+        if self.modal_mode == "robot_cfg":
+            rows_h = len(self.robot_rows) * 30
+            h = 70 + rows_h + 40 + 55   # topo + rows + dropdown + área botões
+        else:
+            h = 170
+
         x = cam_w//2 - w//2
         y = self.topbar_h + 30
         self.modal_rect = pg.Rect(x, y, w, h)
@@ -1167,6 +1382,8 @@ class SimulationScreen:
         dt = getattr(self, "_last_dt", 0.0)
         self.modal_dropdown.update(dt)
         self.modal_namebox.update(dt)
+        if getattr(self, "dataset_tag_dropdown", None):
+            self.dataset_tag_dropdown.update(dt)
 
         overlay = pg.Surface((cam_w, cam_h), pg.SRCALPHA)
         overlay.fill((0,0,0,80))
@@ -1175,7 +1392,7 @@ class SimulationScreen:
         pg.draw.rect(self.screen, (252,252,252), self.modal_rect)
         pg.draw.rect(self.screen, (170,170,170), self.modal_rect, 1)
 
-        # --- ROBOT CFG: desenha e sai ---
+        # --- ROBOT CFG ---
         if self.modal_mode == "robot_cfg":
             title = "Configurações do robô"
             self.screen.blit(self.bigfont.render(title, True, (20,20,20)), (x+12, y+10))
@@ -1183,12 +1400,21 @@ class SimulationScreen:
             cx = x + 20
             cy = y + 55
 
+            # toggles
             for i, row in enumerate(self.robot_rows):
                 row.rect.topleft = (cx, cy + i*30)
                 row.box.topleft = (row.rect.x, row.rect.y + 2)
                 row.draw(self.screen)
 
-            # botões
+            # dropdown abaixo dos toggles
+            dd_y = cy + len(self.robot_rows)*30 + 10
+            self.screen.blit(self.font.render("Dataset Tag:", True, (20,20,20)), (cx, dd_y))
+
+            if getattr(self, "dataset_tag_dropdown", None):
+                self.dataset_tag_dropdown.rect.topleft = (cx + 120, dd_y - 3)
+                self.dataset_tag_dropdown.draw(self.screen)
+
+            # botões sempre no rodapé do modal
             by = y + h - 38
             self.btn_modal_ok.rect.topleft = (x + w - 200, by)
             self.btn_modal_cancel.rect.topleft = (x + w - 100, by)
@@ -1196,7 +1422,7 @@ class SimulationScreen:
             self.btn_modal_cancel.draw(self.screen)
             return
 
-        # --- resto (load/save route/anchors) continua aqui ---
+        # --- resto (load/save route/anchors)  ---
         title = "Modal"
         if self.modal_mode == "load_route": title = "Carregar rota"
         if self.modal_mode == "save_route": title = "Salvar rota"
@@ -1225,6 +1451,13 @@ class SimulationScreen:
         cx = x + 12
         cy = y + 55
 
+        # botões
+        by = y + h - 38
+        self.btn_modal_ok.rect.topleft = (x + w - 200, by)
+        self.btn_modal_cancel.rect.topleft = (x + w - 100, by)
+        self.btn_modal_ok.draw(self.screen)
+        self.btn_modal_cancel.draw(self.screen)
+
         if self.modal_mode in ("load_route", "load_anchors"):
             self.screen.blit(self.font.render("Arquivo:", True, (20,20,20)), (cx, cy))
             self.modal_dropdown.rect.topleft = (cx+70, cy-3)
@@ -1234,12 +1467,6 @@ class SimulationScreen:
             self.modal_namebox.rect.topleft = (cx+70, cy-3)
             self.modal_namebox.draw(self.screen)
 
-        # botões
-        by = y + h - 38
-        self.btn_modal_ok.rect.topleft = (x + w - 200, by)
-        self.btn_modal_cancel.rect.topleft = (x + w - 100, by)
-        self.btn_modal_ok.draw(self.screen)
-        self.btn_modal_cancel.draw(self.screen)
 
     def _modal_confirm(self):
         '''Lógica executada ao clicar em OK no modal, dependendo do modo atual (carregar/salvar rota/âncoras).'''
@@ -1273,10 +1500,20 @@ class SimulationScreen:
             self.robot_cfg["perfect_odometry"] = self.robot_rows[1].value
             self.robot_cfg["perfect_uwb"] = self.robot_rows[2].value
             self.robot_cfg["perfect_filter_model"] = self.robot_rows[3].value
+            self.robot_cfg["use_odometry"] = self.robot_rows[4].value
 
             if self.robot_cfg["perfect_uwb"]:
                 self.robot_cfg["perfect_filter_model"] = True
                 self.robot_rows[3].value = True
+
+            # salva dropdown da tag do dataset
+            if self.dataset_tag_dropdown:
+                chosen = (self.dataset_tag_dropdown.text or "").strip().lower()
+                if chosen in ("front", "rear", "mid"):
+                    self.dataset_tag_mode = chosen
+                else:
+                    self.dataset_tag_mode = "mid"
+                    self.dataset_tag_dropdown.set_text("mid")
 
             # aplica imediatamente no sim (próximo passo)
             self._apply_robot_config_to_sim()
@@ -1308,7 +1545,17 @@ class SimulationScreen:
             ToggleRow("Perfect Odometry", (0,0,340,26), self.font, self.robot_cfg["perfect_odometry"]),
             ToggleRow("Perfect UWB", (0,0,340,26), self.font, self.robot_cfg["perfect_uwb"]),
             ToggleRow("Perfect Filter Model", (0,0,340,26), self.font, self.robot_cfg["perfect_filter_model"]),
+            ToggleRow("Use Odometry for UWB", (0,0,340,26), self.font, self.robot_cfg.get("use_odometry", True)),
         ]
+
+        # dropdown dataset tag
+        if self.dataset_tag_dropdown:
+            opts = ["mid", "front", "rear"]
+            self.dataset_tag_dropdown.options_all = list(opts)
+            self.dataset_tag_dropdown.options_filtered = list(opts) 
+            self.dataset_tag_dropdown.set_text(self.dataset_tag_mode)
+            self.dataset_tag_dropdown.active = False
+            self.dataset_tag_dropdown.dropdown_open = False
 
     def _apply_robot_config_to_sim(self) -> None:
         """
@@ -1389,3 +1636,90 @@ class SimulationScreen:
         self.wp_idx = min(i + 1, len(wps) - 1)
 
         return np.array([float(pos[0]), float(pos[1]), theta], dtype=float)
+
+    def _reset_gdop_stats(self):
+        self._gdop_sum = 0.0
+        self._gdop_count = 0
+        self._gdop_min = float("inf")
+        self._gdop_max = float("-inf")
+        self.gdop_avg = float("nan")
+        self.gdop_hist.clear()
+
+    def _reset_robot_to_route_start(self):
+        """Posiciona o robô no primeiro waypoint e reinicia índices da rota."""
+        if self.waypoints is None or len(self.waypoints) < 2:
+            return False
+
+        p0 = self.waypoints[0]
+        p1 = self.waypoints[1]
+        theta0 = float(math.atan2(p1[1] - p0[1], p1[0] - p0[0]))
+
+        # move o robô (ground truth)
+        if hasattr(self.sim, "robot"):
+            self.sim.robot.x = float(p0[0])
+            self.sim.robot.y = float(p0[1])
+            self.sim.robot.theta = theta0
+
+        if hasattr(self.sim, "x_true"):
+            self.sim.x_true = np.array([float(p0[0]), float(p0[1]), theta0], dtype=float)
+
+        # reinicia autopilot/índices
+        self.wp_idx = 0
+        self.autopilot = True
+        self.v_cmd = 0.0
+        self.w_cmd = 0.0
+
+        # reset do perfect-motion progress (se estiver usando)
+        self._pm_seg_i = 0
+        self._pm_s = 0.0
+
+        return True
+
+    def _start_dataset_recording(self):
+        """Inicia gravação de dataset e reinicia a rota."""
+        if self.dataset_recording:
+            return
+
+        if self.waypoints is None or len(self.waypoints) < 2:
+            print("[SIM] Falha ao gerar dataset: não há rota (grave/carregue uma rota).")
+            return
+        if not self.shared_uwb or not getattr(self.shared_uwb, "pipeline", None):
+            print("[SIM] Falha ao gerar dataset: shared_uwb/pipeline não disponível.")
+            return
+
+        # reinicia rota SEMPRE (evita dataset vazio)
+        ok = self._reset_robot_to_route_start()
+        if not ok:
+            print("[SIM] Falha ao gerar dataset: rota inválida.")
+            return
+
+        # reseed dos ruídos (cada dataset diferente)
+        try:
+            np.random.seed(None)
+        except Exception:
+            pass
+
+        # arquivo de saída
+        import time, os
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        tag = getattr(self, "dataset_tag_mode", "mid")
+        out_dir = os.path.join("resultados", "datasets")
+        os.makedirs(out_dir, exist_ok=True)
+        self.dataset_out_path = os.path.join(out_dir, f"dataset_{tag}_{stamp}.txt")
+
+        self.dataset_fp = open(self.dataset_out_path, "w", encoding="utf-8")
+        self.dataset_recording = True
+        self._dataset_acc = 0.0
+
+        print(f"[SIM] Gerando dataset (ao vivo): {self.dataset_out_path}")
+
+    def _stop_dataset_recording(self):
+        """Finaliza gravação."""
+        if self.dataset_fp:
+            try:
+                self.dataset_fp.close()
+            except Exception:
+                pass
+        self.dataset_fp = None
+        self.dataset_recording = False
+        print(f"[SIM] Dataset finalizado: {self.dataset_out_path}")

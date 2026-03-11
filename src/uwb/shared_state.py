@@ -3,11 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List, Tuple, Optional
 import numpy as np
+from datetime import datetime
 
 from src.uwb.uwb_sim import UwbSimPipeline, UwbSimConfig
 from src.uwb.node_params import NodeParams
 from src.uwb.twr_protocols import TWRMode
-
+from src.uwb.node_params_serialization import node_params_to_dict, dict_to_node_params
 
 @dataclass
 class SharedUwbState:
@@ -94,3 +95,37 @@ class SharedUwbState:
         self.pipeline.tag_params = self.tag_params
         self.pipeline.anchor_params = dict(self.anchor_params)
         self.pipeline.default_params = old.default_params
+
+    def to_dict(self) -> dict:
+        """Exporta estado completo para JSON."""
+        return {
+            "anchors_xy": list(self.anchors_xy),
+            "tag_params": node_params_to_dict(self.tag_params),
+            "anchor_params": {
+                i: node_params_to_dict(p)
+                for i, p in self.anchor_params.items()
+            },
+            "seed": self.seed,
+            "meta": {
+                "count": len(self.anchors_xy),
+                "timestamp": datetime.now().isoformat(),
+            }
+        }
+    
+    @staticmethod
+    def from_dict(data: dict) -> "SharedUwbState":
+        """Carrega estado completo de JSON."""
+        state = SharedUwbState.make_default(seed=data.get("seed", 123))
+        state.anchors_xy = data.get("anchors_xy", [])
+        
+        if "tag_params" in data:
+            state.tag_params = dict_to_node_params(data["tag_params"])
+        
+        if "anchor_params" in data:
+            state.anchor_params = {
+                int(k): dict_to_node_params(v)
+                for k, v in data["anchor_params"].items()
+            }
+        
+        state.sync_pipeline_from_state()
+        return state

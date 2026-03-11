@@ -155,7 +155,7 @@ try:
         w_cmd *= speed_slider.val
 
         # passo de simulação (gera v_noisy / w_noisy lá dentro)
-        sim.step(v_cmd, w_cmd, noisy=True)
+        sim.step(v_cmd, w_cmd)
 
         # logs de trajetória
         true_traj, est_traj = sim.get_logs()

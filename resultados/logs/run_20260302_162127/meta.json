@@ -1,0 +1,14 @@
+{
+  "dt": 0.05,
+  "anchors": [],
+  "z_c": 0.5,
+  "baseline": 0.2,
+  "route_waypoints": [],
+  "config": {
+    "TIME_STEP": 0.05,
+    "NOISE_STD_V": 0.02,
+    "NOISE_STD_W": 0.05,
+    "UWB_BIAS_ENABLED": true,
+    "UWB_MISALIGNMENT_ENABLED": true
+  }
+}

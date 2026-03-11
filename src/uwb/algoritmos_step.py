@@ -21,13 +21,13 @@ Registry de algoritmos (para UI):
 """
 from __future__ import annotations
 import numpy as np
+from typing import Optional, Dict, Type, List
 from abc import ABC, abstractmethod
-from typing import Optional, Dict, Type
-from dataclasses import dataclass, field
 
 from src.uwb.algoritmos_estaticos import (
     trilaterate3d, lms, gauss_newton, lmsp
 )
+
 
 
 #####################
@@ -68,14 +68,6 @@ class LocalizadorBase(ABC):
         """Hook para subclasses com estado (ex: warm start, EKF)."""
         pass
 
-    @abstractmethod
-    def _compute(
-        self,
-        distances:  np.ndarray,
-        deviations: Optional[np.ndarray],
-    ) -> np.ndarray:
-        """Retorna posição estimada (3,) dado vetor de distâncias."""
-        ...
 
     def step(
         self,
@@ -300,7 +292,6 @@ class LocalizadorBCEKF(LocalizadorBase):
         super().__init__(anc, **kw)
 
     def _reset_interno(self):
-        from copy import deepcopy
         self._x_est = self._x0.copy() if hasattr(self, '_x0') else np.zeros(3)
         self._P     = np.diag([0.1, 0.1, 0.1])
         self._v_cmd = 0.0
@@ -325,22 +316,33 @@ class LocalizadorBCEKF(LocalizadorBase):
 
     def _compute(self, distances, deviations):
         from src.bc_ekf import run_bc_ekf_step
+        
         # anchors em formato (3, N) para o EKF
         anc_3xN = self.anchors.T
         l = self.baseline / 2.0
-
-        x_next, P_next, _ = run_bc_ekf_step(
-            self._x_est, self._P,
-            np.array([self._v_cmd, self._w_cmd]),
-            distances,
-            anc_3xN, l, self.z_c,
-            self._Q, self._R,
-            dt=self.dt,
-        )
-        self._x_est = x_next
-        self._P     = P_next
-        # Retorna posição (x, y) + z fixo (EKF é 2D)
-        return np.array([x_next[0], x_next[1], self.z_c])
+        
+        try:
+            x_next, P_next = run_bc_ekf_step(  # ← SEM o "_"
+                self._x_est, self._P,
+                np.array([self._v_cmd, self._w_cmd]),
+                distances,
+                anc_3xN, l, self.z_c,
+                self._Q, self._R,
+                dt=self.dt,
+            )
+            
+            self._x_est = x_next
+            self._P     = P_next
+            
+            # Retorna posição (x, y) + z fixo (EKF é 2D)
+            result = np.array([x_next[0], x_next[1], self.z_c])
+            return result
+        
+        except Exception as e:
+            print(f"[BC-EKF] ERRO: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
 
 
 ######################################################################
@@ -360,7 +362,7 @@ NOMES_UI: Dict[str, str] = {
     "lms":           "(b) LMS",
     "gauss_newton":  "(c) Gauss-Newton",
     "lmsp":          "(d) LMS Ponderado",
-    "bc_ekf":        "BC-EKF",
+    "bc_ekf":        "(e) BC-EKF",
 }
 
 
@@ -396,54 +398,67 @@ def criar_localizadores(
 ########################################################
 # RUNNER MONTE CARLO (helper para testes massivos)
 ########################################################
-@dataclass
-class ResultadoMC:
-    """Resultado de uma rodada de Monte Carlo."""
-    algoritmo:  str
-    rmse_xy:    float
-    rmse_xyz:   float
-    taxa_falha: float
-    posicoes:   np.ndarray = field(repr=False)
-
 
 def monte_carlo(
-    anchors:      np.ndarray,
-    distances_MC: np.ndarray,
-    deviations_MC: Optional[np.ndarray],
-    p_true_MC:    np.ndarray,
-    algoritmos:   Optional[list[str]] = None,
-) -> Dict[str, ResultadoMC]:
-    """
-    Roda múltiplas amostras em série por algoritmo e calcula estatísticas.
-
-    Parâmetros:
-        anchors        : array (N, 3)
-        distances_MC   : array (M, N) — M amostras
-        deviations_MC  : array (M, N) ou None
-        p_true_MC      : array (M, 3) — ground truth
-        algoritmos     : lista de nomes; None → todos
-
-    Retorna:
-        dict nome → ResultadoMC
-    """
-    locs = criar_localizadores(anchors, algoritmos)
-
-    for i in range(distances_MC.shape[0]):
-        d   = distances_MC[i]
-        dev = deviations_MC[i] if deviations_MC is not None else None
-        for loc in locs.values():
-            loc.step(d, dev)
-
-    resultados = {}
-    for nome, loc in locs.items():
-        rmse_xy  = loc.rmse_xy(p_true_MC)  or float("nan")
-        rmse_xyz = loc.rmse_xyz(p_true_MC) or float("nan")
-        resultados[nome] = ResultadoMC(
-            algoritmo  = nome,
-            rmse_xy    = rmse_xy,
-            rmse_xyz   = rmse_xyz,
-            taxa_falha = loc.taxa_falha(),
-            posicoes   = np.array(loc.historico),
+    algoritmo_nome: str,
+    anchors_Nx3: np.ndarray,
+    distances: np.ndarray,
+    deviations: Optional[np.ndarray] = None,
+    p_true: Optional[np.ndarray] = None,
+    odometry: Optional[List[tuple]] = None
+) -> tuple:
+    """Executa algoritmo em batch de medições."""
+    
+    # Cria localizador
+    if algoritmo_nome == "bc_ekf":
+        
+        loc = ALGORITMOS[algoritmo_nome](
+            anchors_Nx3,
+            baseline=0.65,
+            z_c=0.5,
+            dt=0.05,
+            Q=np.diag([1e-4, 1e-4, 1e-4]),
+            R=np.eye(2 * len(anchors_Nx3)) * (0.05**2)
         )
 
-    return resultados
+    else:
+        loc = ALGORITMOS[algoritmo_nome](anchors_Nx3)
+    
+    posicoes = []
+    
+    for i, d in enumerate(distances):
+        if algoritmo_nome == "bc_ekf" and i < 5:  # Só primeiros 5 steps          
+            if odometry:
+                v, w = odometry[i]
+                loc.set_odometry(v, w)
+        
+        elif algoritmo_nome == "bc_ekf" and odometry:
+            v, w = odometry[i]
+            loc.set_odometry(v, w)
+        
+        try:
+            pos = loc.step(d, deviations[i] if deviations is not None else None)
+            
+            if pos is not None:
+                posicoes.append(pos[:2])
+            else:
+                if algoritmo_nome == "bc_ekf" and i < 5:
+                    print(f"[monte_carlo]   WARNING: pos is None!")
+                posicoes.append([np.nan, np.nan])
+        
+        except Exception as e:
+            if algoritmo_nome == "bc_ekf" and i < 5:
+                print(f"[monte_carlo]   ERRO no step: {e}")
+                import traceback
+                traceback.print_exc()
+            posicoes.append([np.nan, np.nan])
+    
+    posicoes_arr = np.array(posicoes)
+    
+    # Calcula erros
+    if p_true is not None:
+        errors = np.linalg.norm(posicoes_arr - p_true, axis=1)
+    else:
+        errors = None
+    
+    return posicoes_arr, errors
