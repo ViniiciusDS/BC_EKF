@@ -10,6 +10,7 @@ from src.ui.algo_modes.dataset_mode import DatasetMode
 from src.ui.botton import Button
 from src.trajectory import Trajectory
 from src.uwb.algoritmos_step import ALGORITMOS, NOMES_UI
+from src.ui.algo_modes.shared import ALGO_COLORS, ALGO_ORDER, MODE_DATASET, MODE_MONTE_CARLO, MODE_STEP
 
 WHITE   = (255, 255, 255)
 BLACK   = (0,  0,  0)
@@ -21,19 +22,6 @@ ORANGE  = (250, 150, 0)
 RED     = (210, 40,  40)
 BG_HUD  = (245, 247, 252)
 
-ALGO_COLORS: Dict[str, tuple] = {
-    "trilaterate3d": (255, 20,  20),
-    "lms":           (138, 0, 196),
-    "gauss_newton":  (0, 0, 0),
-    "lmsp":          (0, 100, 255),
-    "bc_ekf":        (255, 150, 0),
-}
-
-ALGO_ORDER = ["trilaterate3d", "lms", "gauss_newton", "lmsp", "bc_ekf"]
-
-MODE_STEP = "step"
-MODE_DATASET = "dataset"
-MODE_MONTE_CARLO = "monte_carlo"
 
 
 @dataclass
@@ -150,9 +138,16 @@ class AlgoTestScreen:
 
         y += 6
 
+        self.btn_step_config = Button(
+            (sx, y, self.SIDE_W - 24, 28),
+            "Configurar Step", self.font,
+            bg=(235, 240, 235), fg=GREEN, border=GREEN
+        )
+        y += 38
+
         self.btn_start = Button(
             (sx, y, self.SIDE_W - 24, 36),
-            "▶  Iniciar", self.bigfont,
+            " Iniciar", self.bigfont,
             bg=(235, 250, 235), fg=GREEN, border=GREEN
         )
         y += 44
@@ -169,7 +164,7 @@ class AlgoTestScreen:
 
         self.btn_load_dataset = Button(
             (sx, y, self.SIDE_W - 24, 28),
-            "Carregar dataset (.jsonl / .txt)", self.font,
+            "Configurar Dataset", self.font,
             bg=(240, 240, 255), fg=BLUE, border=BLUE
         )
         y += 38
@@ -307,6 +302,7 @@ class AlgoTestScreen:
 
         # Botões por modo
         if self._is_step():
+            self.btn_step_config.draw(self.screen)
             self.btn_start.draw(self.screen)
             self.btn_clear.draw(self.screen)
             self.btn_export.draw(self.screen)

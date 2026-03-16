@@ -249,3 +249,13 @@ def _draw_star4(surface, center, radius, fill_color, outline_color):
 
     pg.draw.polygon(surface, fill_color,   pts)
     pg.draw.polygon(surface, outline_color, pts, max(1, radius // 6))
+
+def _set_msg(self, text: str, duration: float = 2.5):
+        self._msg = text
+        self._msg_t = duration
+
+def _update_msg(self, dt: float):
+    if self._msg_t > 0:
+        self._msg_t = max(0.0, self._msg_t - dt)
+        if self._msg_t == 0.0:
+            self._msg = ""

@@ -1,0 +1,192 @@
+from __future__ import annotations
+
+from typing import Mapping
+import pygame as pg
+
+from src.uwb.algoritmos_step import NOMES_UI
+from src.analysis.algo_metrics import build_ranking_summary
+
+MODE_DATASET = "dataset"
+MODE_STEP = "step"
+MODE_MONTE_CARLO = "monte_carlo"
+
+WHITE = (255, 255, 255)
+BLACK = (0, 0, 0)
+GRAY_D = (90, 90, 90)
+GRAY_L = (235, 235, 240)
+RED = (200, 40, 40)
+BLUE = (50, 100, 220)
+GREEN = (0, 180, 0)
+ORANGE = (255, 150, 0)
+
+ALGO_ORDER = ["trilaterate3d", "lms", "gauss_newton", "lmsp", "bc_ekf"]
+ALGO_COLORS = {
+    "trilaterate3d": (255, 20, 20),
+    "lms": (138, 0, 196),
+    "gauss_newton": (0, 0, 0),
+    "lmsp": (0, 100, 255),
+    "bc_ekf": (255, 150, 0),
+}
+
+
+def default_selected() -> dict[str, bool]:
+    return {k: True for k in ALGO_ORDER}
+
+
+def ordered_active_algos(
+    stats: Mapping[str, dict] | None,
+    selected: Mapping[str, bool] | None = None,
+) -> list[str]:
+    if not stats:
+        return []
+
+    return [
+        algo
+        for algo in ALGO_ORDER
+        if algo in stats and (selected is None or selected.get(algo, False))
+    ]
+
+def ranking_text(
+    stats: Mapping[str, dict] | None,
+    selected: Mapping[str, bool] | None = None,
+    top_k: int = 3,
+) -> str:
+    ranked = build_ranking_summary(stats, selected=selected, top_k=top_k)
+    if not ranked:
+        return "Ranking: —"
+
+    parts = []
+    for row in ranked:
+        label = NOMES_UI.get(row["algo"], row["algo"]).split(") ", 1)[-1]
+        parts.append(f'{row["rank"]}º {label} ({row["score"]:.3f})')
+
+    return "Ranking RMSE: " + " | ".join(parts)
+
+def draw_analyzer_panel(
+    *,
+    screen,
+    font,
+    bigfont,
+    title: str,
+    stats: Mapping[str, dict] | None,
+    selected: Mapping[str, bool] | None = None,
+    x: int = 18,
+    y: int = 18,
+    w: int = 390,
+    h: int = 305,
+    panel_fill=(250, 250, 252, 238),
+    box_fill=(242, 242, 245),
+    border=(120, 120, 130),
+    text=(30, 30, 30),
+    header=(70, 70, 70),
+):
+    '''Desenha um painel de análise de algoritmos, mostrando as estatísticas fornecidas e um boxplot comparativo.'''
+    if not stats:
+        return
+
+    panel = pg.Surface((w, h), pg.SRCALPHA)
+    panel.fill(panel_fill)
+    screen.blit(panel, (x, y))
+    pg.draw.rect(screen, border, (x, y, w, h), 1)
+
+    screen.blit(bigfont.render(title, True, (20, 20, 20)), (x + 10, y + 8))
+
+    rank_line = ranking_text(stats, selected=selected, top_k=3)
+    screen.blit(font.render(rank_line[:58], True, (70, 70, 70)), (x + 10, y + 30))
+
+    header_y = y + 56
+    col_name = x + 12
+    col_rmse = x + 120
+    col_mae = x + 185
+    col_max = x + 245
+
+    screen.blit(font.render("Algoritmo", True, header), (col_name, header_y))
+    screen.blit(font.render("RMSE", True, header), (col_rmse, header_y))
+    screen.blit(font.render("MAE", True, header), (col_mae, header_y))
+    screen.blit(font.render("Max", True, header), (col_max, header_y))
+
+    ordered = ordered_active_algos(stats, selected)
+
+    yy = header_y + 24
+    for algo in ordered:
+        st = stats[algo]
+        color = ALGO_COLORS.get(algo, BLACK)
+        label = NOMES_UI.get(algo, algo).split(") ", 1)[-1]
+
+        pg.draw.rect(screen, color, (col_name, yy + 5, 10, 10))
+        screen.blit(font.render(label[:14], True, color), (col_name + 18, yy))
+        screen.blit(font.render(f"{st['rmse']:.3f}", True, text), (col_rmse, yy))
+        screen.blit(font.render(f"{st['mae']:.3f}", True, text), (col_mae, yy))
+        screen.blit(font.render(f"{st['max_err']:.3f}", True, text), (col_max, yy))
+        yy += 22
+
+    box_x = x + 12
+    box_y = y + 166
+    box_w = w - 24
+    box_h = 119
+
+    draw_boxplot_panel(
+        screen,
+        font,
+        stats,
+        ordered,
+        box_x,
+        box_y,
+        box_w,
+        box_h,
+        box_fill=box_fill,
+    )
+
+
+def draw_boxplot_panel(
+    screen,
+    font,
+    stats,
+    ordered_algos,
+    x,
+    y,
+    w,
+    h,
+    *,
+    box_fill=(242, 242, 245),
+):
+    '''Desenha um boxplot horizontal para os algoritmos listados, usando as estatísticas fornecidas.'''
+    if not ordered_algos:
+        return
+
+    pg.draw.rect(screen, box_fill, (x, y, w, h))
+    pg.draw.rect(screen, (150, 150, 150), (x, y, w, h), 1)
+    screen.blit(font.render("Boxplot de erro", True, (50, 50, 50)), (x + 6, y + 4))
+
+    max_err = max(max(1e-9, stats[algo].get("max", 0.0)) for algo in ordered_algos)
+
+    label_w = 92
+    plot_x0 = x + label_w
+    plot_x1 = x + w - 10
+    plot_w = plot_x1 - plot_x0
+
+    plot_y = y + 24
+    row_h = max(18, (h - 30) // max(1, len(ordered_algos)))
+
+    for i, algo in enumerate(ordered_algos):
+        st = stats[algo]
+        color = ALGO_COLORS.get(algo, BLACK)
+        yy = plot_y + i * row_h + row_h // 2
+
+        def sx(v):
+            return int(plot_x0 + (v / max_err) * plot_w)
+
+        s_min = sx(st["min"])
+        s_q1 = sx(st["q1"])
+        s_med = sx(st["median"])
+        s_q3 = sx(st["q3"])
+        s_max = sx(st["max"])
+
+        label = NOMES_UI.get(algo, algo).split(") ", 1)[-1]
+        screen.blit(font.render(label[:10], True, color), (x + 6, yy - 8))
+
+        pg.draw.line(screen, color, (s_min, yy), (s_max, yy), 2)
+        pg.draw.rect(screen, color, (s_q1, yy - 5, max(2, s_q3 - s_q1), 10), 1)
+        pg.draw.line(screen, color, (s_med, yy - 6), (s_med, yy + 6), 2)
+        pg.draw.line(screen, color, (s_min, yy - 4), (s_min, yy + 4), 2)
+        pg.draw.line(screen, color, (s_max, yy - 4), (s_max, yy + 4), 2)

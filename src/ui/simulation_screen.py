@@ -310,6 +310,11 @@ class SimulationScreen:
                             else:
                                 self.dataset_tag_dropdown.dropdown_open = False
 
+                    # passa eventos de teclado para o campo de texto
+                    if self.modal_mode in ("save_route", "save_anchors"):
+                        if self.modal_namebox.active:
+                            self.modal_namebox.handle_event(event)
+
                     if event.key == pg.K_RETURN:
                         self._modal_confirm()
                     continue
@@ -1244,6 +1249,7 @@ class SimulationScreen:
             json.dump(payload, f, indent=2, ensure_ascii=False)
         
         print(f"[SIM] Âncoras + parâmetros salvos: {path}")
+        
 
     def _load_anchors_from_file(self, filename: str):
         """Carrega âncoras + parâmetros completos."""
@@ -1305,6 +1311,7 @@ class SimulationScreen:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2, ensure_ascii=False)
         print(f"[SIM] Rota salva em: {path}")
+        
 
     def _export_shared_uwb_complete(self, name: str):
         '''Exporta shared_uwb COMPLETO (incluindo seed) para backup.'''

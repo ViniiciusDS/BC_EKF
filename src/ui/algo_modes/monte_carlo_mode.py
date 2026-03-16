@@ -8,26 +8,23 @@ import json
 import csv
 import numpy as np
 from pathlib import Path
+import time
 
 from src.experiments.monte_carlo_runner import MonteCarloRunner, MonteCarloConfig
 from src.uwb.algoritmos_step import NOMES_UI
 from src.ui.botton import Button
 from src.ui.drawing import draw_anchors, draw_axes, draw_grid, draw_path, draw_robot, draw_text
 from src.environment import Environment, draw_environment
+from src.ui.algo_modes.shared import (
+    ALGO_COLORS,
+    ALGO_ORDER,
+    MODE_DATASET,
+    MODE_MONTE_CARLO,
+    MODE_STEP,
+    WHITE,
+    default_selected,
+)
 
-WHITE = (255, 255, 255)
-MODE_STEP = "step"
-MODE_DATASET = "dataset"
-MODE_MONTE_CARLO = "monte_carlo"
-
-ALGO_ORDER = ["trilaterate3d", "lms", "lmsp", "gauss_newton", "bc_ekf"]
-ALGO_COLORS = {
-    "trilaterate3d": (220,60,60),
-    "lms": (0, 102, 204),
-    "lmsp": (153, 51, 255),
-    "gauss_newton": (255, 140, 0),
-    "bc_ekf": (0, 170, 120),
-}
 
 
 class MonteCarloMode:
@@ -108,7 +105,7 @@ class MonteCarloMode:
             self.mc_config.map_file = ""
 
         # sincroniza botões/estado comum a partir do host
-        self.selected = getattr(host, "selected", {k: True for k in ALGO_ORDER})
+        self.selected = default_selected()
 
         self.btn_back = host.btn_back
         self.btn_mode = host.btn_mode
