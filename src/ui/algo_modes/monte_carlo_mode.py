@@ -14,7 +14,7 @@ from src.experiments.monte_carlo_runner import MonteCarloRunner, MonteCarloConfi
 from src.uwb.algoritmos_step import NOMES_UI
 from src.ui.botton import Button
 from src.ui.drawing import draw_anchors, draw_axes, draw_grid, draw_path, draw_robot, draw_text
-from src.environment import Environment, draw_environment
+from src.environment.environment import Environment, draw_environment
 from src.ui.algo_modes.shared import (
     ALGO_COLORS,
     ALGO_ORDER,
@@ -753,10 +753,9 @@ class MonteCarloMode:
                     ])
 
             self._set_msg(f"Resultados exportados: {os.path.basename(out_csv)}")
-            print(f"[MC] Resultados exportados para: {out_csv}")
+            
 
         except Exception as e:
-            print(f"[MC] Erro ao exportar resultados: {e}")
             self._set_msg("Erro ao exportar resultados")
 
     def _start_monte_carlo(self):
@@ -769,7 +768,6 @@ class MonteCarloMode:
         self._mc_preview_cache = {}
 
         if not hasattr(lg, "shared_uwb") or lg.shared_uwb is None:
-            print("[MC] ERRO: shared_uwb não configurado")
             self._set_msg("Erro: shared_uwb não configurado")
             return
 
@@ -1303,7 +1301,7 @@ class MonteCarloMode:
         draw_grid(self.host.screen, lg.cam)
 
         if data.get("env") is not None:
-            from src.environment import draw_environment
+            from environment.environment import draw_environment
             draw_environment(self.host.screen, lg.cam, data["env"])
 
         draw_axes(self.host.screen, lg.cam, lg.font)

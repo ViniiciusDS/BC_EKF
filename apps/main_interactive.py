@@ -12,7 +12,7 @@ import pygame as pg
 from src.simulator import Simulator
 from src.scenarios import anchors_tectrol
 import src.config as config
-from src.environment import Environment, Obstacle, draw_environment
+from src.environment.environment import Environment, Obstacle, draw_environment
 from src.utils import start_plot_process, stop_plot_process, push_plot_data, point_segment_distance, list_map_files, map_file_path
 from src.ui.ui_elements import TextBoxDropdown
 from src.ui.map_editor import MapEditorScreen

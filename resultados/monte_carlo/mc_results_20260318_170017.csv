@@ -1,0 +1,6 @@
+algoritmo;rmse_xy_mean;rmse_xy_std
+trilaterate3d;0.411296;0.000000
+lms;0.362681;0.000000
+gauss_newton;0.342535;0.000000
+lmsp;0.345784;0.000000
+bc_ekf;0.044098;0.000000

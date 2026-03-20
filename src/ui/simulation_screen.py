@@ -11,7 +11,7 @@ import json
 
 import src.config as config
 from src.utils import push_plot_data, RunLogger, start_plot_process, stop_plot_process
-from src.environment import draw_environment
+from src.environment.environment import draw_environment
 from src.trajectory import Trajectory  
 from src.ui.ui_elements import TextBoxDropdown, ToggleRow 
 from src.control.waypoint_controller import waypoint_controller

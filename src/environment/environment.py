@@ -8,6 +8,9 @@ import pygame as pg
 import json
 import os
 
+from .noise_zones import normalize_noise_zones
+from .noise_profiles import noise_profile_color, noise_profile_label
+
 
 Vec2 = np.ndarray  # shape (2,)
 
@@ -33,6 +36,7 @@ class Obstacle:
         self.material = material
 
 
+
 class Environment:
     """
     Apenas uma coleção de obstáculos.
@@ -41,6 +45,9 @@ class Environment:
         self.obstacles: List[Obstacle] = obstacles or []
         # bounds
         self.bounds = None # (xmin, xmax, ymin, ymax) ou None
+
+        self.noise_zones: list[dict] = []  # lista de zonas de ruído (dicionários normalizados)
+
     
     # Adiciona um obstáculo
     def add(self, obs: Obstacle) -> None:
@@ -49,6 +56,7 @@ class Environment:
     # clear
     def clear(self) -> None:
         self.obstacles.clear()
+        self.noise_zones.clear()
 
     # --- serialization to dict/JSON ---
     def to_dict(self) -> dict:
@@ -59,6 +67,7 @@ class Environment:
                 "p0": obs.p0.tolist(),
                 "p1": obs.p1.tolist(),
                 "material": obs.material,
+                "noise_zones": list(self.noise_zones),
             })
         data = {"obstacles": obs_list}
         if self.bounds is not None:
@@ -78,6 +87,9 @@ class Environment:
                                 material=material))
         if "bounds" in data:
             env.bounds = tuple(data["bounds"])
+
+        env.noise_zones = normalize_noise_zones(data.get("noise_zones", []))
+        
         return env
 
     def save_json(self, filepath: str):
@@ -91,7 +103,24 @@ class Environment:
         """Carrega um ambiente de um arquivo JSON."""
         with open(filepath, "r", encoding="utf-8") as f:
             data = json.load(f)
+
         return cls.from_dict(data)
+    
+    def set_noise_zones(self, zones):
+        '''Define as zonas de ruído do ambiente, normalizando a entrada.'''
+        self.noise_zones = normalize_noise_zones(zones)
+
+
+    def add_noise_zone(self, zone: dict):
+        '''Adiciona uma zona de ruído ao ambiente, normalizando a entrada.'''
+        normalized = normalize_noise_zones([zone])
+        if normalized:
+            self.noise_zones.append(normalized[0])
+
+
+    def clear_noise_zones(self):
+        '''Remove todas as zonas de ruído do ambiente.'''
+        self.noise_zones = []
 
 # ===============================
 # Utilidades geométricas básicas
@@ -155,6 +184,8 @@ def draw_environment(surface, cam: Camera, env):
     if env is None:
         return
 
+    draw_noise_zones(surface, cam, env)
+    
     # mapeia material -> cor
     COLOR_BY_MATERIAL = {
         "metal":   (80,  80,  80),
@@ -173,4 +204,43 @@ def draw_environment(surface, cam: Camera, env):
         pg.draw.line(surface, col, p0s, p1s, 3)
         pg.draw.circle(surface, col, p0s, 4)
         pg.draw.circle(surface, col, p1s, 4)
+
+    
+
+def draw_noise_zones(surface, cam: Camera, env):
+    '''Desenha as zonas de ruído do ambiente como retângulos semitransparentes, usando as cores definidas pelos perfis de ruído.'''
+    if env is None:
+        return
+
+    zones = getattr(env, "noise_zones", None)
+    if not zones:
+        return
+
+    for zone in zones:
+        color = noise_profile_color(zone.get("profile"))
+        if color is None:
+            continue
+
+        x = float(zone["x"])
+        y = float(zone["y"])
+        w = float(zone["w"])
+        h = float(zone["h"])
+
+        p0 = cam.world_to_screen(x, y)
+        p1 = cam.world_to_screen(x + w, y + h)
+
+        left = min(p0[0], p1[0])
+        top = min(p0[1], p1[1])
+        width = abs(p1[0] - p0[0])
+        height = abs(p1[1] - p0[1])
+
+        if width <= 0 or height <= 0:
+            continue
+
+        overlay = pg.Surface((width, height), pg.SRCALPHA)
+        overlay.fill(color)
+        surface.blit(overlay, (left, top))
+
+        border_color = color[:3]
+        pg.draw.rect(surface, border_color, (left, top, width, height), 2)
 

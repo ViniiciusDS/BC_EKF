@@ -3,7 +3,7 @@
 from __future__ import annotations
 import numpy as np
 from typing import Dict, Tuple
-from .environment import Environment, reflect_point_about_line, los_blocked
+from .environment.environment import Environment, reflect_point_about_line, los_blocked
 
 def uwb_range_measure(
     tag_xy: np.ndarray,

@@ -12,7 +12,7 @@ try:
 except Exception:
     import config  # fallback quando rodar como scripts soltos
 from .uwb_channel import uwb_range_measure
-from .environment import Environment
+from .environment.environment import Environment
 import multiprocessing as mp
 from multiprocessing import Process, Queue
 import queue

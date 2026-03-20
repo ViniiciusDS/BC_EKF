@@ -7,7 +7,7 @@ import pygame as pg
 
 from src.ui.botton import Button
 from src.ui.drawing import draw_grid, draw_axes, draw_anchors, draw_path
-from src.environment import Environment, draw_environment
+from src.environment.environment import Environment, draw_environment
 from src.uwb.algoritmos_estaticos import carregar_ensaio_lab, run_batch
 from src.ui.algo_modes.shared import (
     ALGO_ORDER,

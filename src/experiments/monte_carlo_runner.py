@@ -19,7 +19,7 @@ import os
 from src.simulator import Simulator
 from src.uwb.algoritmos_step import criar_localizadores, monte_carlo
 from src.uwb.node_params_serialization import dict_to_node_params
-from src.environment import Environment
+from src.environment.environment import Environment
 
 
 @dataclass

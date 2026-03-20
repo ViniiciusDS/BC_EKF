@@ -12,7 +12,7 @@ from src.uwb.uwb_sim import UwbSimPipeline
 from src.uwb.algoritmos_step import ALGORITMOS, NOMES_UI
 from src.ui.botton import Button
 from src.ui.drawing import draw_grid, draw_axes, draw_anchors, draw_path, draw_robot
-from src.environment import Environment, draw_environment
+from src.environment.environment import Environment, draw_environment
 from src.ui.algo_modes.shared import (
     ALGO_COLORS,
     ALGO_ORDER,
@@ -1002,18 +1002,22 @@ class StepMode:
         )
 
     def _export_step_as_batch(self):
+        ranking = self._step_ranking()
         export_data = {}
+
         for algo, trail in self._trails.items():
             if not trail:
                 continue
+
             export_data[algo] = {
                 "posicoes": np.array(trail, dtype=float),
                 "rmse_xy": self._step_stats.get(algo, {}).get("rmse") if self._step_stats else None,
                 "ranking_row": next(
-                    (row for row in self._step_ranking() if row["algo"] == algo),
+                    (row for row in ranking if row["algo"] == algo),
                     None
                 ),
             }
+
         return export_data
 
     def close(self) -> None:

@@ -46,21 +46,15 @@ def ordered_active_algos(
         if algo in stats and (selected is None or selected.get(algo, False))
     ]
 
-def ranking_text(
+def ranking_positions(
     stats: Mapping[str, dict] | None,
     selected: Mapping[str, bool] | None = None,
-    top_k: int = 3,
-) -> str:
-    ranked = build_ranking_summary(stats, selected=selected, top_k=top_k)
-    if not ranked:
-        return "Ranking: —"
-
-    parts = []
+) -> dict[str, int]:
+    ranked = build_ranking_summary(stats, selected=selected, top_k=99)
+    out: dict[str, int] = {}
     for row in ranked:
-        label = NOMES_UI.get(row["algo"], row["algo"]).split(") ", 1)[-1]
-        parts.append(f'{row["rank"]}º {label} ({row["score"]:.3f})')
-
-    return "Ranking RMSE: " + " | ".join(parts)
+        out[row["algo"]] = int(row["rank"])
+    return out
 
 def draw_analyzer_panel(
     *,
@@ -72,7 +66,7 @@ def draw_analyzer_panel(
     selected: Mapping[str, bool] | None = None,
     x: int = 18,
     y: int = 18,
-    w: int = 390,
+    w: int = 430,
     h: int = 305,
     panel_fill=(250, 250, 252, 238),
     box_fill=(242, 242, 245),
@@ -91,14 +85,11 @@ def draw_analyzer_panel(
 
     screen.blit(bigfont.render(title, True, (20, 20, 20)), (x + 10, y + 8))
 
-    rank_line = ranking_text(stats, selected=selected, top_k=3)
-    screen.blit(font.render(rank_line[:58], True, (70, 70, 70)), (x + 10, y + 30))
-
-    header_y = y + 56
+    header_y = y + 40
     col_name = x + 12
-    col_rmse = x + 120
-    col_mae = x + 185
-    col_max = x + 245
+    col_rmse = x + 155
+    col_mae = x + 220
+    col_max = x + 285
 
     screen.blit(font.render("Algoritmo", True, header), (col_name, header_y))
     screen.blit(font.render("RMSE", True, header), (col_rmse, header_y))
@@ -114,16 +105,16 @@ def draw_analyzer_panel(
         label = NOMES_UI.get(algo, algo).split(") ", 1)[-1]
 
         pg.draw.rect(screen, color, (col_name, yy + 5, 10, 10))
-        screen.blit(font.render(label[:14], True, color), (col_name + 18, yy))
+        screen.blit(font.render(label[:16], True, color), (col_name + 18, yy))
         screen.blit(font.render(f"{st['rmse']:.3f}", True, text), (col_rmse, yy))
         screen.blit(font.render(f"{st['mae']:.3f}", True, text), (col_mae, yy))
         screen.blit(font.render(f"{st['max_err']:.3f}", True, text), (col_max, yy))
         yy += 22
 
     box_x = x + 12
-    box_y = y + 166
+    box_y = y + 150
     box_w = w - 24
-    box_h = 119
+    box_h = 135
 
     draw_boxplot_panel(
         screen,
@@ -134,9 +125,9 @@ def draw_analyzer_panel(
         box_y,
         box_w,
         box_h,
+        selected=selected,
         box_fill=box_fill,
     )
-
 
 def draw_boxplot_panel(
     screen,
@@ -148,6 +139,7 @@ def draw_boxplot_panel(
     w,
     h,
     *,
+    selected=None,
     box_fill=(242, 242, 245),
 ):
     '''Desenha um boxplot horizontal para os algoritmos listados, usando as estatísticas fornecidas.'''
@@ -158,9 +150,11 @@ def draw_boxplot_panel(
     pg.draw.rect(screen, (150, 150, 150), (x, y, w, h), 1)
     screen.blit(font.render("Boxplot de erro", True, (50, 50, 50)), (x + 6, y + 4))
 
+    rank_pos = ranking_positions(stats, selected=selected)
+
     max_err = max(max(1e-9, stats[algo].get("max", 0.0)) for algo in ordered_algos)
 
-    label_w = 92
+    label_w = 128
     plot_x0 = x + label_w
     plot_x1 = x + w - 10
     plot_w = plot_x1 - plot_x0
@@ -183,7 +177,14 @@ def draw_boxplot_panel(
         s_max = sx(st["max"])
 
         label = NOMES_UI.get(algo, algo).split(") ", 1)[-1]
-        screen.blit(font.render(label[:10], True, color), (x + 6, yy - 8))
+        rank = rank_pos.get(algo)
+
+        if rank is not None:
+            label_txt = f"{rank}º {label}"
+        else:
+            label_txt = label
+
+        screen.blit(font.render(label_txt[:12], True, color), (x + 6, yy - 9))
 
         pg.draw.line(screen, color, (s_min, yy), (s_max, yy), 2)
         pg.draw.rect(screen, color, (s_q1, yy - 5, max(2, s_q3 - s_q1), 10), 1)
