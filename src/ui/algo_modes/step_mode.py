@@ -294,6 +294,8 @@ class StepMode:
             try:
                 self._map_env = Environment.load_json(os.path.join(self.maps_dir, map_file))
                 self._map_label = map_file
+                if getattr(self, "sim", None) is not None and hasattr(self.sim, "set_environment"):
+                    self.sim.set_environment(self.env)
             except Exception as e:
                 print(f"[STEP] erro ao carregar mapa: {e}")
                 self.host._set_msg("Erro ao carregar mapa")
@@ -510,7 +512,7 @@ class StepMode:
         Q = np.diag([1e-4, 1e-4, 1e-4])
         R = np.eye(2 * N) * (0.05 ** 2)
 
-        self._pipeline = UwbSimPipeline.from_defaults(seed=42)
+        self._pipeline = UwbSimPipeline.from_defaults(seed=42, env=self._map_env)
 
         self._sim = Simulator(
             anchors=anchors,
@@ -523,6 +525,12 @@ class StepMode:
             uwb_pipeline=self._pipeline,
             env=self._map_env,
         )
+
+        if self._pipeline is not None and hasattr(self._pipeline, "set_environment") and self._map_env is not None:
+            self._pipeline.set_environment(self._map_env)
+
+        if self._sim is not None and hasattr(self._sim, "set_environment") and self._map_env is not None:
+            self._sim.set_environment(self._map_env)
 
         algos_selecionados = [k for k, v in self.selected.items() if v]
         anchors_Nx3 = anchors.T

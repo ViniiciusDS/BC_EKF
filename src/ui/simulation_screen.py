@@ -192,6 +192,10 @@ class SimulationScreen:
         )
 
         self.shared_uwb = shared_uwb
+
+        if self.sim is not None and getattr(self.sim, "uwb_pipeline", None) is not None:
+            if hasattr(self.sim.uwb_pipeline, "set_environment"):
+                self.sim.uwb_pipeline.set_environment(self.sim.env)
     
         # Usar anchors do shared
         if shared_uwb is not None:

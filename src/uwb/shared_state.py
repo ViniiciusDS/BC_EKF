@@ -34,7 +34,7 @@ class SharedUwbState:
             seed=int(seed),
             tag_params=default,
             anchor_params={},
-            pipeline=UwbSimPipeline.from_config(cfg, seed=seed),
+            pipeline=UwbSimPipeline.from_config(cfg, seed=seed, env=None),
         )
         return st
 
@@ -90,7 +90,8 @@ class SharedUwbState:
         sim_cfg.mode = mode
 
         old = self.pipeline
-        self.pipeline = UwbSimPipeline.from_sim_cfg(sim_cfg, seed=self.seed)
+        old_env = getattr(old, "env", None)
+        self.pipeline = UwbSimPipeline.from_sim_cfg(sim_cfg, seed=self.seed, env=old_env)
         # reaplica params
         self.pipeline.tag_params = self.tag_params
         self.pipeline.anchor_params = dict(self.anchor_params)

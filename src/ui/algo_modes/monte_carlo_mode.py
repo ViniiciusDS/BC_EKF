@@ -1301,7 +1301,7 @@ class MonteCarloMode:
         draw_grid(self.host.screen, lg.cam)
 
         if data.get("env") is not None:
-            from environment.environment import draw_environment
+            from src.environment.environment import draw_environment
             draw_environment(self.host.screen, lg.cam, data["env"])
 
         draw_axes(self.host.screen, lg.cam, lg.font)

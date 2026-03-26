@@ -236,17 +236,21 @@ def main():
 
                         num_anchors = 0 if anchors_dyn is None else anchors_dyn.shape[1]
 
-                        uwb_pipeline = None
-                        if num_anchors > 0:
-                            # seed fixa por enquanto 
-                            uwb_seed = 123
+                        uwb_seed = 123
 
-                            # defaults = DS-TWR + canal básico (você pode trocar via UwbSimConfig depois)
+                        if shared_uwb.pipeline is None:
                             sim_cfg = UwbSimConfig()
-                            uwb_pipeline = UwbSimPipeline.from_config(sim_cfg, seed=uwb_seed)
-                            # alternativa mínima:
-                            # uwb_pipeline = UwbSimPipeline.from_defaults(seed=uwb_seed)
-                            
+                            shared_uwb.pipeline = UwbSimPipeline.from_config(
+                                sim_cfg,
+                                seed=uwb_seed,
+                                env=env,
+                            )
+                        else:
+                            if hasattr(shared_uwb.pipeline, "set_environment"):
+                                shared_uwb.pipeline.set_environment(env)
+
+                        uwb_pipeline = shared_uwb.pipeline
+
                         sim = Simulator(
                             anchors=shared_uwb.anchors_np3().copy(),
                             baseline=getattr(config, "WHEEL_BASE", 0.65),
@@ -257,8 +261,14 @@ def main():
                             dt=DT,
                             config=config,
                             env=env,
-                            uwb_pipeline=uwb_pipeline
+                            uwb_pipeline=uwb_pipeline,
                         )
+
+                        if sim.uwb_pipeline is not None and hasattr(sim.uwb_pipeline, "set_environment"):
+                            sim.uwb_pipeline.set_environment(env)
+
+                        if hasattr(sim, "set_environment"):
+                            sim.set_environment(env)
 
                         sim_screen = SimulationScreen(
                             screen=screen,
@@ -271,9 +281,6 @@ def main():
                             plot_state=plot_state,
                             shared_uwb=shared_uwb,
                         )
-                        
-                        # garante que o sim usa o pipeline do shared
-                        sim.uwb_pipeline = shared_uwb.pipeline
 
                         # inicializações específicas do SIM (rotas, âncoras etc)
                         sim_screen.anchors_dyn = shared_uwb.anchors_np3()
@@ -415,6 +422,8 @@ def main():
                 elif event.type == pg.MOUSEBUTTONUP:
                     if event.button == 2:
                         panning = False
+                    else:
+                        editor_screen.handle_event(event, cam, cam.viewport[0])
 
                 elif event.type == pg.MOUSEMOTION:
                     mx, my = event.pos
@@ -438,7 +447,13 @@ def main():
             map_rect = pg.Rect(0, 0, cam.viewport[0], cam.viewport[1])
             pg.draw.rect(screen, WHITE, map_rect)
             draw_grid(screen, cam)
-            draw_environment(screen, cam, editor_screen.env)
+            draw_environment(
+                screen,
+                cam,
+                editor_screen.env,
+                font=font,
+                highlight_world=editor_screen.get_zone_highlight_point(),
+            )
             draw_axes(screen, cam, font)
 
             # preview da parede (linha “fantasma”)

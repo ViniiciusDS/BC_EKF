@@ -8,8 +8,8 @@ import pygame as pg
 import json
 import os
 
-from .noise_zones import normalize_noise_zones
-from .noise_profiles import noise_profile_color, noise_profile_label
+from .noise_zones import normalize_noise_zones, point_in_noise_zone
+from .noise_profiles import noise_profile_color, noise_profile_short_label, noise_profile_label, noise_profile_border_color
 
 
 Vec2 = np.ndarray  # shape (2,)
@@ -60,36 +60,46 @@ class Environment:
 
     # --- serialization to dict/JSON ---
     def to_dict(self) -> dict:
-        """Converte o ambiente para um dicionário serializável em JSON."""
+        '''Converte o ambiente para um dicionário serializável (para JSON).'''
         obs_list = []
         for obs in self.obstacles:
             obs_list.append({
                 "p0": obs.p0.tolist(),
                 "p1": obs.p1.tolist(),
                 "material": obs.material,
-                "noise_zones": list(self.noise_zones),
             })
-        data = {"obstacles": obs_list}
+
+        data = {
+            "obstacles": obs_list,
+            "noise_zones": list(self.noise_zones),
+        }
+
         if self.bounds is not None:
             data["bounds"] = list(self.bounds)
+
         return data
 
     @classmethod
     def from_dict(cls, data: dict) -> "Environment":
-        """Cria um Environment a partir de um dicionário (carregado de JSON)."""
         env = cls()
+
         for o in data.get("obstacles", []):
             p0 = o.get("p0", [0.0, 0.0])
             p1 = o.get("p1", [0.0, 0.0])
             material = o.get("material", "wall")
-            env.add(Obstacle(np.array(p0, dtype=float),
-                                np.array(p1, dtype=float),
-                                material=material))
+            env.add(
+                Obstacle(
+                    np.array(p0, dtype=float),
+                    np.array(p1, dtype=float),
+                    material=material
+                )
+            )
+
+        env.noise_zones = normalize_noise_zones(data.get("noise_zones", []))
+
         if "bounds" in data:
             env.bounds = tuple(data["bounds"])
 
-        env.noise_zones = normalize_noise_zones(data.get("noise_zones", []))
-        
         return env
 
     def save_json(self, filepath: str):
@@ -180,12 +190,12 @@ def los_blocked(tag_xy: Vec2, anchor_xy: Vec2, env: Environment | None) -> bool:
             return True
     return False
 
-def draw_environment(surface, cam: Camera, env):
+def draw_environment(surface, cam, env, font=None, highlight_world=None):
     if env is None:
         return
 
-    draw_noise_zones(surface, cam, env)
-    
+    draw_noise_zones(surface, cam, env, font=font, highlight_world=highlight_world)
+
     # mapeia material -> cor
     COLOR_BY_MATERIAL = {
         "metal":   (80,  80,  80),
@@ -207,8 +217,8 @@ def draw_environment(surface, cam: Camera, env):
 
     
 
-def draw_noise_zones(surface, cam: Camera, env):
-    '''Desenha as zonas de ruído do ambiente como retângulos semitransparentes, usando as cores definidas pelos perfis de ruído.'''
+def draw_noise_zones(surface, cam, env, font=None, highlight_world=None):
+    '''Desenha as zonas de ruído do ambiente, se houver. Se highlight_world=(x,y) for dado, destaca a zona que contém esse ponto.'''
     if env is None:
         return
 
@@ -217,8 +227,9 @@ def draw_noise_zones(surface, cam: Camera, env):
         return
 
     for zone in zones:
-        color = noise_profile_color(zone.get("profile"))
-        if color is None:
+        fill_color = noise_profile_color(zone.get("profile"))
+        border_color = noise_profile_border_color(zone.get("profile"))
+        if fill_color is None:
             continue
 
         x = float(zone["x"])
@@ -237,10 +248,28 @@ def draw_noise_zones(surface, cam: Camera, env):
         if width <= 0 or height <= 0:
             continue
 
+        hovered = False
+        if highlight_world is not None:
+            hx, hy = highlight_world
+            hovered = point_in_noise_zone(hx, hy, zone)
+
         overlay = pg.Surface((width, height), pg.SRCALPHA)
-        overlay.fill(color)
+        overlay.fill(fill_color)
         surface.blit(overlay, (left, top))
 
-        border_color = color[:3]
-        pg.draw.rect(surface, border_color, (left, top, width, height), 2)
+        draw_border = border_color or fill_color[:3]
+        border_w = 3 if hovered else 2
+        pg.draw.rect(surface, draw_border, (left, top, width, height), border_w)
+
+        if hovered:
+            glow = pg.Surface((width, height), pg.SRCALPHA)
+            glow.fill((255, 255, 255, 22))
+            surface.blit(glow, (left, top))
+
+        if font is not None and width >= 36 and height >= 18:
+            txt = noise_profile_short_label(zone.get("profile"))
+            img = font.render(txt, True, draw_border)
+            tx = left + (width - img.get_width()) // 2
+            ty = top + (height - img.get_height()) // 2
+            surface.blit(img, (tx, ty))
 

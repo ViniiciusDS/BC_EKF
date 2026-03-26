@@ -72,8 +72,18 @@ class Simulator:
         # Se none, o simulador gera medições UWB simples com ruído gaussiano. (legado)
         self.uwb_pipeline = uwb_pipeline
 
+        if self.uwb_pipeline is not None and hasattr(self.uwb_pipeline, "set_environment"):
+            self.uwb_pipeline.set_environment(env)
+
         self.last_zk = None  # para debug e HUD
 
+    def set_environment(self, env) -> None:
+        '''Atualiza o ambiente do simulador (obstáculos, zonas de ruído, etc.).
+          Se o pipeline de UWB suportar, também atualiza o ambiente lá.'''
+        self.env = env
+        if self.uwb_pipeline is not None and hasattr(self.uwb_pipeline, "set_environment"):
+            self.uwb_pipeline.set_environment(env)
+            
 
     def step(
         self,
@@ -152,8 +162,18 @@ class Simulator:
                         self.anchors, self.l, self.z_c,
                         return_meta=True
                     )
+
                     sigma_los = float(getattr(self.uwb_pipeline.ranging_model.cfg, "sigma_los", SIGMA_NOMINAL))
-                    sigma_world = sigma_los
+
+                    sigma_meta = []
+                    if isinstance(meta, list):
+                        for row in meta:
+                            try:
+                                sigma_meta.append(float(row.get("sigma_i", sigma_los)))
+                            except Exception:
+                                pass
+
+                    sigma_world = float(np.median(sigma_meta)) if sigma_meta else sigma_los
                 else:
                     z_k, meta = utils.generate_uwb_single_measurement(
                         [x_true, y_true, theta_true],
@@ -271,14 +291,6 @@ class Simulator:
                 v_meas=float(v_meas), w_meas=float(w_meas),
                 pos_err=pos_err, heading_err_deg=head_err_deg
             )
-
-        if self.uwb_pipeline and self.anchors is not None:
-            z_k = self.uwb_pipeline.measure(
-                np.array([x_true, y_true, theta_true], dtype=float),
-                self.anchors, self.l, self.z_c,
-                return_meta=False
-            )
-            self.last_zk = z_k  # para debug e HUD
 
         return {
             "true": np.array([x_true, y_true, theta_true], dtype=float),

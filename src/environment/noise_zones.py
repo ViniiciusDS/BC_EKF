@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Iterable
 
+from .noise_profiles import noise_profile_severity
+
 
 def make_rect_noise_zone(
     x: float,
@@ -140,3 +142,32 @@ def segment_intersects_rect(p0, p1, rect: dict) -> bool:
             return True
 
     return False
+
+def zones_containing_point(px: float, py: float, zones: list[dict] | None) -> list[dict]:
+    if not zones:
+        return []
+    return [z for z in zones if point_in_noise_zone(px, py, z)]
+
+
+def zones_intersecting_segment(p0, p1, zones: list[dict] | None) -> list[dict]:
+    if not zones:
+        return []
+    out = []
+    for z in zones:
+        if z.get("type") == "rect" and segment_intersects_rect(p0, p1, z):
+            out.append(z)
+    return out
+
+
+def worst_zone_from_list(zones: list[dict] | None) -> dict | None:
+    if not zones:
+        return None
+    return max(zones, key=lambda z: noise_profile_severity(z.get("profile")))
+
+
+def worst_zone_at_point(px: float, py: float, zones: list[dict] | None) -> dict | None:
+    return worst_zone_from_list(zones_containing_point(px, py, zones))
+
+
+def worst_zone_on_segment(p0, p1, zones: list[dict] | None) -> dict | None:
+    return worst_zone_from_list(zones_intersecting_segment(p0, p1, zones))

@@ -10,6 +10,8 @@ from src.uwb.twr_protocols   import (
     ClockModel as TWRClock, AntennaDelayModel, TWRResult
 )
 from src.uwb.node_params import NodeParams, ns_to_s
+from src.environment.noise_zones import worst_zone_at_point, worst_zone_on_segment
+from src.environment.noise_profiles import noise_profile_sigma_scale, noise_profile_bias_mean, noise_profile_severity, noise_profile_bias_std
 
 
 
@@ -121,6 +123,7 @@ class UwbSimPipeline:
         anchor_params: Dict[int, NodeParams],
         default_params: NodeParams,
         seed:          Optional[int] = None,
+        env = None,
     ) -> None:
         self.seed = None
 
@@ -140,6 +143,8 @@ class UwbSimPipeline:
         # Seta Seed 
         self.seed = seed
 
+        self.env = env  # referência ao ambiente para acessar zonas de ruído, se necessário
+
     @property
     def seed(self) -> Optional[int]:
         return self._seed
@@ -157,10 +162,16 @@ class UwbSimPipeline:
             import numpy as np
             self.protocol.rng = np.random.default_rng(self._seed)
 
+    def set_environment(self, env) -> None:
+        '''Permite injetar ou atualizar a referência ao ambiente, caso o pipeline precise acessar 
+        zonas de ruído ou outras informações ambientais.'''
+        self.env = env
+
+
 
     # Construtor conveniente 
     @classmethod
-    def from_defaults(cls, seed: Optional[int] = None) -> "UwbSimPipeline":
+    def from_defaults(cls, seed: Optional[int] = None, env=None) -> "UwbSimPipeline":
         """Cria pipeline com configuração padrão (sem clock drift, sem delays)."""
         cfg = UwbSimConfig()
         return cls(
@@ -170,6 +181,7 @@ class UwbSimPipeline:
             anchor_params  = {},
             default_params = cfg.default_node_params(),
             seed           = seed,
+            env            = env,
         )
 
     @classmethod
@@ -179,6 +191,7 @@ class UwbSimPipeline:
         tag_params:    Optional[NodeParams] = None,
         anchor_params: Optional[Dict[int, NodeParams]] = None,
         seed:          Optional[int] = None,
+        env = None,
     ) -> "UwbSimPipeline":
         """Cria pipeline a partir de um UwbSimConfig + overrides opcionais."""
         default = sim_cfg.default_node_params()
@@ -189,15 +202,75 @@ class UwbSimPipeline:
             anchor_params  = anchor_params or {},
             default_params = default,
             seed           = seed,
+            env            = env,
         )
-    
+        
     @classmethod
-    def from_sim_cfg(cls, cfg, seed: int | None = None) -> "UwbSimPipeline":
+    def from_sim_cfg(cls, cfg, seed: int | None = None, env=None) -> "UwbSimPipeline":
         """
         Alias para compatibilidade.
         Alguns lugares chamam from_sim_cfg(), mas o nome 'oficial' aqui é from_config().
         """
-        return cls.from_config(cfg, seed=seed)
+        return cls.from_config(cfg, seed=seed, env=env)
+    
+    def set_environment(self, env) -> None:
+        self.env = env
+        print("[UWB_PIPELINE] set_environment called | env_is_none =", env is None,
+          "| num_zones =", len(getattr(env, "noise_zones", []) or []) if env is not None else 0)
+
+    def _resolve_noise_zone_profile(self, tag_xy: np.ndarray, anchor_xy: np.ndarray) -> str | None:
+        '''Dada a posição da tag e da âncora, resolve o perfil de ruído aplicável considerando as zonas de ruído do ambiente.'''
+        zones = getattr(self.env, "noise_zones", None) if self.env is not None else None
+        if not zones:
+            return None
+
+        z_point = worst_zone_at_point(float(tag_xy[0]), float(tag_xy[1]), zones)
+        z_seg = worst_zone_on_segment(tag_xy, anchor_xy, zones)
+
+        p_point = z_point.get("profile") if z_point is not None else None
+        p_seg = z_seg.get("profile") if z_seg is not None else None
+
+        if p_point is None and p_seg is None:
+            return None
+        if p_point is None:
+            return p_seg
+        if p_seg is None:
+            return p_point
+
+        sp = noise_profile_severity(p_point)
+        ss = noise_profile_severity(p_seg)
+        return p_point if sp >= ss else p_seg
+
+
+    def _noise_zone_adjustments(self, tag_xy: np.ndarray, anchor_xy: np.ndarray) -> dict:
+        """Dada a posição da tag e da âncora, calcula os ajustes de ruído."""
+        profile = self._resolve_noise_zone_profile(tag_xy, anchor_xy)
+
+        if not profile:
+            return {
+                "profile": None,
+                "sigma_scale": 1.0,
+                "bias_add": 0.0,
+            }
+
+        sigma_scale = noise_profile_sigma_scale(profile)
+        bias_mean = noise_profile_bias_mean(profile)
+        bias_std = noise_profile_bias_std(profile)
+
+        if bias_std > 0.0:
+            rng = getattr(self.ranging_model, "rng", None)
+            if rng is None:
+                bias_add = float(np.random.normal(bias_mean, bias_std))
+            else:
+                bias_add = float(rng.normal(bias_mean, bias_std))
+        else:
+            bias_add = float(bias_mean)
+
+        return {
+            "profile": profile,
+            "sigma_scale": float(sigma_scale),
+            "bias_add": float(bias_add),
+        }
 
     # Medição principal 
     def measure(
@@ -273,13 +346,20 @@ class UwbSimPipeline:
                 np.array([xk - l*np.cos(th), yk - l*np.sin(th)]) - a_xy
             ))
 
+            adj_f = self._noise_zone_adjustments(pf, a_xy)
+            adj_r = self._noise_zone_adjustments(pr, a_xy)
+
             z_f = (res_f.r_est_m + range_bias) if (res_f.r_est_m is not None) else r_true_f
             z_r = (res_r.r_est_m + range_bias) if (res_r.r_est_m is not None) else r_true_r
+
+            z_f = float(z_f) + float(adj_f["bias_add"])
+            z_r = float(z_r) + float(adj_r["bias_add"])
 
             z_k[2*i]     = float(z_f)
             z_k[2*i + 1] = float(z_r)
 
             if return_meta:
+                # Meta para tag frontal
                 meta_list.append({
                     "anchor_idx": i,
                     "tag": "front",
@@ -289,7 +369,12 @@ class UwbSimPipeline:
                     "dropped": res_f.dropped,
                     "ppm_anchor": anc_p.clock.drift_ppm,
                     "bias_m":    range_bias,
+                    "noise_zone_profile": adj_f["profile"],
+                    "noise_sigma_scale": float(adj_f["sigma_scale"]),
+                    "noise_bias_add": float(adj_f["bias_add"]),
+                    "sigma_i": float((getattr(self.ranging_model.cfg, "sigma_nlos", 0.15) if res_f.is_nlos else getattr(self.ranging_model.cfg, "sigma_los", 0.03)) * adj_f["sigma_scale"]),
                 })
+                # Meta para tag traseira
                 meta_list.append({
                     "anchor_idx": i,
                     "tag": "rear",
@@ -299,6 +384,10 @@ class UwbSimPipeline:
                     "dropped": res_r.dropped,
                     "ppm_anchor": anc_p.clock.drift_ppm,
                     "bias_m":    range_bias,
+                    "noise_zone_profile": adj_r["profile"],
+                    "noise_sigma_scale": float(adj_r["sigma_scale"]),
+                    "noise_bias_add": float(adj_r["bias_add"]),
+                    "sigma_i": float((getattr(self.ranging_model.cfg, "sigma_nlos", 0.15) if res_r.is_nlos else getattr(self.ranging_model.cfg, "sigma_los", 0.03)) * adj_r["sigma_scale"]),
                 })
 
         return (z_k, meta_list) if return_meta else z_k
@@ -357,6 +446,8 @@ class UwbSimPipeline:
         for i in range(num_anchors):
             a_xy = anchors[:2, i]
 
+            adj = self._noise_zone_adjustments(tag_xy, a_xy)
+
             anc_p = self.anchor_params.get(i, self.default_params)
             twr_clock_anc = _node_to_twr_clock(anc_p)
             twr_delay_anc = _node_to_twr_delay(anc_p)
@@ -383,14 +474,14 @@ class UwbSimPipeline:
             else:
                 z = float(res.r_est_m)
 
-            z = float(z) + range_bias
+            z = float(z) + range_bias + float(adj["bias_add"])
             ranges[i] = z
 
             # sigma_i (reportado)
             if dropped:
                 sig = float(dropout_sigma)
             else:
-                sig = float(sigma_nlos if is_nlos else sigma_los)
+                sig = float(sigma_nlos if is_nlos else sigma_los) * float(adj["sigma_scale"])
 
             sigmas[i] = sig
 
@@ -405,6 +496,9 @@ class UwbSimPipeline:
                     "ppm_anchor": float(anc_p.clock.drift_ppm),
                     "bias_m": float(range_bias),
                     "sigma_i": float(sig),
+                    "noise_zone_profile": adj["profile"],
+                    "noise_sigma_scale": float(adj["sigma_scale"]),
+                    "noise_bias_add": float(adj["bias_add"]),
                 })
 
         return (ranges, sigmas, meta_list) if return_meta else (ranges, sigmas)
