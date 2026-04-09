@@ -2,9 +2,14 @@ from __future__ import annotations
 
 from typing import Mapping
 import pygame as pg
+from typing import Callable, Optional
+import os
+import json
+import numpy as np
 
 from src.uwb.algoritmos_step import NOMES_UI
 from src.analysis.algo_metrics import build_ranking_summary
+from src.environment.environment import Environment
 
 MODE_DATASET = "dataset"
 MODE_STEP = "step"
@@ -29,6 +34,98 @@ ALGO_COLORS = {
 }
 
 
+def load_anchors_from_json(
+    filepath: str,
+    format_converter: Optional[Callable[[np.ndarray], np.ndarray]] = None,
+) -> tuple[np.ndarray, str]:
+    """
+    Carrega âncoras de um arquivo JSON com key 'anchors_xy'.
+    
+    Args:
+        filepath: Caminho completo do arquivo JSON
+        format_converter: Função opcional para converter o array (ex: transpose para 3xN)
+    
+    Returns:
+        Tupla (anchors_array, filename_label)
+    
+    Levanta:
+        FileNotFoundError: Se arquivo não existe
+        ValueError: Se formato de âncoras for inválido
+        json.JSONDecodeError: Se JSON for inválido
+    """
+    with open(filepath, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    
+    anchors_xy = np.array(data.get("anchors_xy", []), dtype=float)
+    
+    if anchors_xy.size == 0:
+        raise ValueError("Arquivo de âncoras vazio")
+    
+    # Converter 2D para 3D se necessário (adicionar altura padrão = 1.0)
+    if anchors_xy.ndim == 2 and anchors_xy.shape[1] == 2:
+        anchors_nx3 = np.zeros((anchors_xy.shape[0], 3), dtype=float)
+        anchors_nx3[:, 0] = anchors_xy[:, 0]
+        anchors_nx3[:, 1] = anchors_xy[:, 1]
+        anchors_nx3[:, 2] = 1.0
+        anchors_xy = anchors_nx3
+    elif not (anchors_xy.ndim == 2 and anchors_xy.shape[1] == 3):
+        raise ValueError("Formato inválido de âncoras (esperado Nx2 ou Nx3)")
+    
+    # Aplicar formato converter se fornecido (ex: transpose para 3xN)
+    if format_converter is not None:
+        anchors_xy = format_converter(anchors_xy)
+    
+    filename = os.path.basename(filepath)
+    return anchors_xy, filename
+
+
+def load_route_from_json(filepath: str) -> tuple[np.ndarray, str]:
+    """
+    Carrega waypoints de rota de um arquivo JSON com key 'waypoints'.
+    
+    Args:
+        filepath: Caminho completo do arquivo JSON
+    
+    Returns:
+        Tupla (waypoints_array, filename_label)
+    
+    Levanta:
+        FileNotFoundError: Se arquivo não existe
+        ValueError: Se waypoints forem inválidos
+        json.JSONDecodeError: Se JSON for inválido
+    """
+    with open(filepath, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    
+    waypoints = np.array(data.get("waypoints", []), dtype=float)
+    
+    if waypoints.size == 0:
+        raise ValueError("Rota vazia ou sem waypoints")
+    
+    if len(waypoints) < 2:
+        raise ValueError("Rota deve ter pelo menos 2 pontos")
+    
+    filename = os.path.basename(filepath)
+    return waypoints, filename
+
+
+def load_map_from_json(filepath: str) -> tuple[Environment, str]:
+    """
+    Carrega mapa de um arquivo JSON usando Environment.load_json().
+    
+    Args:
+        filepath: Caminho completo do arquivo JSON
+    
+    Returns:
+        Tupla (environment_object, filename_label)
+    
+    Levanta:
+        FileNotFoundError: Se arquivo não existe
+        Exception: Se erro ao carregar mapa
+    """
+    env = Environment.load_json(filepath)
+    filename = os.path.basename(filepath)
+    return env, filename
 def default_selected() -> dict[str, bool]:
     return {k: True for k in ALGO_ORDER}
 

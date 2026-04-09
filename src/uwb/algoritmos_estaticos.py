@@ -17,6 +17,8 @@ import numpy as np
 from typing import Optional
 import warnings
 
+from src.bc_ekf import run_bc_ekf_from_data
+
 
 #######################################################
 # ÂNCORAS REAIS DO LABORATÓRIO (preset CBA 2024)
@@ -263,6 +265,7 @@ def run_batch(
     deviations:   Optional[np.ndarray] = None,
     algoritmos:   Optional[list[str]] = None,
     p_true:       Optional[np.ndarray] = None,
+    bc_ekf_data:  Optional[dict]   = None,
 ) -> dict:
     """
     Processa um dataset completo com múltiplos algoritmos.
@@ -286,7 +289,7 @@ def run_batch(
     N = anchors_Nx3.shape[0]
 
     if algoritmos is None:
-        algoritmos = ["trilaterate3d", "lms", "gauss_newton", "lmsp"]
+        algoritmos = ["trilaterate3d", "lms", "gauss_newton", "lmsp", "bc_ekf"]
 
     # Remove lmsp se não temos desvios
     if deviations is None and "lmsp" in algoritmos:
@@ -299,33 +302,56 @@ def run_batch(
         posicoes = np.zeros((M, 3))
         p_init_gn = None   # warm start do Gauss-Newton
 
-        for i in range(M):
-            d = distances[i]
-            dev = deviations[i] if deviations is not None else None
-
+        if nome == "bc_ekf":
             try:
-                if nome == "trilaterate3d":
-                    posicoes[i] = trilaterate3d(anchors_Nx3[:4], d[:4])
+                if bc_ekf_data is None:
+                    raise ValueError("bc_ekf requer bc_ekf_data")
 
-                elif nome == "lms":
-                    posicoes[i] = lms(anchors_Nx3, d)
-                    p_init_gn = posicoes[i]   # salva para usar como init do GN
-
-                elif nome == "gauss_newton":
-                    # warm start: usa LMS se disponível, senão calcula aqui
-                    if p_init_gn is None:
-                        p_init_gn = lms(anchors_Nx3, d)
-                    posicoes[i] = gauss_newton(anchors_Nx3, d, p_init=p_init_gn)
-                    p_init_gn = posicoes[i]   # atualiza warm start com resultado anterior
-
-                elif nome == "lmsp":
-                    posicoes[i] = lmsp(anchors_Nx3, d, dev)
-
+                anchors_bc = np.asarray(anchors_Nx3, dtype=float).T  # 3xN
+                x_hist_est = run_bc_ekf_from_data(
+                    T=bc_ekf_data["T"],
+                    anchors=anchors_bc,
+                    odometry_noisy=bc_ekf_data["odometry_noisy"],
+                    z_hist=bc_ekf_data["z_hist"],
+                    l=bc_ekf_data["l"],
+                    z_c=bc_ekf_data["z_c"],
+                    sigma_uwb=bc_ekf_data["sigma_uwb"],
+                )
+                posicoes = x_hist_est.T  # (M, 3)
+                
             except Exception as e:
-                # Em caso de falha numérica, mantém última posição conhecida
-                if i > 0:
-                    posicoes[i] = posicoes[i - 1]
-                warnings.warn(f"[{nome}] amostra {i}: {e}")
+                print(f"[bc_ekf] batch error: {e}")
+                warnings.warn(f"[bc_ekf] batch: {e}")
+                posicoes[:] = np.nan
+
+        else:
+            for i in range(M):
+                d = distances[i]
+                dev = deviations[i] if deviations is not None else None
+
+                try:
+                    if nome == "trilaterate3d":
+                        posicoes[i] = trilaterate3d(anchors_Nx3[:4], d[:4])
+
+                    elif nome == "lms":
+                        posicoes[i] = lms(anchors_Nx3, d)
+                        p_init_gn = posicoes[i]   # salva para usar como init do GN
+
+                    elif nome == "gauss_newton":
+                        # warm start: usa LMS se disponível, senão calcula aqui
+                        if p_init_gn is None:
+                            p_init_gn = lms(anchors_Nx3, d)
+                        posicoes[i] = gauss_newton(anchors_Nx3, d, p_init=p_init_gn)
+                        p_init_gn = posicoes[i]   # atualiza warm start com resultado anterior
+
+                    elif nome == "lmsp":
+                        posicoes[i] = lmsp(anchors_Nx3, d, dev)
+
+                except Exception as e:
+                    # Em caso de falha numérica, mantém última posição conhecida
+                    if i > 0:
+                        posicoes[i] = posicoes[i - 1]
+                    warnings.warn(f"[{nome}] amostra {i}: {e}")
 
         # Calcula RMSE se temos ground truth
         rmse_xy = rmse_xyz = None

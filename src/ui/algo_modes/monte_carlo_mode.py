@@ -23,6 +23,9 @@ from src.ui.algo_modes.shared import (
     MODE_STEP,
     WHITE,
     default_selected,
+    load_anchors_from_json,
+    load_route_from_json,
+    load_map_from_json,
 )
 
 
@@ -1031,29 +1034,17 @@ class MonteCarloMode:
             except Exception:
                 waypoints, anchors_xy, map_data = None, None, None
         else:
-            # fallback: tenta ler dos diretórios padrão
+            # fallback: usa helpers compartilhados
             try:
-                import os, json, numpy as np
-
-                route_path = os.path.join(self.routes_dir, self.mc_config.route_file)
-                if os.path.exists(route_path):
-                    with open(route_path, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                    wps = data.get("waypoints", [])
-                    if wps:
-                        waypoints = np.array(wps, dtype=float)
-
-                anchor_path = os.path.join(self.anchors_dir, self.mc_config.anchors_file)
-                if os.path.exists(anchor_path):
-                    with open(anchor_path, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                    anchors_xy = data.get("anchors_xy", [])
-
-                maps_path = os.path.join(self.maps_dir, self.mc_config.map_file)
-                if os.path.exists(maps_path):
-                    with open(maps_path, "r", encoding="utf-8") as f:
-                        map_data = json.load(f)
-                    
+                if self.mc_config.route_file:
+                    route_path = os.path.join(self.routes_dir, self.mc_config.route_file)
+                    waypoints, _ = load_route_from_json(route_path)
+                if self.mc_config.anchors_file:
+                    anchor_path = os.path.join(self.anchors_dir, self.mc_config.anchors_file)
+                    anchors_xy, _ = load_anchors_from_json(anchor_path)
+                if self.mc_config.map_file:
+                    maps_path = os.path.join(self.maps_dir, self.mc_config.map_file)
+                    map_data, _ = load_map_from_json(maps_path)
             except Exception:
                 waypoints, anchors_xy, map_data = None, None, None
 
@@ -1497,20 +1488,14 @@ class MonteCarloMode:
                 print(f"[MC Preview] âncoras não encontradas: {anchors_path}")
                 return None
 
-            with open(route_path, "r", encoding="utf-8") as f:
-                route_data = json.load(f)
-
-            with open(anchors_path, "r", encoding="utf-8") as f:
-                anchor_data = json.load(f)
+            waypoints, _ = load_route_from_json(str(route_path))
+            anchors_xy, _ = load_anchors_from_json(str(anchors_path))
 
             map_env = None
             if getattr(self.mc_config, "map_file", ""):
                 map_path = Path(self.maps_dir) / self.mc_config.map_file
                 if map_path.exists():
-                    map_env = Environment.load_json(str(map_path))
-
-            waypoints = np.array(route_data.get("waypoints", []), dtype=float)
-            anchors_xy = np.array(anchor_data.get("anchors_xy", []), dtype=float)
+                    map_env, _ = load_map_from_json(str(map_path))
 
             if waypoints.size == 0:
                 print(f"[MC Preview] waypoints vazios em: {route_path}")
@@ -1522,7 +1507,7 @@ class MonteCarloMode:
 
             data = {
                 "waypoints": waypoints,
-                "anchors": anchors_xy,
+                "anchors": anchors_xy,  # Note: formato Nx3 do shared
                 "env": map_env
             }
 

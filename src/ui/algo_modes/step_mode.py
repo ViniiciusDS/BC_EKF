@@ -5,6 +5,8 @@ import json
 import math
 import numpy as np
 import pygame as pg
+from pathlib import Path
+import csv
 
 import src.config as config
 from src.simulator import Simulator
@@ -28,8 +30,12 @@ from src.ui.algo_modes.shared import (
     WHITE,
     default_selected,
     draw_analyzer_panel,
+    load_anchors_from_json,
+    load_route_from_json,
+    load_map_from_json,
 )
 from src.analysis.algo_metrics import compute_step_vs_truth_stats, build_ranking_summary
+
 
 
 
@@ -132,6 +138,7 @@ class StepMode:
             return files
         except Exception:
             return []
+    
 
     # =========================================================
     # DROPDOWN HELPERS
@@ -245,43 +252,28 @@ class StepMode:
 
         # rota
         try:
-            with open(os.path.join(self.routes_dir, route_file), "r", encoding="utf-8") as f:
-                data = json.load(f)
-            wps = np.array(data.get("waypoints", []), dtype=float)
-            if wps.size == 0 or len(wps) < 2:
-                self.host._set_msg("Rota inválida")
-                return
-            self._waypoints = wps
-            self._route_label = route_file
+            route_path = os.path.join(self.routes_dir, route_file)
+            self._waypoints, self._route_label = load_route_from_json(route_path)
+        except ValueError as e:
+            print(f"[STEP] erro ao carregar rota: {e}")
+            self.host._set_msg(f"Erro ao carregar rota: {str(e)}")
+            return
         except Exception as e:
             print(f"[STEP] erro ao carregar rota: {e}")
             self.host._set_msg("Erro ao carregar rota")
             return
 
-        # âncoras
+        # âncoras - converter para 3xN (transposto)
         try:
-            with open(os.path.join(self.anchors_dir, anchors_file), "r", encoding="utf-8") as f:
-                data = json.load(f)
-
-            anchors_xy = np.array(data.get("anchors_xy", []), dtype=float)
-            if anchors_xy.size == 0:
-                self.host._set_msg("Arquivo de âncoras vazio")
-                return
-
-            if anchors_xy.ndim == 2 and anchors_xy.shape[1] == 2:
-                anchors_3xN = np.zeros((3, anchors_xy.shape[0]), dtype=float)
-                anchors_3xN[0, :] = anchors_xy[:, 0]
-                anchors_3xN[1, :] = anchors_xy[:, 1]
-                anchors_3xN[2, :] = 1.0
-                self._anchors_sim = anchors_3xN
-            elif anchors_xy.ndim == 2 and anchors_xy.shape[1] == 3:
-                self._anchors_sim = anchors_xy.T
-            else:
-                self.host._set_msg("Formato inválido de âncoras")
-                return
-
-            self._anchors_label = anchors_file
-
+            anchors_path = os.path.join(self.anchors_dir, anchors_file)
+            self._anchors_sim, self._anchors_label = load_anchors_from_json(
+                anchors_path,
+                format_converter=lambda arr: arr.T  # Nx3 -> 3xN transpose
+            )
+        except ValueError as e:
+            print(f"[STEP] erro ao carregar âncoras: {e}")
+            self.host._set_msg(f"Erro ao carregar âncoras: {str(e)}")
+            return
         except Exception as e:
             print(f"[STEP] erro ao carregar âncoras: {e}")
             self.host._set_msg("Erro ao carregar âncoras")
@@ -292,8 +284,8 @@ class StepMode:
         self._map_label = ""
         if map_file:
             try:
-                self._map_env = Environment.load_json(os.path.join(self.maps_dir, map_file))
-                self._map_label = map_file
+                map_path = os.path.join(self.maps_dir, map_file)
+                self._map_env, self._map_label = load_map_from_json(map_path)
                 if getattr(self, "sim", None) is not None and hasattr(self.sim, "set_environment"):
                     self.sim.set_environment(self.env)
             except Exception as e:
