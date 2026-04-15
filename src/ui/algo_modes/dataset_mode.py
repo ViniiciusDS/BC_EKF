@@ -141,8 +141,8 @@ class DatasetMode:
 
         self.dataset_source_type = "simulated"   # "simulated" | "real_encoder_uwb"
 
-        self.simulated_dataset_kind = "Front"   # "Front" | "Rear" | "BC"
-        self.available_simulated_dataset_kinds = ["Front", "Rear", "BC"]
+        self.simulated_dataset_kind = "Front"   # "Front" | "Rear" | "MID" | "BC"
+        self.available_simulated_dataset_kinds = ["Front", "Rear", "MID", "BC"]
         self.dataset_dropdown_sim_kind_open = False
 
         self._bc_ekf_data = None
@@ -426,7 +426,7 @@ class DatasetMode:
                 self.host._set_msg("Selecione um dataset simulado")
                 return
 
-            if sim_kind not in ("Front", "Rear", "BC"):
+            if sim_kind not in ("Front", "Rear", "MID", "BC"):
                 self.host._set_msg("Selecione o tipo do dataset simulado")
                 return
 
@@ -509,8 +509,7 @@ class DatasetMode:
                 if self.dataset_source_type == "simulated" and self.simulated_dataset_kind == "BC":
                     if n_dataset != 2 * n_anchors:
                         self.host._set_msg(
-                            f"Incompatibilidade: dataset BC possui {n_dataset} colunas, "
-                            f"mas o layout possui {n_anchors} âncoras (esperado {2 * n_anchors})"
+                           f"Dataset BC inválido: esperado front+rear ({2 * n_anchors} colunas), recebido {n_dataset}"
                         )
                         return False
                 else:
@@ -1190,10 +1189,12 @@ class DatasetMode:
 
         # BC-EKF só faz sentido com dataset simulado do tipo BC
         if self.dataset_source_type == "simulated":
-            if self.simulated_dataset_kind != "BC": 
+            if self.simulated_dataset_kind != "BC":
                 if "bc_ekf" in algos_to_run:
                     algos_to_run = [a for a in algos_to_run if a != "bc_ekf"]
-                    self.host._set_msg("BC-EKF ignorado: só roda com dataset simulado do tipo BC")
+                    self.host._set_msg(
+                        f"BC-EKF ignorado: tipo '{self.simulated_dataset_kind}' não fornece front+rear"
+                    )
             else:
                 if "bc_ekf" in algos_to_run and self._bc_ekf_data is None:
                     algos_to_run = [a for a in algos_to_run if a != "bc_ekf"]
@@ -1534,8 +1535,7 @@ class DatasetMode:
 
         if n_cols != n_anchors:
             self.host._set_msg(
-                f"Incompatibilidade: dataset real possui {n_cols} âncoras, "
-                f"mas o layout carregado tem {n_anchors}"
+                f"UWB/layout incompatíveis: {n_cols} vs {n_anchors} âncoras"
             )
             return False
 
@@ -1665,13 +1665,32 @@ class DatasetMode:
             )
             self._bc_ekf_data = None
             return
+        
+        # para os algoritmos clássicos, usa apenas as colunas da tag frontal
+        self._batch_dists = full_dists[:, 0::2]
+        if full_devs is not None:
+            self._batch_devs = full_devs[:, 0::2]
 
-        if self._dataset_route is None:
-            self.host._set_msg("Dataset BC requer rota para gerar odometria do EKF")
-            self._bc_ekf_data = None
-            return
+        poses = None
+        traj_sidecar = None
+        if self._dataset_path:
+            traj_sidecar = self._guess_sampled_traj_sidecar(self._dataset_path)
 
-        poses = self._route_xy_to_pose_xytheta(self._dataset_route)
+        if traj_sidecar is not None:
+            try:
+                poses = self._load_sampled_traj_csv(traj_sidecar)
+                print("[BC_EKF] usando trajetória amostrada:", traj_sidecar, poses.shape)
+            except Exception as e:
+                print("[BC_EKF] falha ao carregar trajetória amostrada:", e)
+                poses = None
+
+        if poses is None:
+            if self._dataset_route is None:
+                self.host._set_msg("BC-EKF requer sidecar _traj.csv ou rota válida")
+                self._bc_ekf_data = None
+                return
+            poses = self._route_xy_to_pose_xytheta(self._dataset_route)
+            
         T = float(getattr(config, "TIME_STEP", 0.05))
         odometry_noisy = self._pose_xytheta_to_vw(poses, T)
 
@@ -1726,11 +1745,31 @@ class DatasetMode:
             "odometry_noisy=", odometry_noisy.shape,
             "anchors=", self._dataset_anchors.shape,
         )
-        
-        # para os algoritmos clássicos, usa apenas as colunas da tag frontal
-        self._batch_dists = full_dists[:, 0::2]
-        if full_devs is not None:
-            self._batch_devs = full_devs[:, 0::2]
+    
+    def _guess_sampled_traj_sidecar(self, dataset_path: str) -> str | None:
+        base, _ = os.path.splitext(dataset_path)
+        candidate = base + "_traj.csv"
+        return candidate if os.path.exists(candidate) else None
+
+
+    def _load_sampled_traj_csv(self, path: str):
+        rows = []
+        with open(path, "r", encoding="utf-8-sig") as f:
+            header = f.readline().strip().split()
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                vals = line.split()
+                if len(vals) < 4:
+                    continue
+                t, x, y, th = map(float, vals[:4])
+                rows.append([x, y, th])
+
+        if not rows:
+            raise ValueError(f"Trajetória amostrada vazia: {path}")
+
+        return np.asarray(rows, dtype=float)
 
     def close(self) -> None:
         pass
