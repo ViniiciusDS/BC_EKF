@@ -161,10 +161,10 @@ def draw_analyzer_panel(
     title: str,
     stats: Mapping[str, dict] | None,
     selected: Mapping[str, bool] | None = None,
-    x: int = 18,
-    y: int = 18,
-    w: int = 430,
-    h: int = 305,
+    x: int = 10,
+    y: int = 10,
+    w: int = 500,
+    h: int = 380,
     panel_fill=(250, 250, 252, 238),
     box_fill=(242, 242, 245),
     border=(120, 120, 130),
@@ -180,51 +180,83 @@ def draw_analyzer_panel(
     screen.blit(panel, (x, y))
     pg.draw.rect(screen, border, (x, y, w, h), 1)
 
-    screen.blit(bigfont.render(title, True, (20, 20, 20)), (x + 10, y + 8))
+    screen.blit(bigfont.render(title, True, (20, 20, 20)), (x + 12, y + 10))
 
-    header_y = y + 40
-    col_name = x + 12
-    col_rmse = x + 155
-    col_mae = x + 220
-    col_max = x + 285
+    # colunas com espaçamento maior para acomodar nomes longos
+    col_algo = x + 18
+    col_rmse = x + 190
+    col_mae = x + 270
+    col_max = x + 345
+    y0 = y + 48
 
-    screen.blit(font.render("Algoritmo", True, header), (col_name, header_y))
-    screen.blit(font.render("RMSE", True, header), (col_rmse, header_y))
-    screen.blit(font.render("MAE", True, header), (col_mae, header_y))
-    screen.blit(font.render("Max", True, header), (col_max, header_y))
+    screen.blit(font.render("Algoritmo", True, header), (col_algo, y0))
+    screen.blit(font.render("RMSE", True, header), (col_rmse, y0))
+    screen.blit(font.render("MAE", True, header), (col_mae, y0))
+    screen.blit(font.render("Max", True, header), (col_max, y0))
 
     ordered = ordered_active_algos(stats, selected)
+    row_y = y0 + 28
+    row_h = 28
 
-    yy = header_y + 24
+    # Garante altura mínima para caber tabela + boxplot sem vazar do painel.
+    min_box_h = 32 + 18 * max(1, len(ordered))
+    required_h = (row_y - y) + (row_h * len(ordered)) + 8 + min_box_h + 12
+    if h < required_h:
+        h = required_h
+        panel = pg.Surface((w, h), pg.SRCALPHA)
+        panel.fill(panel_fill)
+        screen.blit(panel, (x, y))
+        pg.draw.rect(screen, border, (x, y, w, h), 1)
+        screen.blit(bigfont.render(title, True, (20, 20, 20)), (x + 12, y + 10))
+        screen.blit(font.render("Algoritmo", True, header), (col_algo, y0))
+        screen.blit(font.render("RMSE", True, header), (col_rmse, y0))
+        screen.blit(font.render("MAE", True, header), (col_mae, y0))
+        screen.blit(font.render("Max", True, header), (col_max, y0))
+
     for algo in ordered:
         st = stats[algo]
         color = ALGO_COLORS.get(algo, BLACK)
         label = NOMES_UI.get(algo, algo).split(") ", 1)[-1]
 
-        pg.draw.rect(screen, color, (col_name, yy + 5, 10, 10))
-        screen.blit(font.render(label[:16], True, color), (col_name + 18, yy))
-        screen.blit(font.render(f"{st['rmse']:.3f}", True, text), (col_rmse, yy))
-        screen.blit(font.render(f"{st['mae']:.3f}", True, text), (col_mae, yy))
-        screen.blit(font.render(f"{st['max_err']:.3f}", True, text), (col_max, yy))
-        yy += 22
+        rmse = st.get("rmse", None)
+        mae = st.get("mae", None)
+        maxe = st.get("max", st.get("max_err", None))
 
+        pg.draw.rect(screen, color, (col_algo - 10, row_y + 6, 8, 8))
+        screen.blit(font.render(str(label), True, color), (col_algo + 6, row_y))
+        screen.blit(
+            font.render(f"{rmse:.3f}" if rmse is not None else "-", True, text),
+            (col_rmse, row_y),
+        )
+        screen.blit(
+            font.render(f"{mae:.3f}" if mae is not None else "-", True, text),
+            (col_mae, row_y),
+        )
+        screen.blit(
+            font.render(f"{maxe:.3f}" if maxe is not None else "-", True, text),
+            (col_max, row_y),
+        )
+        row_y += row_h
+
+    # boxplot abaixo da tabela, com altura dinâmica
     box_x = x + 12
-    box_y = y + 150
+    box_y = row_y + 8
     box_w = w - 24
-    box_h = 135
+    box_h = h - (box_y - y) - 12
 
-    draw_boxplot_panel(
-        screen,
-        font,
-        stats,
-        ordered,
-        box_x,
-        box_y,
-        box_w,
-        box_h,
-        selected=selected,
-        box_fill=box_fill,
-    )
+    if box_h > 40:
+        draw_boxplot_panel(
+            screen,
+            font,
+            stats,
+            ordered,
+            box_x,
+            box_y,
+            box_w,
+            box_h,
+            selected=selected,
+            box_fill=box_fill,
+        )
 
 def draw_boxplot_panel(
     screen,

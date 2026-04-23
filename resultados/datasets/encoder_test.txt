@@ -1,4 +1,0 @@
-timestamp,left_ticks,right_ticks
-0.010,0,0
-0.020,3,4
-0.040,7,8

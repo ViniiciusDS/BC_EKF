@@ -215,7 +215,11 @@ class SimulationScreen:
         self.modal_mode = None  # "load_route" | "save_route" | "load_anchors" | "save_anchors"
         self.modal_rect = None
 
-        self.modal_dropdown = TextBoxDropdown(pg.Rect(0,0,260,26), self.font, options=[])
+        self.modal_dropdown = TextBoxDropdown(
+            pg.Rect(0, 0, 320, 26),
+            self.font,
+            options=[],
+        )
         self.modal_namebox  = TextBoxDropdown(pg.Rect(0,0,260,26), self.font, options=[], placeholder="nome")
 
         self.btn_modal_ok = Button((0,0,90,26), "OK", self.font, bg=(235,250,235))
@@ -299,6 +303,20 @@ class SimulationScreen:
                     if event.key == pg.K_RETURN:
                         self._modal_confirm()
                     continue
+
+                # --- scroll do dropdown do modal genérico (rotas/âncoras) ---
+                if self.modal_mode in ("load_route", "load_anchors"):
+                    if event.type == pg.MOUSEWHEEL:
+                        # dá o evento direto ao dropdown quando a lista estiver aberta
+                        if self.modal_dropdown.dropdown_open:
+                            self.modal_dropdown.handle_event(event)
+                            continue
+
+                    # compatibilidade com wheel antiga do pygame
+                    if event.type == pg.MOUSEBUTTONDOWN and event.button in (4, 5):
+                        if self.modal_dropdown.dropdown_open:
+                            self.modal_dropdown.handle_event(event)
+                            continue
 
                 if event.type == pg.MOUSEBUTTONDOWN and event.button == 1:
                     mx, my = event.pos
@@ -1221,8 +1239,10 @@ class SimulationScreen:
         # abre e ativa (pra já poder usar setinha/teclado)
         self.modal_dropdown.active = True
         self.modal_dropdown.dropdown_open = True if opts else False
+        self.modal_dropdown.cursor_pos = len(self.modal_dropdown.text)
 
         self.modal_namebox.active = False
+        
 
     def _open_modal_save(self, which: str):
         '''Abre o modal de salvamento, preparando o campo de texto para o nome do arquivo. 
@@ -1236,6 +1256,7 @@ class SimulationScreen:
 
         self.modal_dropdown.active = False
         self.modal_dropdown.dropdown_open = False
+        self.modal_dropdown.cursor_pos = len(self.modal_dropdown.text)
 
     def _close_modal(self):
         '''Fecha o modal de carregamento/salvamento, limpando estado e desativando elementos.'''
@@ -1505,6 +1526,10 @@ class SimulationScreen:
         self.btn_modal_cancel.rect.topleft = (x + w - 100, by)
         self.btn_modal_ok.draw(self.screen)
         self.btn_modal_cancel.draw(self.screen)
+
+        # se o dropdown estiver aberto, desenha novamente por último
+        if self.modal_mode in ("load_route", "load_anchors") and self.modal_dropdown.dropdown_open:
+            self.modal_dropdown.draw(self.screen)
 
     def _modal_confirm(self):
         '''Lógica executada ao clicar em OK no modal, dependendo do modo atual (carregar/salvar rota/âncoras).'''

@@ -158,6 +158,13 @@ class DatasetMode:
 
         self.real_data_dir = os.path.join("resultados", "datasets")
 
+        self.show_analyzer = True
+        self.btn_toggle_analyzer = Button(
+            (0, 0, 190, 32),
+            "Ocultar Analyzer",
+            self.host.font if self.host else None,
+        )
+
         self.selected = default_selected()
 
     def on_enter(self, host: Any) -> None:
@@ -793,6 +800,10 @@ class DatasetMode:
                             self.host._export_csv()
                         continue
 
+                    elif self.btn_toggle_analyzer.hit(pos):
+                        self.show_analyzer = not self.show_analyzer
+                        return actions
+
                     else:
                         for nome, btn in self._btn_algos.items():
                             if btn.hit(pos):
@@ -930,7 +941,18 @@ class DatasetMode:
         if hasattr(self.host, "_draw_hud"):
             self.host._draw_hud()
 
-        if self._batch_results is not None:
+        # botão de toggle do analyzer (painel lateral)
+        sidebar_x = self.host.cam.viewport[0] + 16
+        if hasattr(self, "btn_run_batch") and self.btn_run_batch is not None:
+            toggle_y = self.btn_run_batch.rect.bottom + 14
+        else:
+            toggle_y = 500
+        self.btn_toggle_analyzer.rect.topleft = (sidebar_x, toggle_y)
+        self.btn_toggle_analyzer.rect.size = (190, 32)
+        self.btn_toggle_analyzer.text = "Ocultar Analyzer" if self.show_analyzer else "Mostrar Analyzer"
+        self.btn_toggle_analyzer.draw(self.host.screen)
+
+        if self._batch_results is not None and self.show_analyzer:
             self._draw_analyzer()
 
         if self.dataset_modal_open:
