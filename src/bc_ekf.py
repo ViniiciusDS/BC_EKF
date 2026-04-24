@@ -14,7 +14,8 @@ def run_bc_ekf(
     z_c=0.5,
     sigma_v=0.02,
     sigma_w=0.05,
-    sigma_uwb=np.sqrt(0.0025)
+    sigma_uwb=np.sqrt(0.0025),
+    x0=None,
 ):
     """
     Executa o EKF em uma simulação com velocidades constantes.
@@ -25,7 +26,10 @@ def run_bc_ekf(
 
     # Trajetória real
     x_hist_true = np.zeros((3, len(t)))
-    x_hist_true[:,0] = [2.5, 0, 0]
+    if x0 is None:
+        x_hist_true[:, 0] = [2.5, 0.0, 0.0]
+    else:
+        x_hist_true[:, 0] = np.asarray(x0, dtype=float).reshape(3,)
 
     for k in range(1, len(t)):
         theta = x_hist_true[2,k-1]
@@ -43,7 +47,7 @@ def run_bc_ekf(
     z_hist = _generate_uwb_measurements(x_hist_true, anchors, l, z_c, sigma_uwb)
 
     # Estimativa inicial e covariância
-    x_est = np.array([2.5,0,0])
+    x_est = x_hist_true[:, 0].copy()
     P = np.diag([0.1,0.1,0.1])
     Q = np.diag([1e-4]*3)
     R = np.diag([sigma_uwb**2]*(2*num_anchors))
@@ -85,7 +89,8 @@ def run_bc_ekf_custom_commands(
     z_c=0.5,
     sigma_v=0.02,
     sigma_w=0.05,
-    sigma_uwb=np.sqrt(0.0025)
+    sigma_uwb=np.sqrt(0.0025),
+    x0=None,
 ):
     """
     Executa EKF com comandos de velocidade variáveis ao longo do tempo.
@@ -96,7 +101,11 @@ def run_bc_ekf_custom_commands(
 
     # Trajetória real
     x_hist_true = np.zeros((3, len(t)))
-    x_hist_true[:,0] = [2.5,0,0]
+    if x0 is None:
+        x_hist_true[:, 0] = [2.5, 0.0, 0.0]
+    else:
+        x_hist_true[:, 0] = np.asarray(x0, dtype=float).reshape(3,)
+
     for k in range(1, len(t)):
         v_k = v_commands[k]
         w_k = w_commands[k]
@@ -115,7 +124,7 @@ def run_bc_ekf_custom_commands(
     z_hist = _generate_uwb_measurements(x_hist_true, anchors, l, z_c, sigma_uwb)
 
     # Inicialização
-    x_est = np.array([2.5,0,0])
+    x_est = x_hist_true[:, 0].copy()
     P = np.diag([0.1,0.1,0.1])
     Q = np.diag([1e-4]*3)
     R = np.diag([sigma_uwb**2]*(2*num_anchors))
@@ -152,7 +161,8 @@ def run_bc_ekf_from_data(
     z_hist,
     l,
     z_c,
-    sigma_uwb
+    sigma_uwb,
+    x0=None,
 ):
     """
     Roda EKF recebendo diretamente odometria e medições UWB simuladas.
@@ -162,7 +172,11 @@ def run_bc_ekf_from_data(
     num_anchors = anchors.shape[1]
 
     # Inicialização
-    x_est = np.array([2.5, 0, 0])
+    if x0 is None:
+        x_est = np.array([2.5, 0.0, 0.0], dtype=float)
+    else:
+        x_est = np.asarray(x0, dtype=float).reshape(3,)
+
     P = np.diag([0.1, 0.1, 0.1])
     Q = np.diag([1e-4] * 3)
     R = np.diag([sigma_uwb**2] * (2 * num_anchors))

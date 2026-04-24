@@ -1809,6 +1809,7 @@ class DatasetMode:
             "l": float(getattr(config, "WHEEL_BASE", 0.65)) / 2.0,
             "z_c": float(getattr(config, "TAG_HEIGHT", 0.5)),
             "sigma_uwb": sigma_uwb,
+            "x0": np.asarray(poses[0], dtype=float).reshape(3,),
         }
 
         print(
@@ -2119,6 +2120,7 @@ class DatasetMode:
             "l": float(getattr(config, "WHEEL_BASE", 0.65)) / 2.0,
             "z_c": float(getattr(config, "TAG_HEIGHT", 0.5)),
             "sigma_uwb": sigma_uwb,
+            "x0": np.asarray(poses[0], dtype=float).reshape(3,),
         }
 
         # clássicos usam FRONT

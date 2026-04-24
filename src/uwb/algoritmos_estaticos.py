@@ -316,6 +316,7 @@ def run_batch(
                     l=bc_ekf_data["l"],
                     z_c=bc_ekf_data["z_c"],
                     sigma_uwb=bc_ekf_data["sigma_uwb"],
+                    x0=bc_ekf_data.get("x0", None),
                 )
                 posicoes = x_hist_est.T  # (M, 3)
                 
