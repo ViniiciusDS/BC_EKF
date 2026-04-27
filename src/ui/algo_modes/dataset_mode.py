@@ -31,6 +31,7 @@ from src.odometry import (
     load_and_validate_encoder_file,
 )
 from src.ui.ui_elements import TextBoxDropdown
+from src.ui.legend_overlay import draw_legend_overlay
 
 
 WHITE = (255, 255, 255)
@@ -162,6 +163,14 @@ class DatasetMode:
         self.btn_toggle_analyzer = Button(
             (0, 0, 190, 32),
             "Ocultar Analyzer",
+            self.host.font if self.host else None,
+        )
+
+        self.show_legend_overlay = False
+        self._legend_close_rect = None
+        self.btn_toggle_legend = Button(
+            (0, 0, 190, 32),
+            "Mostrar Legenda",
             self.host.font if self.host else None,
         )
 
@@ -747,6 +756,9 @@ class DatasetMode:
 
             elif event.type == pg.KEYDOWN:
                 if event.key == pg.K_ESCAPE:
+                    if self.show_legend_overlay:
+                        self.show_legend_overlay = False
+                        continue
                     return _actions_menu()
                 
                 elif event.key == pg.K_F9:
@@ -779,6 +791,11 @@ class DatasetMode:
                     continue
 
                 elif event.button == 1:
+                    if self.show_legend_overlay and self._legend_close_rect is not None:
+                        if self._legend_close_rect.collidepoint(pos):
+                            self.show_legend_overlay = False
+                            continue
+
                     if self.btn_back.hit(pos):
                         return _actions_menu()
 
@@ -803,6 +820,10 @@ class DatasetMode:
                     elif self.btn_toggle_analyzer.hit(pos):
                         self.show_analyzer = not self.show_analyzer
                         return actions
+
+                    elif self.btn_toggle_legend.hit(pos):
+                        self.show_legend_overlay = not self.show_legend_overlay
+                        continue
 
                     else:
                         for nome, btn in self._btn_algos.items():
@@ -943,20 +964,34 @@ class DatasetMode:
 
         # botão de toggle do analyzer (painel lateral)
         sidebar_x = self.host.cam.viewport[0] + 16
-        if hasattr(self, "btn_run_batch") and self.btn_run_batch is not None:
-            toggle_y = self.btn_run_batch.rect.bottom + 14
-        else:
-            toggle_y = 500
+        screen_h = self.host.screen.get_height()
+        legend_y = screen_h - 44
+        toggle_y = legend_y - 40
         self.btn_toggle_analyzer.rect.topleft = (sidebar_x, toggle_y)
         self.btn_toggle_analyzer.rect.size = (190, 32)
         self.btn_toggle_analyzer.text = "Ocultar Analyzer" if self.show_analyzer else "Mostrar Analyzer"
         self.btn_toggle_analyzer.draw(self.host.screen)
+
+        self.btn_toggle_legend.rect.topleft = (sidebar_x, legend_y)
+        self.btn_toggle_legend.rect.size = (190, 32)
+        self.btn_toggle_legend.text = "Ocultar Legenda" if self.show_legend_overlay else "Mostrar Legenda"
+        self.btn_toggle_legend.draw(self.host.screen)
 
         if self._batch_results is not None and self.show_analyzer:
             self._draw_analyzer()
 
         if self.dataset_modal_open:
             self._draw_dataset_modal()
+
+        if self.show_legend_overlay:
+            self._legend_close_rect = draw_legend_overlay(
+                self.host.screen,
+                self.host.font,
+                self.host.bigfont,
+                selected=self.selected,
+            )
+        else:
+            self._legend_close_rect = None
 
     def _draw_dataset_modal(self):
         screen = self.host.screen
@@ -1253,12 +1288,14 @@ class DatasetMode:
                 "batch_shape=", None if self._batch_dists is None else self._batch_dists.shape,
             )
 
+            p_true = self._get_batch_ground_truth_xy()
+
             self._batch_results = run_batch(
                 anchors_Nx3=anchors,
                 distances=self._batch_dists,
                 deviations=devs,
                 algoritmos=algos_to_run,
-                p_true=None,
+                p_true=p_true,
                 bc_ekf_data=self._bc_ekf_data,
             )
 
@@ -1282,6 +1319,44 @@ class DatasetMode:
             self._batch_results = None
             self._dataset_stats = None
             self.host._set_msg("Erro no batch")
+
+    def _get_batch_ground_truth_xy(self):
+        """
+        Resolve a trajetória de referência para métricas do batch.
+        Em datasets simulados, prioriza sidecar *_traj.csv; fallback para rota carregada.
+        Retorna sempre (M, 2).
+        """
+        if self._batch_dists is None:
+            return None
+
+        if self.dataset_source_type != "simulated":
+            return None
+
+        m = int(self._batch_dists.shape[0])
+
+        def _to_m2(arr_like):
+            arr = np.asarray(arr_like, dtype=float)
+            if arr.ndim != 2 or arr.shape[0] != m or arr.shape[1] < 2:
+                return None
+            return arr[:, :2]
+
+        if self._dataset_path:
+            traj_sidecar = self._guess_sampled_traj_sidecar(self._dataset_path)
+            if traj_sidecar is not None:
+                try:
+                    sampled_route = np.asarray(self._load_sampled_traj_csv(traj_sidecar), dtype=float)
+                    p_true = _to_m2(sampled_route)
+                    if p_true is not None:
+                        return p_true
+                except Exception as e:
+                    print(f"[DATASET] falha ao carregar sidecar para p_true: {e}")
+
+        if self._dataset_route is not None:
+            p_true = _to_m2(self._dataset_route)
+            if p_true is not None:
+                return p_true
+
+        return None
 
             
     def _load_simple_uwb_file(self, path: str):
@@ -1438,7 +1513,66 @@ class DatasetMode:
     # =========================================================
 
     def _compute_dataset_stats(self, results: dict):
-        return compute_dataset_cluster_stats(results, algo_order=ALGO_ORDER)
+        """
+        Calcula métricas reais contra a trajetória de referência (ground truth)
+        e devolve no formato esperado por shared.draw_analyzer_panel /
+        shared.draw_boxplot_panel.
+        """
+        p_true = self._get_batch_ground_truth_xy()
+        if p_true is None:
+            return compute_dataset_cluster_stats(results, algo_order=ALGO_ORDER)
+
+        stats = {}
+
+        for algo in ALGO_ORDER:
+            if algo not in results:
+                continue
+
+            pos = results[algo].get("posicoes", None)
+            if pos is None:
+                continue
+
+            pos = np.asarray(pos, dtype=float)
+            if pos.ndim != 2 or pos.shape[1] < 2:
+                continue
+
+            n = min(len(pos), len(p_true))
+            pos_xy = pos[:n, :2]
+            truth_xy = p_true[:n, :2]
+
+            valid = (
+                np.isfinite(pos_xy[:, 0]) & np.isfinite(pos_xy[:, 1]) &
+                np.isfinite(truth_xy[:, 0]) & np.isfinite(truth_xy[:, 1])
+            )
+            pos_xy = pos_xy[valid]
+            truth_xy = truth_xy[valid]
+
+            if len(pos_xy) == 0:
+                continue
+
+            err_xy = pos_xy - truth_xy
+            err_pos = np.linalg.norm(err_xy, axis=1)
+
+            # mesmo RMSE principal usado no batch/hud
+            rmse_val = results[algo].get("rmse_xy", None)
+            if rmse_val is None:
+                rmse_val = float(np.sqrt(np.mean(err_pos ** 2)))
+
+            q1, median, q3 = np.percentile(err_pos, [25, 50, 75])
+
+            stats[algo] = {
+                "rmse": float(rmse_val),
+                "mae": float(np.mean(err_pos)),
+                "max": float(np.max(err_pos)),
+                "max_err": float(np.max(err_pos)),   # compatibilidade extra
+                "min": float(np.min(err_pos)),
+                "q1": float(q1),
+                "median": float(median),
+                "q3": float(q3),
+                "errors": err_pos,
+            }
+
+        return stats
     
     def _dataset_ranking(self):
         return build_ranking_summary(self._dataset_stats, top_k=5)
@@ -1450,6 +1584,11 @@ class DatasetMode:
             bigfont=self.host.bigfont,
             title="Dataset Analyzer",
             stats=self._dataset_stats,
+            selected=self.selected,
+            x=10,
+            y=40,
+            w=500,
+            h=380,
         )
 
     def _draw_real_dataset_status(self):

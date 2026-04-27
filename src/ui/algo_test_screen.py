@@ -340,8 +340,9 @@ class AlgoTestScreen:
                         n = min(len(trail_true), len(loc.historico))
                         gt = np.array(trail_true[:n])
                         h = np.array(loc.historico[:n])
-                        err = h[:, :2] - gt
-                        rmse = float(np.sqrt(np.mean(err ** 2)))
+                        err_xy = h[:, :2] - gt
+                        err_pos = np.linalg.norm(err_xy, axis=1)
+                        rmse = float(np.sqrt(np.mean(err_pos ** 2)))
                         rmse_txt = f"  RMSE={rmse:.3f}m"
 
             elif self.mode == MODE_DATASET:

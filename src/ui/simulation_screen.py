@@ -17,6 +17,7 @@ from src.ui.ui_elements import TextBoxDropdown, ToggleRow
 from src.control.waypoint_controller import waypoint_controller
 from src.ui.drawing import draw_grid, draw_axes, draw_anchors, draw_path, draw_robot, draw_text
 from src.ui.botton import Button
+from src.ui.legend_overlay import draw_legend_overlay
 from src.uwb.shared_state import SharedUwbState
 from src.uwb.node_params_serialization import shared_state_to_dict, dict_to_node_params
 
@@ -144,9 +145,12 @@ class SimulationScreen:
         # UI: botões e textboxes (HUD)
         self.btn_filelog = None
         self.btn_graphs = None
+        self.btn_legend = None
         self.btn_place_anchor = None
         self.textbox_x = None
         self.textbox_y = None
+        self.show_legend_overlay = False
+        self._legend_close_rect = None
 
         # logs atuais (trajetórias)
         self.true_traj = np.empty((0, 3))
@@ -185,6 +189,12 @@ class SimulationScreen:
             text="Mostrar Gráficos",
             font=self.font,
             bg=(235, 235, 250),
+        )
+        self.btn_legend = Button(
+            rect=(0, 0, 190, 32),
+            text="Mostrar Legenda",
+            font=self.font,
+            bg=(245, 245, 235),
         )
 
         self.shared_uwb = shared_uwb
@@ -279,6 +289,16 @@ class SimulationScreen:
                 # deixe o main decidir sair do programa inteiro
                 actions.quite_app = True
                 return actions
+
+            if event.type == pg.KEYDOWN and event.key == pg.K_ESCAPE and self.show_legend_overlay:
+                self.show_legend_overlay = False
+                continue
+
+            if event.type == pg.MOUSEBUTTONDOWN and event.button == 1:
+                if self.show_legend_overlay and self._legend_close_rect is not None:
+                    if self._legend_close_rect.collidepoint(event.pos):
+                        self.show_legend_overlay = False
+                        continue
 
             # 1) Se modal aberto, ele tem prioridade total
             if self.modal_open:
@@ -614,6 +634,10 @@ class SimulationScreen:
                         elif self.btn_graphs and self.btn_graphs.hit((mx, my)):
                             # inicia/reativa a janela de gráficos (processo separado)
                             start_plot_process(self.plot_state)
+
+                        elif self.btn_legend and self.btn_legend.hit((mx, my)):
+                            self.show_legend_overlay = not self.show_legend_overlay
+                            continue
 
                         if self.btn_place_anchor and self.btn_place_anchor.hit((mx, my)):
                             try:
@@ -999,6 +1023,16 @@ class SimulationScreen:
 
         if self.modal_open:
             self._draw_modal()
+
+        if self.show_legend_overlay:
+            self._legend_close_rect = draw_legend_overlay(
+                self.screen,
+                self.font,
+                self.bigfont,
+                selected=getattr(self, "selected", None),
+            )
+        else:
+            self._legend_close_rect = None
     
     def setup_hud_elements(
         self,
@@ -1056,6 +1090,10 @@ class SimulationScreen:
 
         if self.btn_graphs:
             self.btn_graphs.rect.topleft = (sidebar_x, y)
+            y += 44
+
+        if self.btn_legend:
+            self.btn_legend.rect.topleft = (sidebar_x, y)
             y += 44
 
         if self.btn_gen_dataset:
@@ -1161,6 +1199,10 @@ class SimulationScreen:
 
         if self.btn_graphs:
             self.btn_graphs.draw(self.screen)
+
+        if self.btn_legend:
+            self.btn_legend.text = "Ocultar Legenda" if self.show_legend_overlay else "Mostrar Legenda"
+            self.btn_legend.draw(self.screen)
 
         if self.btn_gen_dataset:
             self.btn_gen_dataset.draw(self.screen)

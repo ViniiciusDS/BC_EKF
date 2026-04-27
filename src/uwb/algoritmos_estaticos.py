@@ -358,9 +358,27 @@ def run_batch(
         rmse_xy = rmse_xyz = None
         if p_true is not None:
             p_true_arr = np.asarray(p_true, dtype=float)
-            err = posicoes - p_true_arr
-            rmse_xy  = float(np.sqrt(np.mean(err[:, :2]**2)))
-            rmse_xyz = float(np.sqrt(np.mean(err**2)))
+
+            n = min(len(posicoes), len(p_true_arr))
+            pos_xy = np.asarray(posicoes[:n, :2], dtype=float)
+
+            if p_true_arr.ndim == 2 and p_true_arr.shape[1] >= 2:
+                true_xy = np.asarray(p_true_arr[:n, :2], dtype=float)
+            else:
+                raise ValueError(f"p_true inválido para cálculo de erro: shape={p_true_arr.shape}")
+
+            err_xy = pos_xy - true_xy
+            err_pos = np.linalg.norm(err_xy, axis=1)
+
+            # RMSE posicional 2D
+            rmse_xy = float(np.sqrt(np.mean(err_pos**2)))
+
+            # rmse_xyz só faz sentido se ambos tiverem 3 colunas
+            if p_true_arr.ndim == 2 and p_true_arr.shape[1] >= 3 and posicoes.shape[1] >= 3:
+                err_xyz = np.asarray(posicoes[:n, :3], dtype=float) - np.asarray(p_true_arr[:n, :3], dtype=float)
+                rmse_xyz = float(np.sqrt(np.mean(np.sum(err_xyz**2, axis=1))))
+            else:
+                rmse_xyz = None
 
         resultados[nome] = {
             "posicoes":  posicoes,
