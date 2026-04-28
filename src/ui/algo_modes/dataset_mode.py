@@ -6,6 +6,7 @@ import numpy as np
 import pygame as pg
 from pathlib import Path
 import csv
+import re
 
 from src.ui.botton import Button
 from src.ui.drawing import draw_grid, draw_axes, draw_anchors, draw_path, draw_text
@@ -1358,7 +1359,179 @@ class DatasetMode:
 
         return None
 
-            
+    def _moving_average(self, x: np.ndarray, window: int) -> np.ndarray:
+        """Suavização simples para estimar tendência local da série."""
+        x = np.asarray(x, dtype=float)
+        if x.size == 0:
+            return x.copy()
+
+        window = max(3, int(window))
+        if window % 2 == 0:
+            window += 1
+
+        pad = window // 2
+        xp = np.pad(x, (pad, pad), mode="edge")
+        kernel = np.ones(window, dtype=float) / float(window)
+        return np.convolve(xp, kernel, mode="valid")
+
+
+    def _estimate_local_sigma_series(
+        self,
+        values,
+        smooth_window: int = 9,
+        sigma_window: int = 15,
+        min_sigma: float = 0.01,
+    ) -> np.ndarray:
+        """
+        Estima sigma local a partir do resíduo em relação a uma série suavizada.
+        Útil quando o log real não traz desvio padrão medido pelo hardware.
+        """
+        x = np.asarray(values, dtype=float)
+        if x.size == 0:
+            return np.asarray([], dtype=float)
+
+        trend = self._moving_average(x, smooth_window)
+        resid = x - trend
+
+        sigma_window = max(5, int(sigma_window))
+        if sigma_window % 2 == 0:
+            sigma_window += 1
+
+        pad = sigma_window // 2
+        sigmas = np.zeros_like(x, dtype=float)
+
+        for i in range(x.size):
+            a = max(0, i - pad)
+            b = min(x.size, i + pad + 1)
+            chunk = resid[a:b]
+
+            if chunk.size <= 1:
+                s = min_sigma
+            else:
+                s = float(np.std(chunk, ddof=1))
+                if not np.isfinite(s):
+                    s = min_sigma
+
+            sigmas[i] = max(min_sigma, s)
+
+        return sigmas
+
+
+    def _normalize_real_uwb_rows(self, rows):
+        """
+        Converte logs reais brutos para o formato interno esperado pelo pipeline.
+
+        Casos suportados:
+        1) Já padronizado:
+        - timestamp, anchor_id, range, sigma
+        - timestamp, anchor_id, range_front, sigma_front, range_rear, sigma_rear
+        => devolve como está
+
+        2) Formato bruto por coluna, exemplo:
+        timestamp,Da6_t1,Da6_t2
+        timestamp,Da6_t1,Da6_t2,Da7_t1,Da7_t2,...
+        => estima sigma e devolve em formato BC:
+            timestamp, anchor_id, range_front, sigma_front, range_rear, sigma_rear
+        """
+        if not rows:
+            return rows
+
+        sample = rows[0]
+        keys = [str(k).strip() for k in sample.keys()]
+        keys_lower = {k.lower() for k in keys}
+
+        # Caso já padronizado
+        if (
+            {"timestamp", "anchor_id", "range", "sigma"} <= keys_lower
+            or {"timestamp", "anchor_id", "range_front", "sigma_front", "range_rear", "sigma_rear"} <= keys_lower
+            or {"timestamp_s", "anchor_id", "range", "sigma"} <= keys_lower
+            or {"timestamp_s", "anchor_id", "range_front", "sigma_front", "range_rear", "sigma_rear"} <= keys_lower
+        ):
+            return rows
+
+        # Detecta colunas do tipo Da6_t1 / Da6_t2 / Da10_t1 ...
+        pair_map = {}
+        for col in keys:
+            m = re.match(r"^[Dd][Aa](\d+)_t([12])$", col.strip())
+            if m:
+                anchor_id = int(m.group(1))
+                tag_idx = int(m.group(2))  # 1=front, 2=rear
+                pair_map.setdefault(anchor_id, {})[tag_idx] = col
+
+        if not pair_map:
+            # não reconheceu; devolve bruto para o erro aparecer mais cedo e de forma honesta
+            return rows
+
+        # Ordena timestamps
+        ts_key = "timestamp" if "timestamp" in keys_lower else "timestamp_s"
+
+        # Estima sigma por série/coluna
+        sigma_by_col = {}
+        for anchor_id, cols in pair_map.items():
+            for tag_idx, col in cols.items():
+                vals = []
+                for row in rows:
+                    try:
+                        vals.append(float(row[col]))
+                    except Exception:
+                        vals.append(np.nan)
+
+                arr = np.asarray(vals, dtype=float)
+                valid = np.isfinite(arr)
+
+                sig = np.full(arr.shape, 0.01, dtype=float)
+                if np.any(valid):
+                    sig_valid = self._estimate_local_sigma_series(arr[valid])
+                    sig[valid] = sig_valid
+
+                sigma_by_col[col] = sig
+
+        # Constrói formato BC interno
+        normalized = []
+        for i, row in enumerate(rows):
+            try:
+                ts = float(row[ts_key])
+            except Exception:
+                continue
+
+            for anchor_id, cols in sorted(pair_map.items()):
+                col_t1 = cols.get(1)
+                col_t2 = cols.get(2)
+
+                # precisamos das duas tags para BC
+                if col_t1 is None or col_t2 is None:
+                    continue
+
+                try:
+                    r1 = float(row[col_t1])
+                    r2 = float(row[col_t2])
+                except Exception:
+                    continue
+
+                if not (np.isfinite(r1) and np.isfinite(r2)):
+                    continue
+
+                normalized.append({
+                    "timestamp": ts,
+                    "anchor_id": int(anchor_id),
+                    "range_front": float(r1),
+                    "sigma_front": float(sigma_by_col[col_t1][i]),
+                    "range_rear": float(r2),
+                    "sigma_rear": float(sigma_by_col[col_t2][i]),
+                })
+
+        if not normalized:
+            raise ValueError("Não foi possível normalizar o log UWB real para o formato interno")
+
+        print(
+            "[REAL_UWB_NORMALIZE]",
+            "rows_in=", len(rows),
+            "rows_out=", len(normalized),
+            "anchors_detected=", sorted(pair_map.keys()),
+        )
+
+        return normalized
+
     def _load_simple_uwb_file(self, path: str):
         path = Path(path)
         if not path.exists():
@@ -1403,7 +1576,9 @@ class DatasetMode:
         e prepara estruturas compatíveis com o Dataset Mode.
         """
         encoder_samples = load_and_validate_encoder_file(encoder_file)
-        uwb_rows = self._load_simple_uwb_file(uwb_file)
+
+        uwb_rows_raw = self._load_simple_uwb_file(uwb_file)
+        uwb_rows = self._normalize_real_uwb_rows(uwb_rows_raw)
 
         is_bc = self._is_bc_uwb_rows(uwb_rows)
 
