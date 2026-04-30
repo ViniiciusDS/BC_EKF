@@ -8,6 +8,7 @@ from pathlib import Path
 import csv
 import re
 
+from src import config
 from src.ui.botton import Button
 from src.ui.drawing import draw_grid, draw_axes, draw_anchors, draw_path, draw_text
 from src.environment.environment import draw_environment
@@ -52,6 +53,7 @@ class DatasetMode:
         self._batch_devs = None
         self._batch_results = None
         self._dataset_anchors = None   # (N,3)
+        self._anchors_uwb_ids = None
         self._dataset_truth = None
         self._dataset_stats = None
         self._dataset_route = None
@@ -109,10 +111,28 @@ class DatasetMode:
         self._real_timestamps = []
         self._real_anchor_ids = []
 
+        self._real_encoder_use_distance_columns = bool(
+            getattr(config, "REAL_ENCODER_USE_DISTANCE_COLUMNS", True)
+        )
+        self._real_encoder_distance_unit_scale = float(
+            getattr(config, "REAL_ENCODER_DISTANCE_UNIT_SCALE", 0.01)
+        )
+        self._real_encoder_swap_lr = bool(
+            getattr(config, "REAL_ENCODER_SWAP_LR", False)
+        )
+        self._real_encoder_invert_left = bool(
+            getattr(config, "REAL_ENCODER_INVERT_LEFT", False)
+        )
+        self._real_encoder_invert_right = bool(
+            getattr(config, "REAL_ENCODER_INVERT_RIGHT", False)
+        )
+
         self._real_drive_cfg = DifferentialDriveConfig(
-            wheel_radius_m=0.03,
-            wheel_base_m=0.16,
-            encoder=EncoderConfig(ticks_per_wheel_rev=600.0),
+            wheel_radius_m=float(getattr(config, "WHEEL_RADIUS", 0.0325)),
+            wheel_base_m=float(getattr(config, "WHEEL_BASE", 0.16)),
+            encoder=EncoderConfig(
+                ticks_per_wheel_rev=float(getattr(config, "ENCODER_TICKS_PER_REV", 1320.0))
+            ),
         )
 
         self._dataset_source = "default"   # "default" | "real_encoder_uwb"
@@ -513,9 +533,32 @@ class DatasetMode:
         self.host._set_msg("Dataset configurado")
 
     def _load_anchors(self, anchors_path: str) -> bool:
-        ''' Carrega âncoras e valida compatibilidade com dataset carregado (se houver) '''
+        """Carrega âncoras e valida compatibilidade com dataset carregado (se houver).
+        Também lê, opcionalmente, o mapeamento dos IDs reais do UWB.
+        """
         try:
             self._dataset_anchors, _ = load_anchors_from_json(anchors_path)
+
+            # guarda caminho e tenta ler metadados extras do JSON bruto
+            self._anchors_path = anchors_path
+            self._anchors_uwb_ids = None
+
+            try:
+                raw = json.loads(Path(anchors_path).read_text(encoding="utf-8"))
+                raw_ids = raw.get("anchor_ids_uwb", None)
+
+                if raw_ids is not None:
+                    parsed_ids = []
+                    for x in raw_ids:
+                        sx = str(x).strip()
+                        if sx.lower().startswith("da"):
+                            sx = sx[2:]
+                        parsed_ids.append(int(sx))
+                    self._anchors_uwb_ids = parsed_ids
+
+                    print("[ANCHORS_UWB_IDS]", self._anchors_uwb_ids)
+            except Exception as meta_err:
+                print(f"[DATASET] aviso ao ler anchor_ids_uwb: {meta_err}")
 
             if self._batch_dists is not None:
                 n_dataset = int(self._batch_dists.shape[1])
@@ -525,7 +568,7 @@ class DatasetMode:
                 if self.dataset_source_type == "simulated" and self.simulated_dataset_kind == "BC":
                     if n_dataset != 2 * n_anchors:
                         self.host._set_msg(
-                           f"Dataset BC inválido: esperado front+rear ({2 * n_anchors} colunas), recebido {n_dataset}"
+                            f"Dataset BC inválido: esperado front+rear ({2 * n_anchors} colunas), recebido {n_dataset}"
                         )
                         return False
                 else:
@@ -1417,6 +1460,49 @@ class DatasetMode:
         return sigmas
 
 
+    def _get_real_anchor_id_map(self, detected_ids):
+        """
+        Retorna o mapa dos IDs reais do UWB para os índices internos 0..N-1
+        na mesma ordem do arquivo de âncoras.
+
+        Exemplo:
+        anchor_ids_uwb = [6, 3, 9, 7, 8]
+        -> {6: 0, 3: 1, 9: 2, 7: 3, 8: 4}
+        """
+        detected_ids = [int(x) for x in detected_ids]
+
+        # Caso ideal: veio explícito no JSON de âncoras
+        if self._anchors_uwb_ids is not None:
+            if len(self._anchors_uwb_ids) != len(self._dataset_anchors):
+                raise ValueError(
+                    f"anchor_ids_uwb possui {len(self._anchors_uwb_ids)} IDs, "
+                    f"mas o arquivo de âncoras possui {len(self._dataset_anchors)} posições"
+                )
+
+            mapping = {int(real_id): idx for idx, real_id in enumerate(self._anchors_uwb_ids)}
+
+            missing = [aid for aid in detected_ids if aid not in mapping]
+            if missing:
+                raise ValueError(
+                    f"IDs do UWB não encontrados em anchor_ids_uwb: {missing}. "
+                    f"Esperado algo compatível com {self._anchors_uwb_ids}"
+                )
+
+            return mapping
+
+        # Fallback automático: ordena IDs detectados e associa na ordem do layout
+        # útil para teste, mas o ideal é usar anchor_ids_uwb no JSON.
+        if self._dataset_anchors is not None and len(detected_ids) == len(self._dataset_anchors):
+            detected_sorted = sorted(detected_ids)
+            mapping = {aid: idx for idx, aid in enumerate(detected_sorted)}
+            print("[REAL_UWB_AUTO_ID_MAP]", mapping)
+            return mapping
+
+        raise ValueError(
+            "Não foi possível montar o mapeamento das âncoras reais. "
+            "Adicione 'anchor_ids_uwb' no JSON de âncoras."
+        )
+
     def _normalize_real_uwb_rows(self, rows):
         """
         Converte logs reais brutos para o formato interno esperado pelo pipeline.
@@ -1432,6 +1518,10 @@ class DatasetMode:
         timestamp,Da6_t1,Da6_t2,Da7_t1,Da7_t2,...
         => estima sigma e devolve em formato BC:
             timestamp, anchor_id, range_front, sigma_front, range_rear, sigma_rear
+
+        IMPORTANTE:
+        o anchor_id devolvido já é remapeado para o índice interno 0..N-1
+        conforme a ordem do arquivo de âncoras e do campo anchor_ids_uwb.
         """
         if not rows:
             return rows
@@ -1454,21 +1544,24 @@ class DatasetMode:
         for col in keys:
             m = re.match(r"^[Dd][Aa](\d+)_t([12])$", col.strip())
             if m:
-                anchor_id = int(m.group(1))
+                real_anchor_id = int(m.group(1))
                 tag_idx = int(m.group(2))  # 1=front, 2=rear
-                pair_map.setdefault(anchor_id, {})[tag_idx] = col
+                pair_map.setdefault(real_anchor_id, {})[tag_idx] = col
 
         if not pair_map:
-            # não reconheceu; devolve bruto para o erro aparecer mais cedo e de forma honesta
             return rows
 
-        # Ordena timestamps
         ts_key = "timestamp" if "timestamp" in keys_lower else "timestamp_s"
+
+        detected_ids = sorted(pair_map.keys())
+        id_map = self._get_real_anchor_id_map(detected_ids)
+
+        print("[REAL_UWB_ID_MAP]", id_map)
 
         # Estima sigma por série/coluna
         sigma_by_col = {}
-        for anchor_id, cols in pair_map.items():
-            for tag_idx, col in cols.items():
+        for real_anchor_id, cols in pair_map.items():
+            for _, col in cols.items():
                 vals = []
                 for row in rows:
                     try:
@@ -1486,19 +1579,56 @@ class DatasetMode:
 
                 sigma_by_col[col] = sig
 
-        # Constrói formato BC interno
+        # ---------------------------------------------------------
+        # Normaliza timestamps do UWB para segundos, começando em 0.
+        # Logs STM normalmente vêm em ms: 89, 350, 611, ...
+        # Encoder normalizado já está em segundos: 0.0, 0.1, ...
+        # ---------------------------------------------------------
+        raw_ts = []
+        for row in rows:
+            try:
+                raw_ts.append(float(row[ts_key]))
+            except Exception:
+                raw_ts.append(np.nan)
+
+        raw_ts = np.asarray(raw_ts, dtype=float)
+        valid_ts = raw_ts[np.isfinite(raw_ts)]
+
+        if valid_ts.size == 0:
+            raise ValueError("UWB sem timestamps válidos")
+
+        t0_raw = float(valid_ts[0])
+        span_raw = float(np.nanmax(valid_ts) - np.nanmin(valid_ts))
+
+        # Se o span é grande, assume ms. Ex.: 0..65000 ms.
+        # Se já estiver em segundos, mantém em segundos.
+        ts_scale = 0.001 if span_raw > 1000.0 else 1.0
+
+        ts_norm = (raw_ts - t0_raw) * ts_scale
+
+        print(
+            "[REAL_UWB_TIME]",
+            "t0_raw=", t0_raw,
+            "span_raw=", span_raw,
+            "scale=", ts_scale,
+            "first_s=", float(ts_norm[np.isfinite(ts_norm)][0]),
+            "last_s=", float(ts_norm[np.isfinite(ts_norm)][-1]),
+        )
+
+        # Constrói formato BC interno já remapeado
         normalized = []
         for i, row in enumerate(rows):
             try:
-                ts = float(row[ts_key])
+                ts = float(ts_norm[i])
             except Exception:
                 continue
 
-            for anchor_id, cols in sorted(pair_map.items()):
+            # percorre na ordem física definida pelo layout
+            for real_anchor_id in detected_ids:
+                cols = pair_map[real_anchor_id]
                 col_t1 = cols.get(1)
                 col_t2 = cols.get(2)
 
-                # precisamos das duas tags para BC
                 if col_t1 is None or col_t2 is None:
                     continue
 
@@ -1513,7 +1643,7 @@ class DatasetMode:
 
                 normalized.append({
                     "timestamp": ts,
-                    "anchor_id": int(anchor_id),
+                    "anchor_id": int(id_map[real_anchor_id]),   # remapeado para 0..N-1
                     "range_front": float(r1),
                     "sigma_front": float(sigma_by_col[col_t1][i]),
                     "range_rear": float(r2),
@@ -1527,10 +1657,447 @@ class DatasetMode:
             "[REAL_UWB_NORMALIZE]",
             "rows_in=", len(rows),
             "rows_out=", len(normalized),
-            "anchors_detected=", sorted(pair_map.keys()),
+            "detected_ids=", detected_ids,
+            "mapped_ids=", [id_map[k] for k in detected_ids],
         )
 
         return normalized
+    
+    def _resample_pose_path_to_length(self, poses, M: int):
+        """
+        Reamostra uma trajetória (N,3) para M amostras.
+        Usado para casar odometria com o número de amostras UWB.
+        """
+        poses = np.asarray(poses, dtype=float)
+
+        if poses.ndim != 2 or poses.shape[0] == 0:
+            return poses
+
+        if poses.shape[0] == M:
+            return poses.copy()
+
+        idx = np.linspace(0, poses.shape[0] - 1, M)
+        out = np.zeros((M, poses.shape[1]), dtype=float)
+
+        base_idx = np.arange(poses.shape[0])
+        for d in range(poses.shape[1]):
+            out[:, d] = np.interp(idx, base_idx, poses[:, d])
+
+        if out.shape[1] >= 3:
+            out[:, 2] = np.unwrap(out[:, 2])
+            out[:, 2] = np.arctan2(np.sin(out[:, 2]), np.cos(out[:, 2]))
+
+        return out
+
+    def _load_simple_table_file(self, path: str):
+        """
+        Lê CSV/TXT simples e devolve lista de dicts.
+        Aceita delimitador por vírgula, ponto e vírgula ou whitespace.
+
+        Também suporta logs SEM cabeçalho no formato bruto do ESP32:
+        contador_direita;contador_esquerda;velocidade_direita;velocidade_esquerda;
+        distancia_direita;distancia_esquerda;millis
+        """
+        path = Path(path)
+        if not path.exists():
+            raise FileNotFoundError(f"Arquivo não encontrado: {path}")
+
+        suffix = path.suffix.lower()
+
+        if suffix in (".csv", ".txt"):
+            text = path.read_text(encoding="utf-8-sig")
+            lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+            if not lines:
+                raise ValueError(f"Arquivo vazio: {path}")
+
+            header = lines[0]
+
+            # -------------------------------------------------
+            # 1) Caso com cabeçalho explícito
+            # -------------------------------------------------
+            header_lower = header.lower()
+            if any(k in header_lower for k in ["contador", "millis", "timestamp", "tempo"]):
+                if ";" in header:
+                    reader = csv.DictReader(lines, delimiter=";")
+                    return list(reader)
+                if "," in header:
+                    reader = csv.DictReader(lines, delimiter=",")
+                    return list(reader)
+
+                cols = header.split()
+                rows = []
+                for line in lines[1:]:
+                    vals = line.split()
+                    if len(vals) != len(cols):
+                        continue
+                    rows.append(dict(zip(cols, vals)))
+                return rows
+
+            # -------------------------------------------------
+            # 2) Caso sem cabeçalho: log bruto do ESP32
+            # ordem do main.cpp:
+            # contador_direita;contador_esquerda;velocidade_direita;velocidade_esquerda;
+            # distancia_direita;distancia_esquerda;millis
+            # -------------------------------------------------
+            sample_delim = ";" if ";" in header else ("," if "," in header else None)
+
+            if sample_delim is not None:
+                first_parts = [p.strip() for p in header.split(sample_delim)]
+                if len(first_parts) == 7:
+                    cols = [
+                        "contador_direita",
+                        "contador_esquerda",
+                        "velocidade_direita",
+                        "velocidade_esquerda",
+                        "distancia_direita",
+                        "distancia_esquerda",
+                        "millis",
+                    ]
+                    rows = []
+                    for line in lines:
+                        vals = [p.strip() for p in line.split(sample_delim)]
+                        if len(vals) != 7:
+                            continue
+                        rows.append(dict(zip(cols, vals)))
+                    return rows
+
+            # -------------------------------------------------
+            # 3) Fallback whitespace
+            # -------------------------------------------------
+            cols = header.split()
+            rows = []
+            for line in lines[1:]:
+                vals = line.split()
+                if len(vals) != len(cols):
+                    continue
+                rows.append(dict(zip(cols, vals)))
+            return rows
+
+        raise ValueError(f"Formato não suportado: {suffix}")
+
+
+    def _find_encoder_columns(self, rows):
+        """
+        Detecta automaticamente as colunas do log do ESP32.
+
+        Formato do main.cpp:
+        contador_direita ; contador_esquerda ; velocidade_direita ; velocidade_esquerda ;
+        distancia_direita ; distancia_esquerda ; millis
+        """
+        if not rows:
+            raise ValueError("Arquivo de encoder vazio")
+
+        keys = list(rows[0].keys())
+        keys_norm = {k: k.strip().lower() for k in keys}
+
+        def pick(*patterns):
+            for raw, norm in keys_norm.items():
+                for p in patterns:
+                    if p in norm:
+                        return raw
+            return None
+
+        col_right_count = pick(
+            "contador_direita", "count_right", "right_count", "pulsos_direita"
+        )
+        col_left_count = pick(
+            "contador_esquerda", "count_left", "left_count", "pulsos_esquerda"
+        )
+        col_right_dist = pick(
+            "distancia_direita", "dist_right", "right_dist", "distance_right"
+        )
+        col_left_dist = pick(
+            "distancia_esquerda", "dist_left", "left_dist", "distance_left"
+        )
+        col_time_ms = pick(
+            "millis", "timestamp", "tempo", "time_ms"
+        )
+
+        if col_time_ms and col_right_count and col_left_count:
+            return {
+                "right_count": col_right_count,
+                "left_count": col_left_count,
+                "right_dist": col_right_dist,
+                "left_dist": col_left_dist,
+                "time_ms": col_time_ms,
+            }
+
+        raise ValueError(
+            "Não foi possível detectar colunas de encoder. "
+            "Esperado contador_direita, contador_esquerda e millis."
+        )
+
+    def _apply_real_odom_initial_pose(self, poses):
+        """
+        Aplica pose inicial à odometria real.
+
+        A odometria reconstruída pelo encoder normalmente nasce em um referencial local.
+        Esta função:
+        1) desloca a rota para começar em (0,0);
+        2) rotaciona pela orientação inicial configurada;
+        3) translada para a posição inicial real do robô.
+        """
+        arr = np.asarray(poses, dtype=float)
+
+        if arr.ndim != 2 or arr.shape[0] == 0 or arr.shape[1] < 2:
+            return arr
+
+        out = arr.copy()
+
+        x0 = float(getattr(config, "REAL_ODOM_INITIAL_X", 0.0))
+        y0 = float(getattr(config, "REAL_ODOM_INITIAL_Y", 0.0))
+        th0 = np.deg2rad(float(getattr(config, "REAL_ODOM_INITIAL_THETA_DEG", 0.0)))
+
+        # origem local da odometria
+        p0 = out[0, :2].copy()
+        xy_local = out[:, :2] - p0
+
+        c = np.cos(th0)
+        s = np.sin(th0)
+
+        R = np.array([
+            [c, -s],
+            [s,  c],
+        ], dtype=float)
+
+        xy_global = xy_local @ R.T
+        out[:, 0] = xy_global[:, 0] + x0
+        out[:, 1] = xy_global[:, 1] + y0
+
+        # se tiver theta, soma orientação inicial
+        if out.shape[1] >= 3:
+            out[:, 2] = out[:, 2] + th0
+            out[:, 2] = np.arctan2(np.sin(out[:, 2]), np.cos(out[:, 2]))
+
+        print(
+            "[REAL_ODOM_INITIAL_POSE]",
+            "x0=", x0,
+            "y0=", y0,
+            "theta_deg=", float(getattr(config, "REAL_ODOM_INITIAL_THETA_DEG", 0.0)),
+            "first_xy=", out[0, :2],
+        )
+
+        return out
+
+    def _refresh_real_config_from_config(self):
+        """
+        Recarrega parâmetros reais do config.py sempre que um dataset real é carregado.
+        Evita precisar recriar a tela/classe para aplicar mudanças no config.
+        """
+        self._real_encoder_use_distance_columns = bool(
+            getattr(config, "REAL_ENCODER_USE_DISTANCE_COLUMNS", True)
+        )
+        self._real_encoder_distance_unit_scale = float(
+            getattr(config, "REAL_ENCODER_DISTANCE_UNIT_SCALE", 0.01)
+        )
+        self._real_encoder_swap_lr = bool(
+            getattr(config, "REAL_ENCODER_SWAP_LR", False)
+        )
+        self._real_encoder_invert_left = bool(
+            getattr(config, "REAL_ENCODER_INVERT_LEFT", False)
+        )
+        self._real_encoder_invert_right = bool(
+            getattr(config, "REAL_ENCODER_INVERT_RIGHT", False)
+        )
+
+        self._real_drive_cfg = DifferentialDriveConfig(
+            wheel_radius_m=float(getattr(config, "WHEEL_RADIUS", 0.0325)),
+            wheel_base_m=float(getattr(config, "WHEEL_BASE", 0.16)),
+            encoder=EncoderConfig(
+                ticks_per_wheel_rev=float(getattr(config, "ENCODER_TICKS_PER_REV", 1320.0))
+            ),
+        )
+
+        print(
+            "[REAL_CONFIG]",
+            "wheel_radius=", self._real_drive_cfg.wheel_radius_m,
+            "wheel_base=", self._real_drive_cfg.wheel_base_m,
+            "ticks_per_rev=", self._real_drive_cfg.encoder.ticks_per_wheel_rev,
+            "use_dist=", self._real_encoder_use_distance_columns,
+            "dist_scale=", self._real_encoder_distance_unit_scale,
+            "swap_lr=", self._real_encoder_swap_lr,
+            "inv_l=", self._real_encoder_invert_left,
+            "inv_r=", self._real_encoder_invert_right,
+        )
+
+    def _reset_real_dataset_state(self):
+        """
+        Limpa estados derivados de um carregamento real anterior.
+        Evita reaproveitar rota, resultados ou BC-EKF de outro ensaio.
+        """
+        self._real_dataset = None
+        self._real_aligned_rows = None
+        self._real_odom_path = None
+        self._real_range_matrix = None
+        self._real_sigma_matrix = None
+        self._real_timestamps = []
+        self._real_anchor_ids = []
+
+        self._batch_dists = None
+        self._batch_devs = None
+        self._batch_results = None
+        self._dataset_stats = None
+        self._bc_ekf_data = None
+
+        # rota real deve ser reconstruída do zero a cada carregamento
+        self._dataset_route = None
+
+    def _normalize_real_encoder_rows(self, rows):
+        """
+        Converte log incremental do ESP32 em ticks acumulados no formato:
+        timestamp,left_ticks,right_ticks
+
+        Pode usar:
+        1) contadores incrementais; ou
+        2) distancia_direita/distancia_esquerda calculadas pelo ESP32.
+
+        O modo por distância é útil porque o ESP32 já calcula o deslocamento
+        incremental de cada roda. Nesse caso, convertemos a distância acumulada
+        para 'ticks equivalentes', de modo que o loader existente continue
+        funcionando sem alterações.
+        """
+        cols = self._find_encoder_columns(rows)
+
+        use_dist = (
+            self._real_encoder_use_distance_columns
+            and cols.get("right_dist") is not None
+            and cols.get("left_dist") is not None
+        )
+
+        left_acc_ticks = 0.0
+        right_acc_ticks = 0.0
+        left_acc_m = 0.0
+        right_acc_m = 0.0
+
+        out = []
+        t0 = None
+        prev_t = None
+
+        wheel_radius = float(self._real_drive_cfg.wheel_radius_m)
+        ticks_per_rev = float(self._real_drive_cfg.encoder.ticks_per_wheel_rev)
+
+        meters_per_tick = (2.0 * np.pi * wheel_radius) / ticks_per_rev
+        if meters_per_tick <= 0:
+            raise ValueError("meters_per_tick inválido")
+
+        for row in rows:
+            try:
+                t_ms = float(row[cols["time_ms"]])
+            except Exception:
+                continue
+
+            if not np.isfinite(t_ms):
+                continue
+
+            if prev_t is not None and t_ms < prev_t:
+                continue
+            prev_t = t_ms
+
+            if t0 is None:
+                t0 = t_ms
+
+            try:
+                dr_count = float(row[cols["right_count"]])
+                dl_count = float(row[cols["left_count"]])
+            except Exception:
+                dr_count = 0.0
+                dl_count = 0.0
+
+            if use_dist:
+                try:
+                    dr_m = float(row[cols["right_dist"]]) * self._real_encoder_distance_unit_scale
+                    dl_m = float(row[cols["left_dist"]]) * self._real_encoder_distance_unit_scale
+                except Exception:
+                    continue
+            else:
+                dr_m = None
+                dl_m = None
+
+            # Troca esquerda/direita, se necessário
+            if self._real_encoder_swap_lr:
+                dr_count, dl_count = dl_count, dr_count
+                if use_dist:
+                    dr_m, dl_m = dl_m, dr_m
+
+            # Inversão de sinal, se necessário
+            if self._real_encoder_invert_right:
+                dr_count = -dr_count
+                if use_dist:
+                    dr_m = -dr_m
+
+            if self._real_encoder_invert_left:
+                dl_count = -dl_count
+                if use_dist:
+                    dl_m = -dl_m
+
+            if use_dist:
+                right_acc_m += dr_m
+                left_acc_m += dl_m
+
+                right_acc_ticks = right_acc_m / meters_per_tick
+                left_acc_ticks = left_acc_m / meters_per_tick
+            else:
+                right_acc_ticks += dr_count
+                left_acc_ticks += dl_count
+
+            out.append({
+                "timestamp": (t_ms - t0) / 1000.0,
+                "left_ticks": left_acc_ticks,
+                "right_ticks": right_acc_ticks,
+            })
+
+        if not out:
+            raise ValueError("Não foi possível normalizar o log do encoder real")
+
+        print(
+            "[REAL_ENCODER_NORMALIZE]",
+            "mode=", "distance_columns" if use_dist else "count_columns",
+            "rows_in=", len(rows),
+            "rows_out=", len(out),
+            "first_ts_s=", out[0]["timestamp"],
+            "last_ts_s=", out[-1]["timestamp"],
+            "wheel_radius=", wheel_radius,
+            "wheel_base=", float(self._real_drive_cfg.wheel_base_m),
+            "ticks_per_rev=", ticks_per_rev,
+            "meters_per_tick=", meters_per_tick,
+            "swap_lr=", self._real_encoder_swap_lr,
+            "invert_left=", self._real_encoder_invert_left,
+            "invert_right=", self._real_encoder_invert_right,
+        )
+
+        return out
+
+
+    def _write_normalized_encoder_temp_csv(self, normalized_rows):
+        """
+        Salva o encoder normalizado em arquivo temporário dentro de resultados/datasets,
+        para reutilizar o loader existente.
+        """
+        temp_path = Path(self.real_data_dir) / "_encoder_real_normalized_tmp.csv"
+        with temp_path.open("w", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=["timestamp", "left_ticks", "right_ticks"])
+            writer.writeheader()
+            writer.writerows(normalized_rows)
+        return temp_path
+
+
+    def _load_and_normalize_real_encoder_file(self, encoder_file: str):
+        """
+        Detecta se o encoder já está no formato aceito.
+        Se não estiver, tenta adaptar o log bruto do ESP32.
+        """
+        # tenta o fluxo atual primeiro
+        try:
+            return load_and_validate_encoder_file(encoder_file)
+        except Exception as first_error:
+            print(f"[REAL_ENCODER] formato padrão falhou: {first_error}")
+
+        raw_rows = self._load_simple_table_file(encoder_file)
+        normalized_rows = self._normalize_real_encoder_rows(raw_rows)
+        temp_csv = self._write_normalized_encoder_temp_csv(normalized_rows)
+
+        # agora reaproveita o loader já existente do projeto
+        return load_and_validate_encoder_file(temp_csv)
 
     def _load_simple_uwb_file(self, path: str):
         path = Path(path)
@@ -1575,7 +2142,10 @@ class DatasetMode:
         Carrega encoder + UWB reais, constrói dataset alinhado
         e prepara estruturas compatíveis com o Dataset Mode.
         """
-        encoder_samples = load_and_validate_encoder_file(encoder_file)
+        self._reset_real_dataset_state()
+        self._refresh_real_config_from_config()
+
+        encoder_samples = self._load_and_normalize_real_encoder_file(encoder_file)
 
         uwb_rows_raw = self._load_simple_uwb_file(uwb_file)
         uwb_rows = self._normalize_real_uwb_rows(uwb_rows_raw)
@@ -1583,7 +2153,6 @@ class DatasetMode:
         is_bc = self._is_bc_uwb_rows(uwb_rows)
 
         if is_bc:
-            # ainda monta o dataset simples para rota/visualização básica
             expanded_rows = self._expand_bc_uwb_rows_if_needed(uwb_rows)
 
             dataset = build_dataset_from_encoder_and_uwb(
@@ -1594,37 +2163,39 @@ class DatasetMode:
             )
 
             matrices = build_range_sigma_matrices(dataset["aligned_rows"])
-            odom_path = extract_odometry_path(dataset["aligned_rows"])
 
             self._real_encoder_file = str(encoder_file)
             self._real_uwb_file = str(uwb_file)
             self._real_dataset = dataset
             self._real_aligned_rows = dataset["aligned_rows"]
-            self._real_odom_path = odom_path
             self._real_range_matrix = matrices["ranges"]
             self._real_sigma_matrix = matrices["sigmas"]
             self._real_timestamps = matrices["timestamps_s"]
             self._real_anchor_ids = matrices["anchor_ids"]
 
-            # zera rota antes, para controlar a prioridade corretamente
-            self._dataset_route = None
-
-            traj_sidecar = self._guess_real_traj_sidecar(str(uwb_file))
-            if traj_sidecar is not None:
-                try:
-                    self._dataset_route = self._load_sampled_traj_csv(traj_sidecar)
-                    print("[REAL_BC] usando sidecar de trajetória:", traj_sidecar, self._dataset_route.shape)
-                except Exception as e:
-                    print("[REAL_BC] falha ao carregar sidecar real:", e)
-
-            # aplica dataset ao batch sem destruir sidecar já carregado
-            self._apply_real_dataset_to_batch_state()
+            # Prepara BC e define a rota visual a partir da odometria processada
             self._prepare_bc_ekf_data_for_real_bc(encoder_samples, uwb_rows)
 
+            payload = self._real_dataset_as_numpy()
+            if payload is None:
+                raise ValueError("Falha ao converter dataset real para batch")
+
+            self._batch_dists = np.asarray(payload["dists"], dtype=float)
+            self._batch_devs = np.asarray(payload["devs"], dtype=float)
+
+            self._dataset_label = (
+                f"REAL | enc={Path(self._real_encoder_file).name} | "
+                f"uwb={Path(self._real_uwb_file).name}"
+            )
             self._dataset_source = "real_encoder_uwb"
+
+            if not self._validate_real_dataset_against_loaded_anchors():
+                return
+
             self.host._set_msg(f"Dataset real BC carregado: {len(uwb_rows)} linhas UWB")
             return
 
+        # Caso não BC
         dataset = build_dataset_from_encoder_and_uwb(
             encoder_samples,
             uwb_rows,
@@ -1634,6 +2205,7 @@ class DatasetMode:
 
         matrices = build_range_sigma_matrices(dataset["aligned_rows"])
         odom_path = extract_odometry_path(dataset["aligned_rows"])
+        odom_path = self._apply_real_odom_initial_pose(odom_path)
 
         self._real_encoder_file = str(encoder_file)
         self._real_uwb_file = str(uwb_file)
@@ -1644,6 +2216,7 @@ class DatasetMode:
         self._real_sigma_matrix = matrices["sigmas"]
         self._real_timestamps = matrices["timestamps_s"]
         self._real_anchor_ids = matrices["anchor_ids"]
+        self._dataset_route = odom_path
 
         ok = self._apply_real_dataset_to_batch_state()
         if not ok:
@@ -1658,14 +2231,17 @@ class DatasetMode:
         Converte o dataset real consolidado em arrays NumPy compatíveis
         com o fluxo batch do Dataset Mode.
         """
-        import numpy as np
-
         if self._real_range_matrix is None:
             return None
 
         dists = np.asarray(self._real_range_matrix, dtype=float)
         devs = np.asarray(self._real_sigma_matrix, dtype=float)
-        route = np.asarray(self._real_odom_path, dtype=float) if self._real_odom_path else None
+
+        route = None
+        if self._real_odom_path is not None:
+            route_arr = np.asarray(self._real_odom_path, dtype=float)
+            if route_arr.ndim == 2 and route_arr.shape[0] > 0 and route_arr.shape[1] >= 2:
+                route = route_arr
 
         return {
             "dists": dists,
@@ -2008,129 +2584,154 @@ class DatasetMode:
         return odom
     
 
-    def _prepare_bc_ekf_data_for_simulated_bc(self):
-        '''Prepara os dados do dataset para o formato esperado pelo BC-EKF,
-         assumindo que as medições são de um cenário simulado com layout conhecido de âncoras e rota.
-        Verifica consistência dos dados, converte a rota em odometria e extrai'''
-        import numpy as np
-        import src.config as config
+    def _prepare_bc_ekf_data_for_real_bc(self, encoder_samples, uwb_rows):
+        """
+        Prepara o BC-EKF para dataset real BC.
 
-        print(
-            "[BC_EKF_PREP_ENTER]",
-            "batch_dists_is_none=", self._batch_dists is None,
-            "anchors_is_none=", self._dataset_anchors is None,
-            "route_is_none=", self._dataset_route is None,
-            "sim_kind=", self.simulated_dataset_kind,
-        )
-
-        if self._batch_dists is None:
-            self._bc_ekf_data = None
-            return
-
+        Esta versão:
+        - usa os anchor_id já remapeados para 0..N-1;
+        - remove alinhamento automático com _dataset_route;
+        - aplica pose inicial apenas uma vez;
+        - usa T real a partir dos timestamps UWB;
+        - descarta timestamps incompletos de forma explícita.
+        """
         if self._dataset_anchors is None:
+            self.host._set_msg("BC-EKF real requer âncoras carregadas")
             self._bc_ekf_data = None
             return
 
-        full_dists = np.asarray(self._batch_dists, dtype=float)
-        full_devs = np.asarray(self._batch_devs, dtype=float) if self._batch_devs is not None else None
-
-        if full_dists.ndim != 2:
+        if not uwb_rows:
+            self.host._set_msg("BC-EKF real: UWB vazio")
             self._bc_ekf_data = None
             return
 
-        n_cols = full_dists.shape[1]
-        if n_cols % 2 != 0:
-            self.host._set_msg("Dataset BC inválido: número de colunas deve ser par (front/rear)")
-            self._bc_ekf_data = None
-            return
+        n_anchors = int(self._dataset_anchors.shape[0])
 
-        n_anchors = self._dataset_anchors.shape[0]
-        if n_cols != 2 * n_anchors:
-            self.host._set_msg(
-                f"Dataset BC incompatível: possui {n_cols} colunas, mas o layout tem {n_anchors} âncoras"
-            )
-            self._bc_ekf_data = None
-            return
-        
-        # para os algoritmos clássicos, usa apenas as colunas da tag frontal
-        self._batch_dists = full_dists[:, 0::2]
-        if full_devs is not None:
-            self._batch_devs = full_devs[:, 0::2]
+        # timestamps únicos do UWB já devem estar em segundos
+        ts_sorted_all = sorted({float(r["timestamp"]) for r in uwb_rows})
+        M_all = len(ts_sorted_all)
 
-        poses = None
-        traj_sidecar = None
-        if self._dataset_path:
-            traj_sidecar = self._guess_sampled_traj_sidecar(self._dataset_path)
+        z_hist = np.full((2 * n_anchors, M_all), np.nan, dtype=float)
+        sigma_vals = []
 
-        if traj_sidecar is not None:
+        ts_to_idx = {t: k for k, t in enumerate(ts_sorted_all)}
+
+        for row in uwb_rows:
             try:
-                poses = self._load_sampled_traj_csv(traj_sidecar)
-                print("[BC_EKF] usando trajetória amostrada:", traj_sidecar, poses.shape)
-            except Exception as e:
-                print("[BC_EKF] falha ao carregar trajetória amostrada:", e)
-                poses = None
+                t = float(row["timestamp"])
+                aid = int(row["anchor_id"])
+            except Exception:
+                continue
 
-        if poses is None:
-            if self._dataset_route is None:
-                self.host._set_msg("BC-EKF requer sidecar _traj.csv ou rota válida")
-                self._bc_ekf_data = None
-                return
-            poses = self._route_xy_to_pose_xytheta(self._dataset_route)
-            
-        T = float(getattr(config, "TIME_STEP", 0.05))
+            if aid < 0 or aid >= n_anchors:
+                continue
+
+            k = ts_to_idx[t]
+            j = aid
+
+            try:
+                z_hist[2 * j, k] = float(row["range_front"])
+                z_hist[2 * j + 1, k] = float(row["range_rear"])
+
+                sf = float(row["sigma_front"])
+                sr = float(row["sigma_rear"])
+
+                if np.isfinite(sf):
+                    sigma_vals.append(sf)
+                if np.isfinite(sr):
+                    sigma_vals.append(sr)
+
+            except Exception:
+                continue
+
+        # Mantém somente instantes com todas as medições front/rear de todas as âncoras
+        complete_mask = ~np.isnan(z_hist).any(axis=0)
+        dropped = int(np.count_nonzero(~complete_mask))
+
+        if not np.any(complete_mask):
+            self.host._set_msg("BC real inválido: nenhum timestamp UWB completo")
+            self._bc_ekf_data = None
+            return
+
+        z_hist = z_hist[:, complete_mask]
+        ts_sorted = np.asarray(ts_sorted_all, dtype=float)[complete_mask]
+        M = int(z_hist.shape[1])
+
+        if dropped > 0:
+            print(
+                "[REAL_BC_UWB_FILTER]",
+                "timestamps_in=", M_all,
+                "timestamps_valid=", M,
+                "timestamps_dropped=", dropped,
+            )
+
+        # ---------------------------------------------------------
+        # Trajetória do encoder:
+        # 1) reconstrói odometria local;
+        # 2) reamostra para o número de instantes UWB válidos;
+        # 3) aplica pose inicial uma única vez.
+        # ---------------------------------------------------------
+        poses = self._build_pose_path_from_encoder_samples(encoder_samples)
+
+        if poses is None or len(poses) == 0:
+            self.host._set_msg("BC-EKF real: odometria vazia")
+            self._bc_ekf_data = None
+            return
+
+        poses = self._resample_pose_path_to_length(poses, M)
+        poses = self._apply_real_odom_initial_pose(poses)
+
+        self._dataset_route = poses.copy()
+        self._route_waypoints = poses[:, :2].copy()
+        self._real_odom_path = poses.copy()
+
+        # T real do UWB
+        if M > 1:
+            dt = np.diff(ts_sorted)
+            dt = dt[np.isfinite(dt) & (dt > 0)]
+            T = float(np.median(dt)) if dt.size > 0 else float(getattr(config, "TIME_STEP", 0.05))
+        else:
+            T = float(getattr(config, "TIME_STEP", 0.05))
+
+        if not np.isfinite(T) or T <= 0:
+            T = float(getattr(config, "TIME_STEP", 0.05))
+
         odometry_noisy = self._pose_xytheta_to_vw(poses, T)
 
-        z_hist = full_dists.T  # (2N, M)
-
-        sigma_uwb = float(np.nanmedian(full_devs)) if full_devs is not None else float(np.sqrt(0.0025))
-        if not np.isfinite(sigma_uwb):
-            sigma_uwb = float(np.sqrt(0.0025))
-
-        M = full_dists.shape[0]
-
-        if poses.shape[0] != M:
-            self.host._set_msg(
-                f"BC-EKF inválido: rota possui {poses.shape[0]} amostras, mas dataset possui {M}"
-            )
-            self._bc_ekf_data = None
-            return
-
-        if odometry_noisy.shape[1] != M:
-            self.host._set_msg(
-                f"BC-EKF inválido: odometria possui {odometry_noisy.shape[1]} passos, mas dataset possui {M}"
-            )
-            self._bc_ekf_data = None
-            return
-
-        if z_hist.shape[1] != M:
-            self.host._set_msg(
-                f"BC-EKF inválido: z_hist possui {z_hist.shape[1]} passos, mas dataset possui {M}"
-            )
-            self._bc_ekf_data = None
-            return
-
-        if z_hist.shape[0] != 2 * n_anchors:
-            self.host._set_msg(
-                f"BC-EKF inválido: z_hist possui {z_hist.shape[0]} linhas, esperado {2 * n_anchors}"
-            )
-            self._bc_ekf_data = None
-            return
+        sigma_uwb = float(np.nanmedian(np.asarray(sigma_vals, dtype=float))) if sigma_vals else float(getattr(config, "UWB_NOISE_STD", 0.05))
+        if not np.isfinite(sigma_uwb) or sigma_uwb <= 0:
+            sigma_uwb = float(getattr(config, "UWB_NOISE_STD", 0.05))
 
         self._bc_ekf_data = {
             "T": T,
             "odometry_noisy": odometry_noisy,
             "z_hist": z_hist,
-            "l": float(getattr(config, "WHEEL_BASE", 0.65)) / 2.0,
-            "z_c": float(getattr(config, "TAG_HEIGHT", 0.5)),
+            "l": float(getattr(config, "TAG_BASELINE", 0.25)) / 2.0,
+            "z_c": float(getattr(config, "TAG_HEIGHT", 0.20)),
             "sigma_uwb": sigma_uwb,
             "x0": np.asarray(poses[0], dtype=float).reshape(3,),
         }
 
+        # Para os algoritmos clássicos, usa apenas a tag frontal
+        self._batch_dists = z_hist.T[:, 0::2]
+        self._batch_devs = np.full_like(self._batch_dists, sigma_uwb, dtype=float)
+
+        # Mantém matrizes reais coerentes com o batch atual
+        self._real_range_matrix = self._batch_dists.copy()
+        self._real_sigma_matrix = self._batch_devs.copy()
+        self._real_timestamps = ts_sorted.tolist()
+        self._real_anchor_ids = list(range(n_anchors))
+
         print(
-            "[BC_EKF_PREP_OK]",
+            "[REAL_BC_EKF_PREP_OK]",
             "z_hist=", z_hist.shape,
-            "odometry_noisy=", odometry_noisy.shape,
-            "anchors=", self._dataset_anchors.shape,
+            "odom=", odometry_noisy.shape,
+            "poses=", poses.shape,
+            "batch_dists=", self._batch_dists.shape,
+            "T=", T,
+            "sigma_uwb=", sigma_uwb,
+            "x0=", poses[0],
+            "dropped=", dropped,
         )
     
     def _guess_sampled_traj_sidecar(self, dataset_path: str) -> str | None:
@@ -2342,111 +2943,6 @@ class DatasetMode:
         path[:, :2] = xy
         path[:, 2] = path[:, 2] + dth
         return path
-    
-    def _prepare_bc_ekf_data_for_real_bc(self, encoder_samples, uwb_rows):
-        import numpy as np
-        import src.config as config
-
-        if self._dataset_anchors is None:
-            self.host._set_msg("BC-EKF real requer âncoras carregadas")
-            self._bc_ekf_data = None
-            return
-
-        # timestamps únicos do UWB
-        ts_sorted = sorted({float(r["timestamp"]) for r in uwb_rows})
-        n_anchors = self._dataset_anchors.shape[0]
-        M = len(ts_sorted)
-
-        z_hist = np.full((2 * n_anchors, M), np.nan, dtype=float)
-        sigma_vals = []
-
-        anchor_map = {i: i for i in range(n_anchors)}
-
-        ts_to_idx = {t: k for k, t in enumerate(ts_sorted)}
-
-        for row in uwb_rows:
-            t = float(row["timestamp"])
-            aid = int(row["anchor_id"])
-            if aid not in anchor_map:
-                continue
-
-            k = ts_to_idx[t]
-            j = anchor_map[aid]
-
-            z_hist[2 * j, k] = float(row["range_front"])
-            z_hist[2 * j + 1, k] = float(row["range_rear"])
-
-            sigma_vals.append(float(row["sigma_front"]))
-            sigma_vals.append(float(row["sigma_rear"]))
-
-        if np.isnan(z_hist).any():
-            self.host._set_msg("BC real inválido: z_hist incompleto")
-            self._bc_ekf_data = None
-            return
-
-        # trajetória do encoder
-        poses = self._build_pose_path_from_encoder_samples(encoder_samples)
-
-        # reamostragem simples para M pontos
-        if poses.shape[0] != M:
-            idx = np.linspace(0, poses.shape[0] - 1, M)
-            poses_rs = np.zeros((M, 3), dtype=float)
-            for d in range(3):
-                poses_rs[:, d] = np.interp(idx, np.arange(poses.shape[0]), poses[:, d])
-            poses = poses_rs
-
-        if self._dataset_route is not None and len(self._dataset_route) >= 2:
-            try:
-                ref_xy = np.asarray(self._dataset_route, dtype=float)
-                if ref_xy.ndim == 2 and ref_xy.shape[1] >= 2:
-                    poses = self._align_path_to_reference(poses, ref_xy[:, :2])
-            except Exception as e:
-                print("[REAL_BC] falha ao alinhar rota odométrica:", e)
-
-        print(
-            "[REAL_BC_ROUTE]",
-            "dataset_route_is_none=", self._dataset_route is None,
-            "dataset_route_shape=",
-            None if self._dataset_route is None else np.asarray(self._dataset_route).shape,
-        )
-        
-        # usa a trajetória alinhada também como rota visual do dataset real
-        self._dataset_route = poses.copy()
-        self._route_waypoints = poses[:, :2].copy()
-
-        print(
-            "[REAL_BC_ROUTE_ALIGNED]",
-            "aligned_shape=", self._dataset_route.shape,
-            "first_xy=", self._dataset_route[0, :2],
-        )
-
-        T = float(getattr(config, "TIME_STEP", 0.05))
-        odometry_noisy = self._pose_xytheta_to_vw(poses, T)
-
-        sigma_uwb = float(np.nanmedian(np.asarray(sigma_vals, dtype=float)))
-        if not np.isfinite(sigma_uwb):
-            sigma_uwb = float(np.sqrt(0.0025))
-
-        self._bc_ekf_data = {
-            "T": T,
-            "odometry_noisy": odometry_noisy,
-            "z_hist": z_hist,
-            "l": float(getattr(config, "WHEEL_BASE", 0.65)) / 2.0,
-            "z_c": float(getattr(config, "TAG_HEIGHT", 0.5)),
-            "sigma_uwb": sigma_uwb,
-            "x0": np.asarray(poses[0], dtype=float).reshape(3,),
-        }
-
-        # clássicos usam FRONT
-        self._batch_dists = z_hist.T[:, 0::2]
-        self._batch_devs = np.full_like(self._batch_dists, sigma_uwb, dtype=float)
-
-        print(
-            "[REAL_BC_EKF_PREP_OK]",
-            "z_hist=", z_hist.shape,
-            "odom=", odometry_noisy.shape,
-            "batch_dists=", self._batch_dists.shape,
-        )
 
     def _guess_real_traj_sidecar(self, uwb_path: str) -> str | None:
         base, _ = os.path.splitext(uwb_path)

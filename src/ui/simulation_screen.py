@@ -604,8 +604,8 @@ class SimulationScreen:
                                 meta = {
                                     "dt": float(self.sim.dt),
                                     "anchors": self.anchors_dyn[:2,:].T.tolist() if self.anchors_dyn is not None else [],
-                                    "z_c": float(getattr(config, "TAG_HEIGHT", 0.5)),
-                                    "baseline": float(getattr(config, "WHEEL_BASE", 0.65)),
+                                    "z_c": float(getattr(config, "TAG_HEIGHT", 0.20)),
+                                    "baseline": float(getattr(config, "TAG_BASELINE", 0.25)),
                                     "route_waypoints": self.waypoints.tolist() if self.waypoints is not None else [],
                                     "config": {
                                         "TIME_STEP": getattr(config, "TIME_STEP", None),

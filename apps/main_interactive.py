@@ -254,8 +254,8 @@ def main():
 
                         sim = Simulator(
                             anchors=shared_uwb.anchors_np3().copy(),
-                            baseline=getattr(config, "WHEEL_BASE", 0.65),
-                            z_c=getattr(config, "TAG_HEIGHT", 0.5),
+                            baseline=getattr(config, "TAG_BASELINE", 0.25),
+                            z_c=getattr(config, "TAG_HEIGHT", 0.20),
                             Q=np.diag([1e-4, 1e-4, 1e-4]),
                             R=np.eye(max(1, 2 * anchors_dyn.shape[1])) * 0.0025
                             if anchors_dyn.shape[1] > 0 else np.eye(2) * 1e6,

@@ -14,8 +14,25 @@ MAPS_DIR = "maps"
 DEFAULT_MAP_NAME = "default_map.json"
 
 # --- Robô (cinemática) ---
-WHEEL_RADIUS = 0.05          # m
-WHEEL_BASE = 0.20            # m  (distância entre rodas)
+WHEEL_RADIUS = 0.0325          # m
+WHEEL_BASE = 0.16            # m  (distância entre rodas)
+TAG_BASELINE = 0.25          # m  (distância entre tags = 2*l)
+TAG_HEIGHT = 0.20            # m  (altura das tags em relação ao chão)
+
+
+# --- Encoder real ---
+ENCODER_TICKS_PER_REV = 1320.0
+
+REAL_ENCODER_USE_DISTANCE_COLUMNS = True
+REAL_ENCODER_DISTANCE_UNIT_SCALE = 0.01  # ESP32 calcula em cm, converte para m
+
+REAL_ENCODER_SWAP_LR = False
+REAL_ENCODER_INVERT_LEFT = False
+REAL_ENCODER_INVERT_RIGHT = False
+
+REAL_ODOM_INITIAL_X = 0.739
+REAL_ODOM_INITIAL_Y = 0.445
+REAL_ODOM_INITIAL_THETA_DEG = 30.0
 
 # --- UWB (geometria das tags) ---
 UWB_BASELINE = 0.65          # m  (distância entre tags = 2*l)
@@ -51,3 +68,4 @@ CSV_PRECISION = 5
 LOGGING_ENABLED   = False
 LOG_DIR           = "resultados/logs"
 LOG_FLUSH_EVERY_N = 50
+

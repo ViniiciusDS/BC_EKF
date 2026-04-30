@@ -163,13 +163,35 @@ def run_bc_ekf_from_data(
     z_c,
     sigma_uwb,
     x0=None,
+    update_hz=5.0,
 ):
     """
-    Roda EKF recebendo diretamente odometria e medições UWB simuladas.
-    Útil para quando a simulação é feita fora do EKF.
+    Roda o BC-EKF recebendo diretamente odometria e medições UWB.
+
+    Compatível com datasets simulados e reais.
+    Para datasets reais com T maior que 0,2 s, a correção UWB passa a ocorrer
+    em toda amostra, evitando update_ratio = 0.
     """
-    num_steps = odometry_noisy.shape[1]
-    num_anchors = anchors.shape[1]
+    T = float(T)
+    if not np.isfinite(T) or T <= 0:
+        raise ValueError(f"T inválido no BC-EKF: {T}")
+
+    anchors = np.asarray(anchors, dtype=float)
+    odometry_noisy = np.asarray(odometry_noisy, dtype=float)
+    z_hist = np.asarray(z_hist, dtype=float)
+
+    num_steps = int(odometry_noisy.shape[1])
+    num_anchors = int(anchors.shape[1])
+
+    if z_hist.shape[1] != num_steps:
+        raise ValueError(
+            f"z_hist possui {z_hist.shape[1]} passos, mas odometria possui {num_steps}"
+        )
+
+    if z_hist.shape[0] != 2 * num_anchors:
+        raise ValueError(
+            f"z_hist possui {z_hist.shape[0]} linhas, esperado {2 * num_anchors}"
+        )
 
     # Inicialização
     if x0 is None:
@@ -179,26 +201,47 @@ def run_bc_ekf_from_data(
 
     P = np.diag([0.1, 0.1, 0.1])
     Q = np.diag([1e-4] * 3)
-    R = np.diag([sigma_uwb**2] * (2 * num_anchors))
+    R = np.diag([float(sigma_uwb) ** 2] * (2 * num_anchors))
 
-    x_hist_est = np.zeros((3, num_steps))
+    x_hist_est = np.zeros((3, num_steps), dtype=float)
     x_hist_est[:, 0] = x_est
-    update_ratio = int((1/T)/5)
+
+    # Correção UWB a update_hz, mas nunca deixa update_ratio virar zero.
+    # Se T for maior que o período desejado, corrige em toda amostra.
+    desired_update_period = 1.0 / float(update_hz)
+    update_ratio = max(1, int(round(desired_update_period / T)))
+
+    print(
+        "[BC_EKF_FROM_DATA]",
+        "T=", T,
+        "num_steps=", num_steps,
+        "num_anchors=", num_anchors,
+        "update_ratio=", update_ratio,
+        "x0=", x_est,
+    )
 
     # Loop EKF
     for k in range(1, num_steps):
         v_k = odometry_noisy[0, k]
         w_k = odometry_noisy[1, k]
+
         x_pred, A_k = _predict_state(x_est, v_k, w_k, T)
         P_pred = A_k @ P @ A_k.T + Q
 
         if k % update_ratio == 0:
             h_pred, H_k = _measurement_model(x_pred, anchors, l, z_c)
-            K_k = P_pred @ H_k.T @ np.linalg.inv(H_k @ P_pred @ H_k.T + R)
+
             z_k = z_hist[:, k]
-            x_est = x_pred + K_k @ (z_k - h_pred)
-            x_est[2] = np.arctan2(np.sin(x_est[2]), np.cos(x_est[2]))
-            P = (np.eye(3) - K_k @ H_k) @ P_pred
+            if np.all(np.isfinite(z_k)):
+                S = H_k @ P_pred @ H_k.T + R
+                K_k = P_pred @ H_k.T @ np.linalg.inv(S)
+
+                x_est = x_pred + K_k @ (z_k - h_pred)
+                x_est[2] = np.arctan2(np.sin(x_est[2]), np.cos(x_est[2]))
+                P = (np.eye(3) - K_k @ H_k) @ P_pred
+            else:
+                x_est = x_pred
+                P = P_pred
         else:
             x_est = x_pred
             P = P_pred
