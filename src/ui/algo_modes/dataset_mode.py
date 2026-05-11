@@ -55,6 +55,10 @@ from src.ui.algo_modes.dataset_real_pipeline import (
     RealPipelineResult,
     load_real_encoder_uwb_dataset,
 )
+from src.ui.algo_modes.dataset_render import (
+    draw_dataset_mode,
+    draw_dataset_analyzer,
+)
 
 WHITE = (255, 255, 255)
 BLACK = (0, 0, 0)
@@ -990,144 +994,25 @@ class DatasetMode:
     def update(self, dt: float) -> None:
         pass
 
-    def draw(self) -> None:
-        self.host.screen.fill(WHITE)
+    def draw(self):
+        # Primeiro desenha mundo, status, analyzer, legenda e limpa painel lateral
+        draw_dataset_mode(self)
 
-        draw_grid(self.host.screen, self.host.cam)
+        # Depois desenha os botões principais por cima
+        self.btn_back.draw(self.host.screen)
+        self.btn_mode.draw(self.host.screen)
+        self.btn_load_dataset.draw(self.host.screen)
+        self.btn_run_batch.draw(self.host.screen)
 
-        # mapa
-        if self._map_env is not None:
-            draw_environment(self.host.screen, self.host.cam, self._map_env)
+        if hasattr(self, "btn_export") and self.btn_export is not None:
+            self.btn_export.draw(self.host.screen)
 
-        self._draw_reference_route()
-
-        route_to_draw = None
-        route_color = (80, 80, 80)
-        route_width = 2
-        route_dashed = True
-
-        if self.dataset_source_type == "real_encoder_uwb" and self._dataset_route is not None:
-            route_to_draw = self._dataset_route
-            route_color = (0, 0, 0)
-            route_dashed = False
-        elif self._dataset_route is not None:
-            route_to_draw = self._dataset_route
-        elif self._route_waypoints is not None:
-            route_to_draw = self._route_waypoints
-
-        if route_to_draw is not None and len(route_to_draw) > 1:
-            route_pts = [tuple(p[:2]) for p in route_to_draw]
-            draw_path(
-                self.host.screen,
-                self.host.cam,
-                route_pts,
-                route_color,
-                route_width,
-                dashed=route_dashed,
-            )
-
-        # âncoras
-        if self._dataset_anchors is not None and self._dataset_anchors.size > 0:
-            anchors_3xN = self._dataset_anchors.T
-            draw_anchors(self.host.screen, self.host.cam, anchors_3xN)
-
-        draw_axes(self.host.screen, self.host.cam, self.host.font)
-
-        # resultados: rota estimada + pontos
-        if self._batch_results is not None:
-            for algo in ALGO_ORDER:
-                if not self.selected.get(algo, False):
-                    continue
-                if algo not in self._batch_results:
-                    continue
-
-                res = self._batch_results[algo]
-                pos = res.get("posicoes", None)
-                if pos is None:
-                    continue
-
-                pos = np.asarray(pos, dtype=float)
-                if pos.ndim != 2 or pos.shape[1] < 2:
-                    continue
-
-                valid = np.isfinite(pos[:, 0]) & np.isfinite(pos[:, 1])
-                pos = pos[valid]
-                if len(pos) == 0:
-                    continue
-
-                color = ALGO_COLORS.get(algo, BLACK)
-
-                # trajetória estimada
-                pts = [tuple(p[:2]) for p in pos]
-                if len(pts) > 1:
-                    draw_path(self.host.screen, self.host.cam, pts, color, 2)
-
-                # pontos estimados
-                for px, py in pts:
-                    sx, sy = self.host.cam.world_to_screen(px, py)
-                    pg.draw.circle(self.host.screen, color, (sx, sy), 3)
-                    pg.draw.circle(self.host.screen, BLACK, (sx, sy), 3, 1)
-
-        pg.draw.rect(
-            self.host.screen,
-            GRAY_D,
-            pg.Rect(0, 0, self.host.cam.viewport[0], self.host.screen.get_height()),
-            1,
-        )
-
-        self.host.mode = MODE_DATASET
-        self.host._dataset_path = self._dataset_path
-        self.host._dataset_label = self._dataset_label
-        self.host._batch_dists = self._batch_dists
-        self.host._batch_devs = self._batch_devs
-        self.host._batch_results = self._batch_results
-        self.host._dataset_anchors = self._dataset_anchors
-        self.host.selected = self.selected
-
-        if hasattr(self.host, "_draw_hud"):
-            self.host._draw_hud()
-
-        # botão de toggle do analyzer (painel lateral)
-        sidebar_x = self.host.cam.viewport[0] + 16
-        screen_h = self.host.screen.get_height()
-
-        legend_y = screen_h - 44
-        toggle_y = legend_y - 40
-        metric_y = toggle_y - 40
-
-        self.btn_metric_mode.rect.topleft = (sidebar_x, metric_y)
-        self.btn_metric_mode.rect.size = (190, 32)
-        self.btn_metric_mode.text = f"Métrica: {self._metric_mode_label()}"
-        self.btn_metric_mode.draw(self.host.screen)
-
-
-        self.btn_toggle_analyzer.rect.topleft = (sidebar_x, toggle_y)
-        self.btn_toggle_analyzer.rect.size = (190, 32)
-        self.btn_toggle_analyzer.text = "Ocultar Analyzer" if self.show_analyzer else "Mostrar Analyzer"
-        self.btn_toggle_analyzer.draw(self.host.screen)
-
-        self.btn_toggle_legend.rect.topleft = (sidebar_x, legend_y)
-        self.btn_toggle_legend.rect.size = (190, 32)
-        self.btn_toggle_legend.text = "Ocultar Legenda" if self.show_legend_overlay else "Mostrar Legenda"
-        self.btn_toggle_legend.draw(self.host.screen)
-
-
-
-        if self._batch_results is not None and self.show_analyzer:
-            self._draw_analyzer()
+        for algo in ALGO_ORDER:
+            if algo in self._btn_algos:
+                self._btn_algos[algo].draw(self.host.screen)
 
         if self.dataset_modal_open:
             self._draw_dataset_modal()
-
-        if self.show_legend_overlay:
-            self._legend_close_rect = draw_legend_overlay(
-                self.host.screen,
-                self.host.font,
-                self.host.bigfont,
-                selected=self.selected,
-            )
-        else:
-            self._legend_close_rect = None
 
     def _draw_dataset_modal(self):
         screen = self.host.screen
@@ -2323,18 +2208,6 @@ class DatasetMode:
             f"Dataset real configurado: {self._batch_dists.shape[0]} amostras, "
             f"{self._batch_dists.shape[1]} âncoras"
         )
-
-        print(
-            "[REAL_DATASET_READY]",
-            "batch_shape=",
-            None if self._batch_dists is None else self._batch_dists.shape,
-            "devs_shape=",
-            None if self._batch_devs is None else self._batch_devs.shape,
-            "anchors_shape=",
-            None if self._dataset_anchors is None else self._dataset_anchors.shape,
-            "source=",
-            self.dataset_source_type,
-        )
         
         return True
         
@@ -2495,29 +2368,7 @@ class DatasetMode:
         return []
 
     def _draw_analyzer(self):
-        if self._dataset_stats is None:
-            return
-
-        # Segurança: se por algum caminho antigo vier lista, converte para dict.
-        if isinstance(self._dataset_stats, list):
-            converted = {}
-            for row in self._dataset_stats:
-                if isinstance(row, dict) and "algo" in row:
-                    converted[row["algo"]] = row
-            self._dataset_stats = converted
-
-        draw_analyzer_panel(
-            screen=self.host.screen,
-            font=self.host.font,
-            bigfont=self.host.bigfont,
-            title=f"Dataset Analyzer - {self._metric_mode_label()}",
-            stats=self._dataset_stats,
-            selected=self.selected,
-            x=10,
-            y=40,
-            w=500,
-            h=380,
-        )
+        draw_dataset_analyzer(self)
 
     def _apply_real_dataset_to_batch_state(self):
         """
