@@ -39,42 +39,51 @@ def load_anchors_from_json(
     format_converter: Optional[Callable[[np.ndarray], np.ndarray]] = None,
 ) -> tuple[np.ndarray, str]:
     """
-    Carrega âncoras de um arquivo JSON com key 'anchors_xy'.
-    
-    Args:
-        filepath: Caminho completo do arquivo JSON
-        format_converter: Função opcional para converter o array (ex: transpose para 3xN)
-    
-    Returns:
-        Tupla (anchors_array, filename_label)
-    
-    Levanta:
-        FileNotFoundError: Se arquivo não existe
-        ValueError: Se formato de âncoras for inválido
-        json.JSONDecodeError: Se JSON for inválido
+    Carrega âncoras de um arquivo JSON.
+
+    Formatos aceitos:
+    - anchors_xy: [[x, y], ...]
+    - anchors_xy: [[x, y, z], ...]
+
+    Se vier apenas x,y, usa anchor_height_m do JSON.
+    Se anchor_height_m não existir, usa z=1.0 como fallback.
     """
     with open(filepath, "r", encoding="utf-8") as f:
         data = json.load(f)
-    
-    anchors_xy = np.array(data.get("anchors_xy", []), dtype=float)
-    
+
+    # Mantém compatibilidade com arquivos antigos e também aceita "anchors"
+    raw_anchors = data.get("anchors_xy", data.get("anchors", []))
+    anchors_xy = np.array(raw_anchors, dtype=float)
+
     if anchors_xy.size == 0:
         raise ValueError("Arquivo de âncoras vazio")
-    
-    # Converter 2D para 3D se necessário (adicionar altura padrão = 1.0)
+
+    # altura padrão das âncoras, caso o arquivo venha apenas com x,y
+    anchor_height_m = float(
+        data.get(
+            "anchor_height_m",
+            data.get("anchor_z_m", data.get("z_anchor", 1.0))
+        )
+    )
+
+    # Converter 2D para 3D se necessário
     if anchors_xy.ndim == 2 and anchors_xy.shape[1] == 2:
         anchors_nx3 = np.zeros((anchors_xy.shape[0], 3), dtype=float)
         anchors_nx3[:, 0] = anchors_xy[:, 0]
         anchors_nx3[:, 1] = anchors_xy[:, 1]
-        anchors_nx3[:, 2] = 1.0
+        anchors_nx3[:, 2] = anchor_height_m
         anchors_xy = anchors_nx3
-    elif not (anchors_xy.ndim == 2 and anchors_xy.shape[1] == 3):
+
+    elif anchors_xy.ndim == 2 and anchors_xy.shape[1] == 3:
+        # já está em x,y,z
+        pass
+
+    else:
         raise ValueError("Formato inválido de âncoras (esperado Nx2 ou Nx3)")
-    
-    # Aplicar formato converter se fornecido (ex: transpose para 3xN)
+
     if format_converter is not None:
         anchors_xy = format_converter(anchors_xy)
-    
+
     filename = os.path.basename(filepath)
     return anchors_xy, filename
 

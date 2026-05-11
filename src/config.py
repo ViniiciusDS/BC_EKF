@@ -14,28 +14,28 @@ MAPS_DIR = "maps"
 DEFAULT_MAP_NAME = "default_map.json"
 
 # --- Robô (cinemática) ---
-WHEEL_RADIUS = 0.0325          # m
-WHEEL_BASE = 0.16            # m  (distância entre rodas)
+WHEEL_RADIUS = 0.035          # m
+WHEEL_BASE = 0.15            # m  (distância entre rodas)
 TAG_BASELINE = 0.25          # m  (distância entre tags = 2*l)
 TAG_HEIGHT = 0.20            # m  (altura das tags em relação ao chão)
 
 
 # --- Encoder real ---
-ENCODER_TICKS_PER_REV = 1320.0
+ENCODER_TICKS_PER_REV = 1075.0
 
 REAL_ENCODER_USE_DISTANCE_COLUMNS = True
 REAL_ENCODER_DISTANCE_UNIT_SCALE = 0.01  # ESP32 calcula em cm, converte para m
 
-REAL_ENCODER_SWAP_LR = False
+REAL_ENCODER_SWAP_LR = True
 REAL_ENCODER_INVERT_LEFT = False
 REAL_ENCODER_INVERT_RIGHT = False
 
-REAL_ODOM_INITIAL_X = 0.739
-REAL_ODOM_INITIAL_Y = 0.445
-REAL_ODOM_INITIAL_THETA_DEG = 30.0
+REAL_ODOM_INITIAL_X = 1.652
+REAL_ODOM_INITIAL_Y = 1.977
+REAL_ODOM_INITIAL_THETA_DEG = 00.0
 
 # --- UWB (geometria das tags) ---
-UWB_BASELINE = 0.65          # m  (distância entre tags = 2*l)
+UWB_BASELINE = 0.25          # m  (distância entre tags = 2*l)
 
 # Limites de velocidade/aceleração do robô
 MAX_LINEAR_VELOCITY  = 0.8   # m/s

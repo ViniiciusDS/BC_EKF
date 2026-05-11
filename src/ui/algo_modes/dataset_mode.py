@@ -23,7 +23,14 @@ from src.ui.algo_modes.shared import (
     load_route_from_json,
     load_map_from_json,
 )
-from src.analysis.algo_metrics import compute_dataset_cluster_stats, build_ranking_summary
+from src.analysis.algo_metrics import (
+    compute_dataset_cluster_stats,
+    build_ranking_summary,
+    compute_track_vs_polyline_stats,
+    compute_track_vs_synced_reference_stats,
+    compute_track_vs_sampled_reference_stats,
+    resample_polyline,
+)
 from src.odometry import (
     EncoderConfig,
     DifferentialDriveConfig,
@@ -32,9 +39,22 @@ from src.odometry import (
     extract_odometry_path,
     load_and_validate_encoder_file,
 )
-from src.ui.ui_elements import TextBoxDropdown
 from src.ui.legend_overlay import draw_legend_overlay
-
+from src.ui.algo_modes.dataset_bc_prep import (
+    BcPrepResult,
+    expand_bc_uwb_rows_if_needed,
+    guess_sampled_traj_sidecar,
+    is_bc_uwb_rows,
+    load_sampled_traj_csv,
+    pose_xytheta_to_vw,
+    prepare_real_bc_ekf_data,
+    prepare_simulated_bc_ekf_data,
+    route_xy_to_pose_xytheta,
+)
+from src.ui.algo_modes.dataset_real_pipeline import (
+    RealPipelineResult,
+    load_real_encoder_uwb_dataset,
+)
 
 WHITE = (255, 255, 255)
 BLACK = (0, 0, 0)
@@ -135,25 +155,6 @@ class DatasetMode:
             ),
         )
 
-        self._dataset_source = "default"   # "default" | "real_encoder_uwb"
-
-        self._btn_load_real_rect = pg.Rect(0, 0, 190, 32)
-        self._btn_run_real_rect = pg.Rect(0, 0, 190, 32)
-
-        self._real_encoder_input = TextBoxDropdown(
-            rect=(0, 0, 320, 28),
-            font=self.host.font if hasattr(self, "host") and self.host else None,
-            options=[],
-            placeholder="Arquivo encoder (.csv/.txt)",
-        )
-
-        self._real_uwb_input = TextBoxDropdown(
-            rect=(0, 0, 320, 28),
-            font=self.host.font if hasattr(self, "host") and self.host else None,
-            options=[],
-            placeholder="Arquivo UWB (.csv/.txt)",
-        )   
-
         self.dataset_source_type = "simulated"   # "simulated" | "real_encoder_uwb"
 
         self.simulated_dataset_kind = "Front"   # "Front" | "Rear" | "MID" | "BC"
@@ -193,18 +194,34 @@ class DatasetMode:
             (0, 0, 190, 32),
             "Mostrar Legenda",
             self.host.font if self.host else None,
+        )   
+
+        self.metric_mode = "reference_route"
+
+        self.available_metric_modes = [
+            "reference_route",      # compara com rota de referência (RMSE)
+            "reference_synced",     # compara com rota de referência, mas sincroniza por tempo (RMSE)
+            "encoder_route",        # compara com rota extraída do encoder (RMSE)
+            "cluster",              # compara com clusters de posição (distância média ao cluster mais próximo)
+        ]
+
+        self.btn_metric_mode = Button(
+            (0, 0, 190, 32),
+            "Métrica: Rota ref.",
+            self.host.font if self.host else None,
         )
 
         self.selected = default_selected()
 
+        self._reference_route_display = None   # waypoints originais do JSON
+        self._reference_route_dense = None     # rota reamostrada para métricas
+
+        self._real_encoder_samples = None
+        self._real_uwb_rows = None
+
+
     def on_enter(self, host: Any) -> None:
         base = Path(__file__).resolve().parents[3]
-
-        if self._real_encoder_input is not None and not self._real_encoder_input.text.strip():
-            self._real_encoder_input.set_text(str(base / "resultados" / "datasets" / "encoder_square.csv"))
-
-        if self._real_uwb_input is not None and not self._real_uwb_input.text.strip():
-            self._real_uwb_input.set_text(str(base / "resultados" / "datasets" / "uwb_square.csv"))
 
         self.host = host
         self.host.mode = MODE_DATASET
@@ -427,7 +444,7 @@ class DatasetMode:
 
         source_value = self.dataset_inputs["source"]["value"].strip()
         if source_value == "Real (encoder + UWB)":
-            order = ["source", "real_encoder", "real_uwb", "anchors", "map"]
+            order = ["source", "real_encoder", "real_uwb", "anchors", "route", "map"]
         else:
             order = ["source", "sim_kind", "dataset", "anchors", "route", "map"]
 
@@ -484,22 +501,18 @@ class DatasetMode:
                 if not self._try_load_route(route_path):
                     return
 
+                # No modo simulado, a rota selecionada também pode ser usada
+                # como referência/fallback para preparar o BC-EKF quando não
+                # existir sidecar *_traj.csv.
+                if self._route_waypoints is not None:
+                    self._dataset_route = np.asarray(self._route_waypoints, dtype=float).copy()
+
+
             # 4) mapa
             if map_file:
                 map_path = os.path.join(self.maps_dir, map_file)
                 if not self._try_load_map(map_path):
                     return
-
-            print(
-                "[DATASET_CONFIG_SIM]",
-                "sim_kind=", self.simulated_dataset_kind,
-                "dataset_shape=",
-                None if self._batch_dists is None else self._batch_dists.shape,
-                "anchors_shape=",
-                None if self._dataset_anchors is None else self._dataset_anchors.shape,
-                "route_shape=",
-                None if self._dataset_route is None else np.asarray(self._dataset_route).shape,
-            )
             
             # 5) prepara BC-EKF somente no final, com tudo carregado
             self._bc_ekf_data = None
@@ -519,6 +532,11 @@ class DatasetMode:
                 if not self._load_anchors(anchors_path):
                     return
 
+            if route_file:
+                route_path = os.path.join(self.routes_dir, route_file)
+                if not self._try_load_route(route_path):
+                    return
+
             if map_file:
                 map_path = os.path.join(self.maps_dir, map_file)
                 if not self._try_load_map(map_path):
@@ -526,11 +544,68 @@ class DatasetMode:
 
             encoder_path = os.path.join(self.real_data_dir, real_encoder_file)
             uwb_path = os.path.join(self.real_data_dir, real_uwb_file)
-            self._load_real_encoder_uwb_dataset(encoder_path, uwb_path)
+
+            if not self._load_real_encoder_uwb_dataset(encoder_path, uwb_path):
+                return
 
 
         self._close_modal()
-        self.host._set_msg("Dataset configurado")
+
+        if self.dataset_source_type == "real_encoder_uwb":
+            if self._batch_dists is not None:
+                self.host._set_msg(
+                    f"Dataset real configurado: {self._batch_dists.shape[0]} amostras"
+                )
+        else:
+            self.host._set_msg("Dataset configurado")
+
+    def _metric_mode_label(self, mode=None):
+        mode = mode or self.metric_mode
+
+        labels = {
+            "reference_route": "Rota próxima",
+            "reference_synced": "Rota sinc.",
+            "encoder_route": "Encoder",
+            "cluster": "Cluster",
+        }
+
+        return labels.get(mode, str(mode))
+
+
+    def _cycle_metric_mode(self):
+        if not hasattr(self, "available_metric_modes"):
+            self.available_metric_modes = [
+                "reference_route",
+                "reference_synced",
+                "encoder_route",
+                "cluster",
+            ]
+
+        try:
+            idx = self.available_metric_modes.index(self.metric_mode)
+        except ValueError:
+            idx = 0
+
+        self.metric_mode = self.available_metric_modes[
+            (idx + 1) % len(self.available_metric_modes)
+        ]
+
+        # Recalcula o analyzer se já houver resultado
+        if self._batch_results is not None:
+            self._dataset_stats = self._compute_dataset_stats(self._batch_results)
+
+            ranking = self._dataset_ranking()
+
+            for algo in self._batch_results:
+                if isinstance(self._batch_results[algo], dict):
+                    self._batch_results[algo]["ranking_row"] = next(
+                        (row for row in ranking if row.get("algo") == algo),
+                        None
+                    )
+
+        self.host._set_msg(f"Métrica: {self._metric_mode_label()}")
+
+
 
     def _load_anchors(self, anchors_path: str) -> bool:
         """Carrega âncoras e valida compatibilidade com dataset carregado (se houver).
@@ -590,18 +665,28 @@ class DatasetMode:
             self.host._set_msg("Erro ao carregar âncoras")
             return False
 
-    def _try_load_route(self, route_path: str) -> bool:
+    def _try_load_route(self, path):
         try:
-            self._dataset_route, self._route_label = load_route_from_json(route_path)
-            self._route_waypoints = self._dataset_route
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            waypoints = data.get("waypoints", None)
+            if waypoints is None:
+                raise ValueError("Arquivo de rota inválido: campo 'waypoints' não encontrado.")
+
+            pts = np.asarray(waypoints, dtype=float)
+            if pts.ndim != 2 or pts.shape[1] < 2 or len(pts) < 2:
+                raise ValueError("Arquivo de rota inválido: waypoints insuficientes.")
+
+            self._route_waypoints = pts[:, :2].copy()
+            self._reference_route_display = pts[:, :2].copy()
+            self._reference_route_dense = pts[:, :2].copy()
+            self._route_label = os.path.basename(path)
+
             return True
-        except ValueError as e:
-            print(f"[DATASET] erro ao carregar rota: {e}")
-            self.host._set_msg(f"Erro ao carregar rota: {str(e)}")
-            return False
+
         except Exception as e:
-            print(f"[DATASET] erro ao carregar rota: {e}")
-            self.host._set_msg("Erro ao carregar rota")
+            print("[ROUTE_LOAD_FAIL]", e)
             return False
 
     def _try_load_map(self, map_path: str) -> bool:
@@ -627,7 +712,7 @@ class DatasetMode:
         names = ["source", "anchors", "map"]
 
         if source_value == "Real (encoder + UWB)":
-            names.extend(["real_encoder", "real_uwb"])
+            names.extend(["real_encoder", "real_uwb", "route"])
         else:
             names.extend(["sim_kind", "dataset", "route"])
         
@@ -805,12 +890,6 @@ class DatasetMode:
                         continue
                     return _actions_menu()
                 
-                elif event.key == pg.K_F9:
-                    try:
-                        self._load_demo_real_dataset()
-                    except Exception as e:
-                        self.host._set_msg(f"Erro ao carregar dataset real: {e}")
-
                 elif event.key == pg.K_F10:
                     try:
                         if self._batch_dists is None:
@@ -860,6 +939,10 @@ class DatasetMode:
                             self.host._batch_results = self._batch_results
                             self.host._export_csv()
                         continue
+                    
+                    elif self.btn_metric_mode.hit(pos):
+                        self._cycle_metric_mode()
+                        continue
 
                     elif self.btn_toggle_analyzer.hit(pos):
                         self.show_analyzer = not self.show_analyzer
@@ -905,11 +988,7 @@ class DatasetMode:
     # =========================================================
 
     def update(self, dt: float) -> None:
-        if self._real_encoder_input is not None:
-            self._real_encoder_input.update(dt)
-
-        if self._real_uwb_input is not None:
-            self._real_uwb_input.update(dt)
+        pass
 
     def draw(self) -> None:
         self.host.screen.fill(WHITE)
@@ -920,12 +999,14 @@ class DatasetMode:
         if self._map_env is not None:
             draw_environment(self.host.screen, self.host.cam, self._map_env)
 
+        self._draw_reference_route()
+
         route_to_draw = None
         route_color = (80, 80, 80)
         route_width = 2
         route_dashed = True
 
-        if self._dataset_source == "real_encoder_uwb" and self._dataset_route is not None:
+        if self.dataset_source_type == "real_encoder_uwb" and self._dataset_route is not None:
             route_to_draw = self._dataset_route
             route_color = (0, 0, 0)
             route_dashed = False
@@ -1009,8 +1090,17 @@ class DatasetMode:
         # botão de toggle do analyzer (painel lateral)
         sidebar_x = self.host.cam.viewport[0] + 16
         screen_h = self.host.screen.get_height()
+
         legend_y = screen_h - 44
         toggle_y = legend_y - 40
+        metric_y = toggle_y - 40
+
+        self.btn_metric_mode.rect.topleft = (sidebar_x, metric_y)
+        self.btn_metric_mode.rect.size = (190, 32)
+        self.btn_metric_mode.text = f"Métrica: {self._metric_mode_label()}"
+        self.btn_metric_mode.draw(self.host.screen)
+
+
         self.btn_toggle_analyzer.rect.topleft = (sidebar_x, toggle_y)
         self.btn_toggle_analyzer.rect.size = (190, 32)
         self.btn_toggle_analyzer.text = "Ocultar Analyzer" if self.show_analyzer else "Mostrar Analyzer"
@@ -1020,6 +1110,8 @@ class DatasetMode:
         self.btn_toggle_legend.rect.size = (190, 32)
         self.btn_toggle_legend.text = "Ocultar Legenda" if self.show_legend_overlay else "Mostrar Legenda"
         self.btn_toggle_legend.draw(self.host.screen)
+
+
 
         if self._batch_results is not None and self.show_analyzer:
             self._draw_analyzer()
@@ -1071,6 +1163,7 @@ class DatasetMode:
                 ("Encoder real:", "real_encoder"),
                 ("UWB real:", "real_uwb"),
                 ("Âncoras:", "anchors"),
+                ("Rota ref.:", "route"),
                 ("Mapa:", "map"),
             ])
         else:
@@ -1105,6 +1198,8 @@ class DatasetMode:
                 self._draw_dropdown_list("real_uwb", self.dataset_inputs["real_uwb"]["dropdown_rect"], self.available_real_uwb_files)
             if self.dataset_dropdown_anchors_open:
                 self._draw_dropdown_list("anchors", self.dataset_inputs["anchors"]["dropdown_rect"], self.available_anchors)
+            if self.dataset_dropdown_route_open:
+                self._draw_dropdown_list("route", self.dataset_inputs["route"]["dropdown_rect"], self.available_routes)
             if self.dataset_dropdown_map_open:
                 self._draw_dropdown_list("map", self.dataset_inputs["map"]["dropdown_rect"], self.available_maps)
         else:
@@ -1324,14 +1419,6 @@ class DatasetMode:
                     algos_to_run = [a for a in algos_to_run if a != "bc_ekf"]
                     self.host._set_msg("BC-EKF real ignorado: dados BC não foram preparados")
 
-            print(
-                "[RUN_BATCH]",
-                "dataset_source_type=", self.dataset_source_type,
-                "simulated_dataset_kind=", self.simulated_dataset_kind,
-                "bc_ekf_data_is_none=", self._bc_ekf_data is None,
-                "batch_shape=", None if self._batch_dists is None else self._batch_dists.shape,
-            )
-
             p_true = self._get_batch_ground_truth_xy()
 
             self._batch_results = run_batch(
@@ -1364,6 +1451,7 @@ class DatasetMode:
             self._dataset_stats = None
             self.host._set_msg("Erro no batch")
 
+
     def _get_batch_ground_truth_xy(self):
         """
         Resolve a trajetória de referência para métricas do batch.
@@ -1385,10 +1473,10 @@ class DatasetMode:
             return arr[:, :2]
 
         if self._dataset_path:
-            traj_sidecar = self._guess_sampled_traj_sidecar(self._dataset_path)
+            traj_sidecar = guess_sampled_traj_sidecar(self._dataset_path)
             if traj_sidecar is not None:
                 try:
-                    sampled_route = np.asarray(self._load_sampled_traj_csv(traj_sidecar), dtype=float)
+                    sampled_route = np.asarray(load_sampled_traj_csv(traj_sidecar), dtype=float)
                     p_true = _to_m2(sampled_route)
                     if p_true is not None:
                         return p_true
@@ -1495,7 +1583,6 @@ class DatasetMode:
         if self._dataset_anchors is not None and len(detected_ids) == len(self._dataset_anchors):
             detected_sorted = sorted(detected_ids)
             mapping = {aid: idx for idx, aid in enumerate(detected_sorted)}
-            print("[REAL_UWB_AUTO_ID_MAP]", mapping)
             return mapping
 
         raise ValueError(
@@ -1606,15 +1693,6 @@ class DatasetMode:
 
         ts_norm = (raw_ts - t0_raw) * ts_scale
 
-        print(
-            "[REAL_UWB_TIME]",
-            "t0_raw=", t0_raw,
-            "span_raw=", span_raw,
-            "scale=", ts_scale,
-            "first_s=", float(ts_norm[np.isfinite(ts_norm)][0]),
-            "last_s=", float(ts_norm[np.isfinite(ts_norm)][-1]),
-        )
-
         # Constrói formato BC interno já remapeado
         normalized = []
         for i, row in enumerate(rows):
@@ -1652,14 +1730,6 @@ class DatasetMode:
 
         if not normalized:
             raise ValueError("Não foi possível normalizar o log UWB real para o formato interno")
-
-        print(
-            "[REAL_UWB_NORMALIZE]",
-            "rows_in=", len(rows),
-            "rows_out=", len(normalized),
-            "detected_ids=", detected_ids,
-            "mapped_ids=", [id_map[k] for k in detected_ids],
-        )
 
         return normalized
     
@@ -1716,7 +1786,10 @@ class DatasetMode:
             # 1) Caso com cabeçalho explícito
             # -------------------------------------------------
             header_lower = header.lower()
-            if any(k in header_lower for k in ["contador", "millis", "timestamp", "tempo"]):
+            if any(k in header_lower for k in [
+                "contador", "millis", "timestamp", "tempo",
+                "contdir", "contesq", "tmp", "disdir", "diseq"
+            ]):
                 if ";" in header:
                     reader = csv.DictReader(lines, delimiter=";")
                     return list(reader)
@@ -1798,19 +1871,23 @@ class DatasetMode:
             return None
 
         col_right_count = pick(
-            "contador_direita", "count_right", "right_count", "pulsos_direita"
+            "contador_direita", "contdir", "count_right", "right_count", "pulsos_direita"
         )
+
         col_left_count = pick(
-            "contador_esquerda", "count_left", "left_count", "pulsos_esquerda"
+            "contador_esquerda", "contesq", "count_left", "left_count", "pulsos_esquerda"
         )
+
         col_right_dist = pick(
-            "distancia_direita", "dist_right", "right_dist", "distance_right"
+            "distancia_direita", "disdir", "dist_right", "right_dist", "distance_right"
         )
+
         col_left_dist = pick(
-            "distancia_esquerda", "dist_left", "left_dist", "distance_left"
+            "distancia_esquerda", "diseq", "disesq", "dist_left", "left_dist", "distance_left"
         )
+
         col_time_ms = pick(
-            "millis", "timestamp", "tempo", "time_ms"
+            "millis", "tmp", "timestamp", "tempo", "time_ms"
         )
 
         if col_time_ms and col_right_count and col_left_count:
@@ -1869,14 +1946,6 @@ class DatasetMode:
             out[:, 2] = out[:, 2] + th0
             out[:, 2] = np.arctan2(np.sin(out[:, 2]), np.cos(out[:, 2]))
 
-        print(
-            "[REAL_ODOM_INITIAL_POSE]",
-            "x0=", x0,
-            "y0=", y0,
-            "theta_deg=", float(getattr(config, "REAL_ODOM_INITIAL_THETA_DEG", 0.0)),
-            "first_xy=", out[0, :2],
-        )
-
         return out
 
     def _refresh_real_config_from_config(self):
@@ -1908,22 +1977,11 @@ class DatasetMode:
             ),
         )
 
-        print(
-            "[REAL_CONFIG]",
-            "wheel_radius=", self._real_drive_cfg.wheel_radius_m,
-            "wheel_base=", self._real_drive_cfg.wheel_base_m,
-            "ticks_per_rev=", self._real_drive_cfg.encoder.ticks_per_wheel_rev,
-            "use_dist=", self._real_encoder_use_distance_columns,
-            "dist_scale=", self._real_encoder_distance_unit_scale,
-            "swap_lr=", self._real_encoder_swap_lr,
-            "inv_l=", self._real_encoder_invert_left,
-            "inv_r=", self._real_encoder_invert_right,
-        )
 
     def _reset_real_dataset_state(self):
         """
         Limpa estados derivados de um carregamento real anterior.
-        Evita reaproveitar rota, resultados ou BC-EKF de outro ensaio.
+        Não limpa rota de referência, mapa ou âncoras.
         """
         self._real_dataset = None
         self._real_aligned_rows = None
@@ -1933,14 +1991,23 @@ class DatasetMode:
         self._real_timestamps = []
         self._real_anchor_ids = []
 
+        self._real_encoder_samples = None
+        self._real_uwb_rows = None
+
         self._batch_dists = None
         self._batch_devs = None
         self._batch_results = None
         self._dataset_stats = None
         self._bc_ekf_data = None
 
-        # rota real deve ser reconstruída do zero a cada carregamento
+        # Esta é a odometria reconstruída do dataset real.
         self._dataset_route = None
+
+        # Não limpar:
+        # self._route_waypoints
+        # self._route_label
+        # self._reference_route_display
+        # self._reference_route_dense
 
     def _normalize_real_encoder_rows(self, rows):
         """
@@ -2049,21 +2116,6 @@ class DatasetMode:
         if not out:
             raise ValueError("Não foi possível normalizar o log do encoder real")
 
-        print(
-            "[REAL_ENCODER_NORMALIZE]",
-            "mode=", "distance_columns" if use_dist else "count_columns",
-            "rows_in=", len(rows),
-            "rows_out=", len(out),
-            "first_ts_s=", out[0]["timestamp"],
-            "last_ts_s=", out[-1]["timestamp"],
-            "wheel_radius=", wheel_radius,
-            "wheel_base=", float(self._real_drive_cfg.wheel_base_m),
-            "ticks_per_rev=", ticks_per_rev,
-            "meters_per_tick=", meters_per_tick,
-            "swap_lr=", self._real_encoder_swap_lr,
-            "invert_left=", self._real_encoder_invert_left,
-            "invert_right=", self._real_encoder_invert_right,
-        )
 
         return out
 
@@ -2080,6 +2132,67 @@ class DatasetMode:
             writer.writerows(normalized_rows)
         return temp_path
 
+    def _draw_dashed_line_world(
+        self,
+        p0,
+        p1,
+        color=(140, 140, 140),
+        width=2,
+        dash_px=12,
+        gap_px=8,
+    ):
+        p0_screen = np.array(
+            self.host.cam.world_to_screen(float(p0[0]), float(p0[1])),
+            dtype=float,
+        )
+        p1_screen = np.array(
+            self.host.cam.world_to_screen(float(p1[0]), float(p1[1])),
+            dtype=float,
+        )
+
+        vec = p1_screen - p0_screen
+        length = float(np.linalg.norm(vec))
+
+        if length < 1e-9:
+            return
+
+        direction = vec / length
+        step = dash_px + gap_px
+        t = 0.0
+
+        while t < length:
+            a = p0_screen + direction * t
+            b = p0_screen + direction * min(t + dash_px, length)
+
+            pg.draw.line(
+                self.host.screen,
+                color,
+                (int(a[0]), int(a[1])),
+                (int(b[0]), int(b[1])),
+                width,
+            )
+
+            t += step
+
+
+    def _draw_reference_route(self):
+        if self._reference_route_display is None:
+            return
+
+        pts = np.asarray(self._reference_route_display, dtype=float)
+
+        if pts.ndim != 2 or pts.shape[0] < 2 or pts.shape[1] < 2:
+            return
+
+        for p0, p1 in zip(pts[:-1], pts[1:]):
+            self._draw_dashed_line_world(
+                p0,
+                p1,
+                color=(130, 130, 130),
+                width=2,
+                dash_px=12,
+                gap_px=8,
+            )
 
     def _load_and_normalize_real_encoder_file(self, encoder_file: str):
         """
@@ -2133,98 +2246,97 @@ class DatasetMode:
 
         raise ValueError(f"Formato UWB não suportado: {suffix}")
     
-    def _load_real_encoder_uwb_dataset(
-        self,
-        encoder_file: str,
-        uwb_file: str,
-    ):
+    def _load_real_encoder_uwb_dataset(self, encoder_path, uwb_path):
         """
-        Carrega encoder + UWB reais, constrói dataset alinhado
-        e prepara estruturas compatíveis com o Dataset Mode.
+        Carrega dataset real encoder + UWB usando pipeline externa.
+        Depois prepara BC-EKF quando possível.
+        Retorna True se o dataset foi realmente aplicado ao estado batch.
         """
         self._reset_real_dataset_state()
-        self._refresh_real_config_from_config()
 
-        encoder_samples = self._load_and_normalize_real_encoder_file(encoder_file)
-
-        uwb_rows_raw = self._load_simple_uwb_file(uwb_file)
-        uwb_rows = self._normalize_real_uwb_rows(uwb_rows_raw)
-
-        is_bc = self._is_bc_uwb_rows(uwb_rows)
-
-        if is_bc:
-            expanded_rows = self._expand_bc_uwb_rows_if_needed(uwb_rows)
-
-            dataset = build_dataset_from_encoder_and_uwb(
-                encoder_samples,
-                expanded_rows,
-                self._real_drive_cfg,
-                clamp=True,
-            )
-
-            matrices = build_range_sigma_matrices(dataset["aligned_rows"])
-
-            self._real_encoder_file = str(encoder_file)
-            self._real_uwb_file = str(uwb_file)
-            self._real_dataset = dataset
-            self._real_aligned_rows = dataset["aligned_rows"]
-            self._real_range_matrix = matrices["ranges"]
-            self._real_sigma_matrix = matrices["sigmas"]
-            self._real_timestamps = matrices["timestamps_s"]
-            self._real_anchor_ids = matrices["anchor_ids"]
-
-            # Prepara BC e define a rota visual a partir da odometria processada
-            self._prepare_bc_ekf_data_for_real_bc(encoder_samples, uwb_rows)
-
-            payload = self._real_dataset_as_numpy()
-            if payload is None:
-                raise ValueError("Falha ao converter dataset real para batch")
-
-            self._batch_dists = np.asarray(payload["dists"], dtype=float)
-            self._batch_devs = np.asarray(payload["devs"], dtype=float)
-
-            self._dataset_label = (
-                f"REAL | enc={Path(self._real_encoder_file).name} | "
-                f"uwb={Path(self._real_uwb_file).name}"
-            )
-            self._dataset_source = "real_encoder_uwb"
-
-            if not self._validate_real_dataset_against_loaded_anchors():
-                return
-
-            self.host._set_msg(f"Dataset real BC carregado: {len(uwb_rows)} linhas UWB")
-            return
-
-        # Caso não BC
-        dataset = build_dataset_from_encoder_and_uwb(
-            encoder_samples,
-            uwb_rows,
-            self._real_drive_cfg,
-            clamp=True,
+        anchor_uwb_ids = (
+            getattr(self, "_anchor_uwb_ids", None)
+            or getattr(self, "_anchors_uwb_ids", None)
+            or getattr(self, "_dataset_anchor_uwb_ids", None)
+            or getattr(self, "_dataset_uwb_ids", None)
+            or getattr(self, "anchor_uwb_ids", None)
         )
 
-        matrices = build_range_sigma_matrices(dataset["aligned_rows"])
-        odom_path = extract_odometry_path(dataset["aligned_rows"])
-        odom_path = self._apply_real_odom_initial_pose(odom_path)
+        if anchor_uwb_ids is None and hasattr(self, "_dataset_anchor_meta"):
+            meta = getattr(self, "_dataset_anchor_meta", None)
+            if isinstance(meta, dict):
+                anchor_uwb_ids = (
+                    meta.get("anchor_ids_uwb")
+                    or meta.get("uwb_ids")
+                    or meta.get("anchor_ids")
+                )
 
-        self._real_encoder_file = str(encoder_file)
-        self._real_uwb_file = str(uwb_file)
-        self._real_dataset = dataset
-        self._real_aligned_rows = dataset["aligned_rows"]
-        self._real_odom_path = odom_path
-        self._real_range_matrix = matrices["ranges"]
-        self._real_sigma_matrix = matrices["sigmas"]
-        self._real_timestamps = matrices["timestamps_s"]
-        self._real_anchor_ids = matrices["anchor_ids"]
-        self._dataset_route = odom_path
+        result = load_real_encoder_uwb_dataset(
+            encoder_path=encoder_path,
+            uwb_path=uwb_path,
+            dataset_anchors=self._dataset_anchors,
+            anchor_uwb_ids=anchor_uwb_ids,
+            cfg=config,
+        )
 
-        ok = self._apply_real_dataset_to_batch_state()
-        if not ok:
-            return
+        if not self._apply_real_pipeline_result(result):
+            return False
+
+        if self._batch_dists is None:
+            self.host._set_msg("Dataset real carregado, mas sem matriz de distâncias")
+            return False
+
+        if self._batch_dists.size == 0:
+            self.host._set_msg("Dataset real carregado, mas matriz de distâncias vazia")
+            return False
+
+        if self._dataset_anchors is None:
+            self.host._set_msg("Dataset real carregado, mas sem arquivo de âncoras")
+            return False
+
+        n_cols = int(self._batch_dists.shape[1])
+        n_anchors = int(self._dataset_anchors.shape[0])
+
+        if n_cols != n_anchors:
+            self.host._set_msg(
+                f"UWB/layout incompatíveis: dataset tem {n_cols} colunas, "
+                f"mas o layout possui {n_anchors} âncoras"
+            )
+            return False
+
+        # Prepara BC-EKF quando houver dados suficientes.
+        if self._real_encoder_samples is not None and self._real_uwb_rows is not None:
+            self._prepare_bc_ekf_data_for_real_bc(
+                self._real_encoder_samples,
+                self._real_uwb_rows,
+            )
+
+        self.dataset_source_type = "real_encoder_uwb"
+        self.simulated_dataset_kind = "Front"
+
+        self._dataset_label = (
+            f"REAL | enc={os.path.basename(str(encoder_path))} | "
+            f"uwb={os.path.basename(str(uwb_path))}"
+        )
 
         self.host._set_msg(
-            f"Dataset real carregado: {len(dataset['aligned_rows'])} medições alinhadas"
+            f"Dataset real configurado: {self._batch_dists.shape[0]} amostras, "
+            f"{self._batch_dists.shape[1]} âncoras"
         )
+
+        print(
+            "[REAL_DATASET_READY]",
+            "batch_shape=",
+            None if self._batch_dists is None else self._batch_dists.shape,
+            "devs_shape=",
+            None if self._batch_devs is None else self._batch_devs.shape,
+            "anchors_shape=",
+            None if self._dataset_anchors is None else self._dataset_anchors.shape,
+            "source=",
+            self.dataset_source_type,
+        )
+        
+        return True
         
     def _real_dataset_as_numpy(self):
         """
@@ -2251,89 +2363,154 @@ class DatasetMode:
             "anchor_ids": np.asarray(self._real_anchor_ids, dtype=int),
         }
     
-    def _load_demo_real_dataset(self):
-        base = Path(__file__).resolve().parents[3]
-
-        self._load_real_encoder_uwb_dataset(
-            base / "resultados" / "datasets" / "encoder_square.csv",
-            base / "resultados" / "datasets" / "uwb_square.csv",
-        )
-
     # =========================================================
     # ANALYZER
     # =========================================================
 
     def _compute_dataset_stats(self, results: dict):
         """
-        Calcula métricas reais contra a trajetória de referência (ground truth)
-        e devolve no formato esperado por shared.draw_analyzer_panel /
-        shared.draw_boxplot_panel.
+        Calcula estatísticas do Dataset Analyzer.
+
+        Modos:
+        - reference_route: distância até a rota de referência;
+        - reference_synced: rota de referência reamostrada ponto a ponto;
+        - encoder_route: comparação com odometria reconstruída;
+        - cluster: dispersão relativa.
         """
+        if self.dataset_source_type == "real_encoder_uwb":
+            reference_route = (
+                self._reference_route_display
+                if self._reference_route_display is not None
+                else self._route_waypoints
+            )
+
+            if self.metric_mode == "reference_route":
+                stats = compute_track_vs_polyline_stats(results, reference_route, algo_order=ALGO_ORDER)
+                if stats:
+                    return stats
+
+                return compute_dataset_cluster_stats(results, algo_order=ALGO_ORDER)
+
+            if self.metric_mode == "reference_synced":
+                stats = compute_track_vs_synced_reference_stats(results, reference_route, algo_order=ALGO_ORDER)
+                if stats:
+                    return stats
+
+                return compute_dataset_cluster_stats(results, algo_order=ALGO_ORDER)
+
+            if self.metric_mode == "encoder_route":
+                encoder_ref = self._real_odom_path if self._real_odom_path is not None else self._dataset_route
+                stats = compute_track_vs_sampled_reference_stats(results, encoder_ref, algo_order=ALGO_ORDER)
+                if stats:
+                    return stats
+
+                return compute_dataset_cluster_stats(results, algo_order=ALGO_ORDER)
+
+            return compute_dataset_cluster_stats(results, algo_order=ALGO_ORDER)
+
         p_true = self._get_batch_ground_truth_xy()
+
         if p_true is None:
             return compute_dataset_cluster_stats(results, algo_order=ALGO_ORDER)
 
-        stats = {}
+        stats = compute_track_vs_sampled_reference_stats(
+            results,
+            p_true,
+            algo_order=ALGO_ORDER,
+        )
 
-        for algo in ALGO_ORDER:
-            if algo not in results:
-                continue
+        if stats:
+            return stats
 
-            pos = results[algo].get("posicoes", None)
-            if pos is None:
-                continue
-
-            pos = np.asarray(pos, dtype=float)
-            if pos.ndim != 2 or pos.shape[1] < 2:
-                continue
-
-            n = min(len(pos), len(p_true))
-            pos_xy = pos[:n, :2]
-            truth_xy = p_true[:n, :2]
-
-            valid = (
-                np.isfinite(pos_xy[:, 0]) & np.isfinite(pos_xy[:, 1]) &
-                np.isfinite(truth_xy[:, 0]) & np.isfinite(truth_xy[:, 1])
-            )
-            pos_xy = pos_xy[valid]
-            truth_xy = truth_xy[valid]
-
-            if len(pos_xy) == 0:
-                continue
-
-            err_xy = pos_xy - truth_xy
-            err_pos = np.linalg.norm(err_xy, axis=1)
-
-            # mesmo RMSE principal usado no batch/hud
-            rmse_val = results[algo].get("rmse_xy", None)
-            if rmse_val is None:
-                rmse_val = float(np.sqrt(np.mean(err_pos ** 2)))
-
-            q1, median, q3 = np.percentile(err_pos, [25, 50, 75])
-
-            stats[algo] = {
-                "rmse": float(rmse_val),
-                "mae": float(np.mean(err_pos)),
-                "max": float(np.max(err_pos)),
-                "max_err": float(np.max(err_pos)),   # compatibilidade extra
-                "min": float(np.min(err_pos)),
-                "q1": float(q1),
-                "median": float(median),
-                "q3": float(q3),
-                "errors": err_pos,
-            }
-
-        return stats
+        return compute_dataset_cluster_stats(results, algo_order=ALGO_ORDER)
     
     def _dataset_ranking(self):
-        return build_ranking_summary(self._dataset_stats, top_k=5)
+        """
+        Gera ranking a partir de _dataset_stats.
+        Formato principal: dict indexado por nome do algoritmo.
+        """
+        if self._dataset_stats is None:
+            return []
+
+        if isinstance(self._dataset_stats, dict):
+            try:
+                return build_ranking_summary(self._dataset_stats, top_k=5)
+            except Exception as e:
+                print("[DATASET] erro ao gerar ranking:", e)
+
+                rows = []
+                for algo, row in self._dataset_stats.items():
+                    if not isinstance(row, dict):
+                        continue
+
+                    try:
+                        rmse = float(row.get("rmse", np.inf))
+                    except Exception:
+                        rmse = np.inf
+
+                    if not np.isfinite(rmse):
+                        continue
+
+                    r = dict(row)
+                    r["algo"] = algo
+                    r["rmse"] = rmse
+                    rows.append(r)
+
+                rows.sort(key=lambda r: r.get("rmse", np.inf))
+
+                for idx, row in enumerate(rows, start=1):
+                    row["rank"] = idx
+
+                return rows[:5]
+
+        # Compatibilidade com versões anteriores que retornavam lista
+        if isinstance(self._dataset_stats, list):
+            rows = []
+
+            for row in self._dataset_stats:
+                if not isinstance(row, dict):
+                    continue
+                if "algo" not in row:
+                    continue
+
+                try:
+                    rmse = float(row.get("rmse", np.inf))
+                except Exception:
+                    rmse = np.inf
+
+                if not np.isfinite(rmse):
+                    continue
+
+                r = dict(row)
+                r["rmse"] = rmse
+                rows.append(r)
+
+            rows.sort(key=lambda r: r.get("rmse", np.inf))
+
+            for idx, row in enumerate(rows, start=1):
+                row["rank"] = idx
+
+            return rows[:5]
+
+        return []
 
     def _draw_analyzer(self):
+        if self._dataset_stats is None:
+            return
+
+        # Segurança: se por algum caminho antigo vier lista, converte para dict.
+        if isinstance(self._dataset_stats, list):
+            converted = {}
+            for row in self._dataset_stats:
+                if isinstance(row, dict) and "algo" in row:
+                    converted[row["algo"]] = row
+            self._dataset_stats = converted
+
         draw_analyzer_panel(
             screen=self.host.screen,
             font=self.host.font,
             bigfont=self.host.bigfont,
-            title="Dataset Analyzer",
+            title=f"Dataset Analyzer - {self._metric_mode_label()}",
             stats=self._dataset_stats,
             selected=self.selected,
             x=10,
@@ -2341,109 +2518,6 @@ class DatasetMode:
             w=500,
             h=380,
         )
-
-    def _draw_real_dataset_status(self):
-        if self._real_dataset is None:
-            return
-
-        # Keep status aligned with the analyzer/sidebar block defaults.
-        status_x = 20
-        status_y = 350
-        txt = self.host.font.render(
-            f"Odom real: {len(self._real_odom_path)} pts",
-            True,
-            (40, 40, 40),
-        )
-        self.host.screen.blit(txt, (status_x, status_y))
-
-        if self._dataset_source == "real_encoder_uwb":
-            source_txt = self.host.font.render(
-                "Fonte: encoder + UWB real",
-                True,
-                (20, 80, 180),
-            )
-            self.host.screen.blit(source_txt, (status_x, status_y + 30))
-
-    def _draw_real_dataset_controls(self):
-        draw_text(
-            self.host.screen,
-            "Dataset real (encoder + UWB)",
-            20,
-            420,
-            self.host.bigfont,
-            color=(20, 20, 20),
-        )
-
-        if self._real_encoder_input is not None:
-            self._real_encoder_input.rect.topleft = (20, 455)
-            self._real_encoder_input.rect.size = (320, 28)
-            self._real_encoder_input.draw(self.host.screen)
-
-        draw_text(
-            self.host.screen,
-            "Encoder:",
-            20,
-            438,
-            self.host.font,
-            color=(50, 50, 50),
-        )
-
-        if self._real_uwb_input is not None:
-            self._real_uwb_input.rect.topleft = (20, 515)
-            self._real_uwb_input.rect.size = (320, 28)
-            self._real_uwb_input.draw(self.host.screen)
-
-        draw_text(
-            self.host.screen,
-            "UWB:",
-            20,
-            498,
-            self.host.font,
-            color=(50, 50, 50),
-        )
-
-        self._btn_load_real_rect.topleft = (20, 560)
-        self._btn_load_real_rect.size = (160, 32)
-        self._draw_button(
-            self.host.screen,
-            self._btn_load_real_rect,
-            "Carregar real",
-            self.host.font,
-        )
-
-        self._btn_run_real_rect.topleft = (190, 560)
-        self._btn_run_real_rect.size = (150, 32)
-        self._draw_button(
-            self.host.screen,
-            self._btn_run_real_rect,
-            "Rodar batch",
-            self.host.font,
-        )
-
-        if self._dataset_source == "real_encoder_uwb":
-            draw_text(
-                self.host.screen,
-                f"Fonte: REAL ({len(self._real_odom_path)} poses odom)",
-                20,
-                600,
-                self.host.font,
-                color=(20, 80, 180),
-            )
-
-            draw_text(
-                self.host.screen,
-                f"Âncoras no dataset: {len(self._real_anchor_ids)}",
-                20,
-                620,
-                self.host.font,
-                color=(40, 40, 40),
-            )
-
-    def _draw_button(self, screen: pg.Surface, rect: pg.Rect, label: str, font: pg.font.Font) -> None:
-        pg.draw.rect(screen, (220, 220, 220), rect, border_radius=4)
-        pg.draw.rect(screen, BLACK, rect, 1, border_radius=4)
-        txt = font.render(label, True, BLACK)
-        screen.blit(txt, (rect.x + 10, rect.y + (rect.height - txt.get_height()) // 2))
 
     def _apply_real_dataset_to_batch_state(self):
         """
@@ -2459,6 +2533,15 @@ class DatasetMode:
         self._batch_dists = np.asarray(payload["dists"], dtype=float)
         self._batch_devs = np.asarray(payload["devs"], dtype=float)
 
+        if self.dataset_source_type == "real_encoder_uwb":
+            if self._reference_route_display is not None and len(self._reference_route_display) >= 2:
+                self._reference_route_dense = resample_polyline(
+                    self._reference_route_display,
+                    len(self._batch_dists)
+                )
+            else:
+                self._reference_route_dense = None
+
         # só usa a rota do payload se ainda não houver rota externa carregada
         if self._dataset_route is None:
             self._dataset_route = payload["route"]
@@ -2467,7 +2550,6 @@ class DatasetMode:
             f"REAL | enc={Path(self._real_encoder_file).name} | "
             f"uwb={Path(self._real_uwb_file).name}"
         )
-        self._dataset_source = "real_encoder_uwb"
 
         if not self._validate_real_dataset_against_loaded_anchors():
             return False
@@ -2503,350 +2585,132 @@ class DatasetMode:
 
         return True
 
-    def _load_real_dataset_from_inputs(self):
-        encoder_file = ""
-        uwb_file = ""
-
-        if self._real_encoder_input is not None:
-            encoder_file = self._real_encoder_input.text.strip()
-
-        if self._real_uwb_input is not None:
-            uwb_file = self._real_uwb_input.text.strip()
-
-        if not encoder_file:
-            raise ValueError("Informe o arquivo de encoder")
-        if not uwb_file:
-            raise ValueError("Informe o arquivo UWB")
-
-        self._load_real_encoder_uwb_dataset(encoder_file, uwb_file)
-
-    def _run_real_dataset_batch(self):
-        if self._dataset_source != "real_encoder_uwb":
-            raise ValueError("Nenhum dataset real foi carregado")
-
-        if self._batch_dists is None:
-            raise ValueError("Dataset real não foi aplicado ao estado batch")
-
-        self._run_batch()
-
-
     def _route_xy_to_pose_xytheta(self, route_xy):
-        '''Converte uma rota de pontos XY em uma sequência de poses XYTheta, 
-        onde Theta é a orientação calculada entre os pontos consecutivos. 
-        Para o último ponto, a orientação é copiada do penúltimo para evitar valores indefinidos.'''
-        import numpy as np
-
-        route_xy = np.asarray(route_xy, dtype=float)
-        if route_xy.ndim != 2 or route_xy.shape[1] < 2 or len(route_xy) == 0:
-            raise ValueError("Rota inválida para BC-EKF")
-
-        poses = np.zeros((len(route_xy), 3), dtype=float)
-        poses[:, :2] = route_xy[:, :2]
-
-        if len(route_xy) == 1:
-            return poses
-
-        for i in range(len(route_xy) - 1):
-            dx = route_xy[i + 1, 0] - route_xy[i, 0]
-            dy = route_xy[i + 1, 1] - route_xy[i, 1]
-            poses[i, 2] = np.arctan2(dy, dx)
-
-        poses[-1, 2] = poses[-2, 2]
-        return poses
+        '''Converte uma rota de referência dada como sequência de pontos XY em uma sequência de poses XYTheta,'''
+        return route_xy_to_pose_xytheta(route_xy)
 
 
     def _pose_xytheta_to_vw(self, poses_xytheta, T):
-        '''Converte uma sequência de poses XYTheta em um caminho de odometria linear e angular (v, w) usando diferenças finitas.
-        A velocidade linear v é calculada como a distância entre poses consecutivas dividida pelo intervalo'''
-        import numpy as np
+        return pose_xytheta_to_vw(poses_xytheta, T)
 
-        poses = np.asarray(poses_xytheta, dtype=float)
-        if poses.ndim != 2 or poses.shape[1] != 3:
-            raise ValueError("Poses inválidas para BC-EKF")
-
-        M = poses.shape[0]
-        odom = np.zeros((2, M), dtype=float)
-
-        if M < 2:
-            return odom
-
-        for k in range(1, M):
-            dx = poses[k, 0] - poses[k - 1, 0]
-            dy = poses[k, 1] - poses[k - 1, 1]
-            ds = float(np.hypot(dx, dy))
-
-            dtheta = poses[k, 2] - poses[k - 1, 2]
-            dtheta = np.arctan2(np.sin(dtheta), np.cos(dtheta))
-
-            odom[0, k] = ds / T
-            odom[1, k] = dtheta / T
-
-        return odom
-    
-
-    def _prepare_bc_ekf_data_for_real_bc(self, encoder_samples, uwb_rows):
+    def _apply_bc_prep_result(self, result: BcPrepResult):
         """
-        Prepara o BC-EKF para dataset real BC.
-
-        Esta versão:
-        - usa os anchor_id já remapeados para 0..N-1;
-        - remove alinhamento automático com _dataset_route;
-        - aplica pose inicial apenas uma vez;
-        - usa T real a partir dos timestamps UWB;
-        - descarta timestamps incompletos de forma explícita.
+        Aplica no estado da tela o resultado vindo de dataset_bc_prep.py.
         """
-        if self._dataset_anchors is None:
-            self.host._set_msg("BC-EKF real requer âncoras carregadas")
+        if result is None or not result.ok:
             self._bc_ekf_data = None
-            return
+            msg = result.message if result is not None else "Falha ao preparar BC-EKF"
+            self.host._set_msg(msg)
+            return False
 
-        if not uwb_rows:
-            self.host._set_msg("BC-EKF real: UWB vazio")
-            self._bc_ekf_data = None
-            return
+        self._bc_ekf_data = result.bc_ekf_data
 
-        n_anchors = int(self._dataset_anchors.shape[0])
+        if result.batch_dists is not None:
+            self._batch_dists = result.batch_dists
 
-        # timestamps únicos do UWB já devem estar em segundos
-        ts_sorted_all = sorted({float(r["timestamp"]) for r in uwb_rows})
-        M_all = len(ts_sorted_all)
+        if result.batch_devs is not None:
+            self._batch_devs = result.batch_devs
 
-        z_hist = np.full((2 * n_anchors, M_all), np.nan, dtype=float)
-        sigma_vals = []
+        if result.dataset_route is not None:
+            self._dataset_route = result.dataset_route
 
-        ts_to_idx = {t: k for k, t in enumerate(ts_sorted_all)}
+        if result.real_odom_path is not None:
+            self._real_odom_path = result.real_odom_path
 
-        for row in uwb_rows:
-            try:
-                t = float(row["timestamp"])
-                aid = int(row["anchor_id"])
-            except Exception:
-                continue
+        if result.real_range_matrix is not None:
+            self._real_range_matrix = result.real_range_matrix
 
-            if aid < 0 or aid >= n_anchors:
-                continue
+        if result.real_sigma_matrix is not None:
+            self._real_sigma_matrix = result.real_sigma_matrix
 
-            k = ts_to_idx[t]
-            j = aid
+        if result.real_timestamps is not None:
+            self._real_timestamps = result.real_timestamps
 
-            try:
-                z_hist[2 * j, k] = float(row["range_front"])
-                z_hist[2 * j + 1, k] = float(row["range_rear"])
+        if result.real_anchor_ids is not None:
+            self._real_anchor_ids = result.real_anchor_ids
 
-                sf = float(row["sigma_front"])
-                sr = float(row["sigma_rear"])
+        return True
 
-                if np.isfinite(sf):
-                    sigma_vals.append(sf)
-                if np.isfinite(sr):
-                    sigma_vals.append(sr)
+    def _apply_real_pipeline_result(self, result):
+        """
+        Aplica ao estado da tela o resultado do pipeline real.
+        """
+        if result is None or not result.ok:
+            msg = result.message if result is not None else "Falha ao carregar dataset real"
+            self.host._set_msg(msg)
+            return False
 
-            except Exception:
-                continue
+        self._real_dataset = result.real_dataset
+        self._real_aligned_rows = result.real_aligned_rows
 
-        # Mantém somente instantes com todas as medições front/rear de todas as âncoras
-        complete_mask = ~np.isnan(z_hist).any(axis=0)
-        dropped = int(np.count_nonzero(~complete_mask))
+        self._batch_dists = None
+        self._batch_devs = None
 
-        if not np.any(complete_mask):
-            self.host._set_msg("BC real inválido: nenhum timestamp UWB completo")
-            self._bc_ekf_data = None
-            return
+        if result.batch_dists is not None:
+            self._batch_dists = np.asarray(result.batch_dists, dtype=float)
 
-        z_hist = z_hist[:, complete_mask]
-        ts_sorted = np.asarray(ts_sorted_all, dtype=float)[complete_mask]
-        M = int(z_hist.shape[1])
+        if result.batch_devs is not None:
+            self._batch_devs = np.asarray(result.batch_devs, dtype=float)
 
-        if dropped > 0:
-            print(
-                "[REAL_BC_UWB_FILTER]",
-                "timestamps_in=", M_all,
-                "timestamps_valid=", M,
-                "timestamps_dropped=", dropped,
+        if self._batch_dists is None:
+            self.host._set_msg("Pipeline real não retornou batch_dists")
+            return False
+
+        if self._batch_devs is None:
+            self._batch_devs = np.full_like(
+                self._batch_dists,
+                float(getattr(config, "UWB_NOISE_STD", 0.05)),
+                dtype=float,
             )
 
-        # ---------------------------------------------------------
-        # Trajetória do encoder:
-        # 1) reconstrói odometria local;
-        # 2) reamostra para o número de instantes UWB válidos;
-        # 3) aplica pose inicial uma única vez.
-        # ---------------------------------------------------------
-        poses = self._build_pose_path_from_encoder_samples(encoder_samples)
-
-        if poses is None or len(poses) == 0:
-            self.host._set_msg("BC-EKF real: odometria vazia")
-            self._bc_ekf_data = None
-            return
-
-        poses = self._resample_pose_path_to_length(poses, M)
-        poses = self._apply_real_odom_initial_pose(poses)
-
-        self._dataset_route = poses.copy()
-        self._route_waypoints = poses[:, :2].copy()
-        self._real_odom_path = poses.copy()
-
-        # T real do UWB
-        if M > 1:
-            dt = np.diff(ts_sorted)
-            dt = dt[np.isfinite(dt) & (dt > 0)]
-            T = float(np.median(dt)) if dt.size > 0 else float(getattr(config, "TIME_STEP", 0.05))
-        else:
-            T = float(getattr(config, "TIME_STEP", 0.05))
-
-        if not np.isfinite(T) or T <= 0:
-            T = float(getattr(config, "TIME_STEP", 0.05))
-
-        odometry_noisy = self._pose_xytheta_to_vw(poses, T)
-
-        sigma_uwb = float(np.nanmedian(np.asarray(sigma_vals, dtype=float))) if sigma_vals else float(getattr(config, "UWB_NOISE_STD", 0.05))
-        if not np.isfinite(sigma_uwb) or sigma_uwb <= 0:
-            sigma_uwb = float(getattr(config, "UWB_NOISE_STD", 0.05))
-
-        self._bc_ekf_data = {
-            "T": T,
-            "odometry_noisy": odometry_noisy,
-            "z_hist": z_hist,
-            "l": float(getattr(config, "TAG_BASELINE", 0.25)) / 2.0,
-            "z_c": float(getattr(config, "TAG_HEIGHT", 0.20)),
-            "sigma_uwb": sigma_uwb,
-            "x0": np.asarray(poses[0], dtype=float).reshape(3,),
-        }
-
-        # Para os algoritmos clássicos, usa apenas a tag frontal
-        self._batch_dists = z_hist.T[:, 0::2]
-        self._batch_devs = np.full_like(self._batch_dists, sigma_uwb, dtype=float)
-
-        # Mantém matrizes reais coerentes com o batch atual
-        self._real_range_matrix = self._batch_dists.copy()
-        self._real_sigma_matrix = self._batch_devs.copy()
-        self._real_timestamps = ts_sorted.tolist()
-        self._real_anchor_ids = list(range(n_anchors))
-
-        print(
-            "[REAL_BC_EKF_PREP_OK]",
-            "z_hist=", z_hist.shape,
-            "odom=", odometry_noisy.shape,
-            "poses=", poses.shape,
-            "batch_dists=", self._batch_dists.shape,
-            "T=", T,
-            "sigma_uwb=", sigma_uwb,
-            "x0=", poses[0],
-            "dropped=", dropped,
-        )
-    
-    def _guess_sampled_traj_sidecar(self, dataset_path: str) -> str | None:
-        '''Dado o caminho de um dataset, tenta adivinhar se existe um arquivo CSV de trajetória amostrada associado,
-          seguindo a convenção de nomeação: base do dataset + "_traj.csv".'''
-        base, _ = os.path.splitext(dataset_path)
-        candidate = base + "_traj.csv"
-        return candidate if os.path.exists(candidate) else None
-
-
-    def _load_sampled_traj_csv(self, path: str):
-        '''Carrega um CSV simples de trajetória amostrada, com colunas x,y,theta (pode ter outras colunas, mas essas são obrigatórias).
-        Retorna array (M, 3) com os dados de pose.'''
-        rows = []
-
-        with open(path, "r", encoding="utf-8-sig", newline="") as f:
-            sample = f.read(2048)
-            f.seek(0)
-
-            # caso CSV com vírgula
-            if "," in sample:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    if not row:
-                        continue
-                    try:
-                        x = float(row["x"])
-                        y = float(row["y"])
-                        th = float(row["theta"])
-                    except Exception:
-                        continue
-                    rows.append([x, y, th])
-
-            else:
-                # fallback: separado por espaço
-                header = f.readline().strip().split()
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    vals = line.split()
-                    if len(vals) < 4:
-                        continue
-                    try:
-                        _, x, y, th = map(float, vals[:4])
-                    except Exception:
-                        continue
-                    rows.append([x, y, th])
-
-        if not rows:
-            raise ValueError(f"Trajetória amostrada vazia: {path}")
-
-        return np.asarray(rows, dtype=float)
-    
-    def _expand_bc_uwb_rows_if_needed(self, rows):
-        """
-        Se o arquivo UWB estiver em formato BC:
-        timestamp, anchor_id, range_front, sigma_front, range_rear, sigma_rear
-
-        expande cada linha em duas linhas simples compatíveis com o builder atual:
-        - uma linha FRONT
-        - uma linha REAR
-
-        Se já estiver no formato simples (range/sigma), devolve como está.
-        """
-        if not rows:
-            return rows
-
-        sample = rows[0]
-        keys = {str(k).strip().lower() for k in sample.keys()}
-
-        is_bc = (
-            "range_front" in keys and
-            "sigma_front" in keys and
-            "range_rear" in keys and
-            "sigma_rear" in keys
+        self._real_range_matrix = (
+            np.asarray(result.real_range_matrix, dtype=float)
+            if result.real_range_matrix is not None
+            else self._batch_dists.copy()
         )
 
-        if not is_bc:
-            return rows
-
-        expanded = []
-        for row in rows:
-            ts = row.get("timestamp", row.get("timestamp_s", ""))
-            aid = row.get("anchor_id", row.get("anchor", row.get("id", "")))
-
-            expanded.append({
-                "timestamp": ts,
-                "anchor_id": aid,
-                "range": row["range_front"],
-                "sigma": row["sigma_front"],
-                "tag": "front",
-            })
-            expanded.append({
-                "timestamp": ts,
-                "anchor_id": aid,
-                "range": row["range_rear"],
-                "sigma": row["sigma_rear"],
-                "tag": "rear",
-            })
-
-        return expanded
-    
-    def _is_bc_uwb_rows(self, rows) -> bool:
-        if not rows:
-            return False
-        sample = rows[0]
-        keys = {str(k).strip().lower() for k in sample.keys()}
-        return (
-            "range_front" in keys and
-            "sigma_front" in keys and
-            "range_rear" in keys and
-            "sigma_rear" in keys
+        self._real_sigma_matrix = (
+            np.asarray(result.real_sigma_matrix, dtype=float)
+            if result.real_sigma_matrix is not None
+            else self._batch_devs.copy()
         )
-    
+
+        self._real_timestamps = result.real_timestamps or []
+        self._real_anchor_ids = result.real_anchor_ids or []
+
+        self._real_encoder_samples = result.encoder_samples
+        self._real_uwb_rows = result.uwb_rows
+
+        return True
+
+    def _prepare_bc_ekf_data_for_simulated_bc(self):
+        result = prepare_simulated_bc_ekf_data(
+            batch_dists=self._batch_dists,
+            batch_devs=self._batch_devs,
+            dataset_anchors=self._dataset_anchors,
+            dataset_path=self._dataset_path,
+            dataset_route=self._dataset_route,
+            route_waypoints=self._route_waypoints,
+            cfg=config,
+            resample_polyline_fn=resample_polyline,
+        )
+
+        self._apply_bc_prep_result(result)
+
+
+    def _prepare_bc_ekf_data_for_real_bc(self, encoder_samples, uwb_rows):
+        result = prepare_real_bc_ekf_data(
+            encoder_samples=encoder_samples,
+            uwb_rows=uwb_rows,
+            dataset_anchors=self._dataset_anchors,
+            cfg=config,
+            build_pose_path_fn=self._build_pose_path_from_encoder_samples,
+            resample_pose_path_fn=self._resample_pose_path_to_length,
+            apply_initial_pose_fn=self._apply_real_odom_initial_pose,
+        )
+
+        self._apply_bc_prep_result(result)
+
     def _build_pose_path_from_encoder_samples(self, encoder_samples):
         """
         Reconstrói uma trajetória XYTheta a partir dos samples do encoder.

@@ -1,0 +1,27 @@
+{
+  "anchors_xy": [
+    [0.920, 1.244, 1.000],
+    [6.933, 1.290, 1.000],
+    [3.926, 4.729, 1.000],
+    [6.913, 8.567, 1.000],
+    [0.896, 8.592, 1.000]
+  ],
+  "anchor_ids_uwb": [6, 3, 9, 7, 8],
+  "anchor_names": ["A6", "A3", "A9", "A7", "A8"],
+  "tag_params": {
+    "clock": {
+      "drift_ppm": 0.0
+    },
+    "ant": {
+      "tx_ns": 0.0,
+      "rx_ns": 0.0
+    },
+    "range_bias_m": 0.0
+  },
+  "anchor_params": {},
+  "meta": {
+    "count": 5,
+    "anchor_height_m": 1.0,
+    "description": "Campo run 1 - ancoras a 1 m do chao"
+  }
+}
