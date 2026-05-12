@@ -1,12 +1,11 @@
 from __future__ import annotations
 from typing import Any
 import os
-import json
 import numpy as np
 import pygame as pg
 from pathlib import Path
-import csv
 import re
+import csv
 
 from src import config
 from src.ui.botton import Button
@@ -29,7 +28,6 @@ from src.odometry import (
     DifferentialDriveConfig,
     load_and_validate_encoder_file,
 )
-from src.ui.legend_overlay import draw_legend_overlay
 from src.ui.algo_modes.dataset_bc_prep import (
     BcPrepResult,
     guess_sampled_traj_sidecar,
@@ -50,7 +48,6 @@ from src.ui.algo_modes.dataset_modal import DatasetConfigModal
 from src.ui.algo_modes.dataset_sim_pipeline import (
     SimPipelineResult,
     load_simulated_dataset_file,
-    load_and_normalize_simulated_dataset,
     normalize_simulated_dataset_by_kind,
     normalize_simulated_kind,
 )
@@ -58,7 +55,6 @@ from src.ui.algo_modes.dataset_io import (
     apply_anchors_to_dataset_mode,
     apply_route_to_dataset_mode,
     apply_map_to_dataset_mode,
-    validate_dataset_anchor_compatibility,
 )
 
 
@@ -145,8 +141,8 @@ class DatasetMode:
 
         self.dataset_source_type = "simulated"   # "simulated" | "real_encoder_uwb"
 
-        self.simulated_dataset_kind = "Front"   # "Front" | "Rear" | "MID" | "BC"
-        self.available_simulated_dataset_kinds = ["Front", "Rear", "MID", "BC"]
+        self.simulated_dataset_kind = "Front"   # "Front" | "Rear" | "Mid" | "BC"
+        self.available_simulated_dataset_kinds = ["Front", "Rear", "Mid", "BC"]
         self.dataset_dropdown_sim_kind_open = False
 
         self._bc_ekf_data = None
@@ -199,7 +195,6 @@ class DatasetMode:
 
 
     def on_enter(self, host: Any) -> None:
-        base = Path(__file__).resolve().parents[3]
 
         self.host = host
         self.host.mode = MODE_DATASET
@@ -226,28 +221,6 @@ class DatasetMode:
     # =========================================================
     # MODAL
     # =========================================================
-
-    def _apply_sim_pipeline_result(self, result: SimPipelineResult):
-        """
-        Aplica no estado da tela o resultado do pipeline simulado.
-        """
-        if result is None or not result.ok:
-            msg = result.message if result is not None else "Falha ao carregar dataset simulado"
-            self.host._set_msg(msg)
-            return False
-
-        self._dataset_path = result.dataset_path
-        self._dataset_label = result.dataset_label
-
-        self._batch_dists = result.batch_dists
-        self._batch_devs = result.batch_devs
-
-        self.simulated_dataset_kind = result.simulated_kind
-
-        self._dataset_stats = None
-        self._batch_results = None
-
-        return True
 
     def _apply_dataset_config(self):
         """
@@ -680,96 +653,9 @@ class DatasetMode:
     # LOADERS
     # =========================================================
 
-    def _try_load_dataset(self, path: str) -> bool:
-        self._dataset_path = path
-        self._dataset_label = os.path.basename(path)
-        self._dataset_stats = None
-
-        try:
-            if path.lower().endswith(".jsonl"):
-                self._load_jsonl(path)
-            else:
-                try:
-                    dists, devs = carregar_ensaio_lab(path)
-                except Exception:
-                    dists, devs = self._load_sim_txt_dataset(path)
-
-                self._batch_dists = dists
-                self._batch_devs = devs
-
-            self.host._set_msg(f"Dataset carregado: {self._dataset_label}")
-            return True
-
-        except Exception as e:
-            print(f"[DATASET] erro ao carregar dataset: {e}")
-            self._batch_dists = None
-            self._batch_devs = None
-            self.host._set_msg("Erro ao carregar dataset")
-            return False
-
-    def _load_sim_txt_dataset(self, path: str):
-        rows = []
-
-        with open(path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-
-                if not line:
-                    continue
-                if line.startswith("#"):
-                    continue
-
-                if ";" in line:
-                    parts = [p.strip() for p in line.split(";") if p.strip()]
-                elif "," in line:
-                    parts = [p.strip() for p in line.split(",") if p.strip()]
-                else:
-                    parts = [p.strip() for p in line.split() if p.strip()]
-
-                try:
-                    vals = [float(x) for x in parts]
-                except ValueError:
-                    continue
-
-                rows.append(vals)
-
-        if not rows:
-            raise ValueError(f"Nenhuma linha válida encontrada em {path}")
-
-        data = np.array(rows, dtype=float)
-
-        if data.shape[1] % 2 != 0:
-            raise ValueError(
-                f"Número de colunas inválido: {data.shape[1]} "
-                f"(esperado par: dist,sigma,dist,sigma,...)"
-            )
-
-        dists = data[:, 0::2]
-        devs = data[:, 1::2]
-        return dists, devs
-
-    def _load_jsonl(self, path: str):
-        rows = []
-
-        with open(path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                obj = json.loads(line)
-                if "z_k" in obj and obj["z_k"]:
-                    rows.append(obj["z_k"])
-
-        if not rows:
-            raise ValueError("JSONL sem medições z_k válidas")
-
-        dists_2N = np.array(rows, dtype=float)
-        dists = dists_2N[:, 0::2]
-
-        self._batch_dists = dists
-        self._batch_devs = None
-
     def _run_batch(self):
+        '''Executa os algoritmos selecionados no batch atual.
+        Verifica pré-requisitos (dataset, âncoras, tipo) e prepara dados'''
         if self._batch_dists is None:
             self.host._set_msg("Carregue um dataset primeiro")
             return
@@ -1961,7 +1847,13 @@ class DatasetMode:
             )
             return False
 
-        if not validate_dataset_anchor_compatibility(self):
+        n_cols = int(self._batch_dists.shape[1])
+        n_anchors = int(self._dataset_anchors.shape[0])
+
+        if n_cols != n_anchors:
+            self.host._set_msg(
+                f"UWB/layout incompatíveis: {n_cols} vs {n_anchors} âncoras"
+            )
             return False
 
         return True
