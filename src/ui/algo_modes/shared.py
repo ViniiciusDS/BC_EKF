@@ -329,3 +329,111 @@ def draw_boxplot_panel(
         pg.draw.line(screen, color, (s_med, yy - 6), (s_med, yy + 6), 2)
         pg.draw.line(screen, color, (s_min, yy - 4), (s_min, yy + 4), 2)
         pg.draw.line(screen, color, (s_max, yy - 4), (s_max, yy + 4), 2)
+
+
+# =========================================================
+# FILE / JSON HELPERS
+# =========================================================
+
+import os
+import json
+from pathlib import Path
+import numpy as np
+
+
+def list_files_by_extension(dirname: str, exts: tuple[str, ...]) -> list[str]:
+    """
+    Lista arquivos de uma pasta por extensão.
+
+    Uso genérico para modais, telas e modos diferentes.
+    """
+    if not dirname or not os.path.isdir(dirname):
+        return []
+
+    exts = tuple(e.lower() for e in exts)
+    files = []
+
+    for name in os.listdir(dirname):
+        full = os.path.join(dirname, name)
+
+        if os.path.isfile(full) and name.lower().endswith(exts):
+            files.append(name)
+
+    return sorted(files, key=str.lower)
+
+
+def parse_anchor_uwb_ids(raw_ids):
+    """
+    Converte IDs de âncoras vindos do JSON para inteiros.
+
+    Aceita:
+    - [6, 3, 9]
+    - ["6", "3", "9"]
+    - ["Da6", "Da3", "Da9"]
+    """
+    if raw_ids is None:
+        return None
+
+    parsed = []
+
+    for x in raw_ids:
+        sx = str(x).strip()
+
+        if sx.lower().startswith("da"):
+            sx = sx[2:]
+
+        parsed.append(int(sx))
+
+    return parsed
+
+
+def load_anchor_uwb_ids_from_json(path: str):
+    """
+    Lê IDs UWB reais das âncoras, se existirem no JSON.
+
+    Campos aceitos:
+    - anchor_ids_uwb
+    - uwb_ids
+    - anchor_ids
+    """
+    try:
+        raw = json.loads(Path(path).read_text(encoding="utf-8"))
+
+        raw_ids = (
+            raw.get("anchor_ids_uwb", None)
+            or raw.get("uwb_ids", None)
+            or raw.get("anchor_ids", None)
+        )
+
+        return parse_anchor_uwb_ids(raw_ids)
+
+    except Exception:
+        return None
+
+
+def load_route_waypoints_from_json(path: str):
+    """
+    Loader genérico de rota.
+
+    Formato esperado:
+    {
+        "waypoints": [[x0, y0], [x1, y1], ...]
+    }
+
+    Retorna:
+        np.ndarray com shape (N, 2)
+    """
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    waypoints = data.get("waypoints", None)
+
+    if waypoints is None:
+        raise ValueError("Arquivo de rota inválido: campo 'waypoints' não encontrado.")
+
+    pts = np.asarray(waypoints, dtype=float)
+
+    if pts.ndim != 2 or pts.shape[1] < 2 or len(pts) < 2:
+        raise ValueError("Arquivo de rota inválido: waypoints insuficientes.")
+
+    return pts[:, :2].copy()

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from posixpath import dirname
 
 import pygame as pg
 import os
@@ -9,7 +10,7 @@ from src.ui.ui_elements import (
     FormDropdownRow,
     ModalButtonBar,
 )
-
+from src.ui.algo_modes.shared import list_files_by_extension
 
 class DatasetConfigModal:
     """
@@ -107,28 +108,7 @@ class DatasetConfigModal:
         m = self.mode
 
         def safe_list(dirname, exts):
-            if not dirname:
-                return []
-
-            try:
-                if not os.path.isdir(dirname):
-                    return []
-
-                files = []
-
-                for name in os.listdir(dirname):
-                    full = os.path.join(dirname, name)
-
-                    if not os.path.isfile(full):
-                        continue
-
-                    if name.lower().endswith(tuple(e.lower() for e in exts)):
-                        files.append(name)
-
-                return sorted(files, key=str.lower)
-
-            except Exception:
-                return []
+            return list_files_by_extension(dirname, exts)
 
         dataset_dir = (
             getattr(m, "datasets_dir", None)

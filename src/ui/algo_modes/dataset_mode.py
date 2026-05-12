@@ -10,18 +10,11 @@ import re
 
 from src import config
 from src.ui.botton import Button
-from src.ui.drawing import draw_grid, draw_axes, draw_anchors, draw_path, draw_text
-from src.environment.environment import draw_environment
-from src.uwb.algoritmos_estaticos import carregar_ensaio_lab, run_batch
+from src.uwb.algoritmos_estaticos import run_batch
 from src.ui.algo_modes.shared import (
     ALGO_ORDER,
-    ALGO_COLORS,
     MODE_DATASET,
     default_selected,
-    draw_analyzer_panel,
-    load_anchors_from_json,
-    load_route_from_json,
-    load_map_from_json,
 )
 from src.analysis.algo_metrics import (
     compute_dataset_cluster_stats,
@@ -34,17 +27,12 @@ from src.analysis.algo_metrics import (
 from src.odometry import (
     EncoderConfig,
     DifferentialDriveConfig,
-    build_dataset_from_encoder_and_uwb,
-    build_range_sigma_matrices,
-    extract_odometry_path,
     load_and_validate_encoder_file,
 )
 from src.ui.legend_overlay import draw_legend_overlay
 from src.ui.algo_modes.dataset_bc_prep import (
     BcPrepResult,
-    expand_bc_uwb_rows_if_needed,
     guess_sampled_traj_sidecar,
-    is_bc_uwb_rows,
     load_sampled_traj_csv,
     pose_xytheta_to_vw,
     prepare_real_bc_ekf_data,
@@ -52,15 +40,27 @@ from src.ui.algo_modes.dataset_bc_prep import (
     route_xy_to_pose_xytheta,
 )
 from src.ui.algo_modes.dataset_real_pipeline import (
-    RealPipelineResult,
     load_real_encoder_uwb_dataset,
 )
 from src.ui.algo_modes.dataset_render import (
     draw_dataset_mode,
     draw_dataset_analyzer,
 )
-
 from src.ui.algo_modes.dataset_modal import DatasetConfigModal
+from src.ui.algo_modes.dataset_sim_pipeline import (
+    SimPipelineResult,
+    load_simulated_dataset_file,
+    load_and_normalize_simulated_dataset,
+    normalize_simulated_dataset_by_kind,
+    normalize_simulated_kind,
+)
+from src.ui.algo_modes.dataset_io import (
+    apply_anchors_to_dataset_mode,
+    apply_route_to_dataset_mode,
+    apply_map_to_dataset_mode,
+    validate_dataset_anchor_compatibility,
+)
+
 
 WHITE = (255, 255, 255)
 BLACK = (0, 0, 0)
@@ -104,25 +104,6 @@ class DatasetMode:
         # modal
         self.dataset_modal = DatasetConfigModal(self)
         self.dataset_modal_open = False
-        self.dataset_dropdown_data_open = False
-        self.dataset_dropdown_anchors_open = False
-        self.dataset_dropdown_route_open = False
-        self.dataset_dropdown_map_open = False
-
-        self.available_datasets = []
-        self.available_anchors = []
-        self.available_routes = []
-        self.available_maps = []
-
-        self.dataset_inputs = {}
-        self.dataset_buttons = {}
-        self.dataset_modal_rect = None
-
-        # scroll dos dropdowns
-        self.dataset_dropdown_scroll = 0
-        self.anchors_dropdown_scroll = 0
-        self.route_dropdown_scroll = 0
-        self.map_dropdown_scroll = 0
 
         # câmera
         self._panning = False
@@ -170,21 +151,11 @@ class DatasetMode:
 
         self._bc_ekf_data = None
 
-        # dropdowns de dataset real
-        self.dataset_dropdown_source_open = False
-        self.dataset_dropdown_real_encoder_open = False
-        self.dataset_dropdown_real_uwb_open = False
-
         self.available_dataset_sources = [
             "Simulado",
             "Real (encoder + UWB)",
         ]
 
-        self.available_real_encoder_files = []
-        self.available_real_uwb_files = []
-
-        self.real_encoder_dropdown_scroll = 0
-        self.real_uwb_dropdown_scroll = 0
 
         self.real_data_dir = os.path.join("resultados", "datasets")
 
@@ -252,218 +223,31 @@ class DatasetMode:
     # ------------------------------------------------------------------
     # HELPERS INTERNOS
     # ------------------------------------------------------------------
-
-    # =========================================================
-    # LISTAGENS
-    # =========================================================
-
-    def _list_dataset_files(self):
-        try:
-            files = [
-                f for f in os.listdir(self.dataset_dir)
-                if f.lower().endswith(".txt") or f.lower().endswith(".jsonl")
-            ]
-            files.sort()
-            return files
-        except Exception:
-            return []
-
-    def _list_anchor_files(self):
-        try:
-            files = [f for f in os.listdir(self.anchors_dir) if f.lower().endswith(".json")]
-            files.sort()
-            return files
-        except Exception:
-            return []
-
-    def _list_route_files(self):
-        try:
-            files = [f for f in os.listdir(self.routes_dir) if f.lower().endswith(".json")]
-            files.sort()
-            return files
-        except Exception:
-            return []
-
-    def _list_map_files(self):
-        try:
-            files = [f for f in os.listdir(self.maps_dir) if f.lower().endswith(".json")]
-            files.sort()
-            return files
-        except Exception:
-            return []
-
-    def _list_real_encoder_files(self):
-        try:
-            files = [
-                f for f in os.listdir(self.real_data_dir)
-                if f.lower().endswith(".csv") or f.lower().endswith(".txt")
-            ]
-            files.sort()
-            return [f for f in files if "encoder" in f.lower()]
-        except Exception:
-            return []
-
-
-    def _list_real_uwb_files(self):
-        try:
-            files = [
-                f for f in os.listdir(self.real_data_dir)
-                if f.lower().endswith(".csv") or f.lower().endswith(".txt")
-            ]
-            files.sort()
-            return [f for f in files if "uwb" in f.lower()]
-        except Exception:
-            return []
-
     # =========================================================
     # MODAL
     # =========================================================
 
-    def _close_all_dataset_dropdowns(self) -> None:
-        self.dataset_dropdown_data_open = False
-        self.dataset_dropdown_anchors_open = False
-        self.dataset_dropdown_route_open = False
-        self.dataset_dropdown_map_open = False
-        self.dataset_dropdown_source_open = False
-        self.dataset_dropdown_sim_kind_open = False
-        self.dataset_dropdown_real_encoder_open = False
-        self.dataset_dropdown_real_uwb_open = False
+    def _apply_sim_pipeline_result(self, result: SimPipelineResult):
+        """
+        Aplica no estado da tela o resultado do pipeline simulado.
+        """
+        if result is None or not result.ok:
+            msg = result.message if result is not None else "Falha ao carregar dataset simulado"
+            self.host._set_msg(msg)
+            return False
 
-    def _open_dataset_modal(self):
-        self.dataset_modal.open()
-        self._close_all_dataset_dropdowns()
+        self._dataset_path = result.dataset_path
+        self._dataset_label = result.dataset_label
 
-        self.available_datasets = self._list_dataset_files()
-        self.available_anchors = self._list_anchor_files()
-        self.available_routes = self._list_route_files()
-        self.available_maps = self._list_map_files()
-        self.available_real_encoder_files = self._list_real_encoder_files()
-        self.available_real_uwb_files = self._list_real_uwb_files()
+        self._batch_dists = result.batch_dists
+        self._batch_devs = result.batch_devs
 
-        sw = self.host.screen.get_width()
-        sh = self.host.screen.get_height()
+        self.simulated_dataset_kind = result.simulated_kind
 
-        # modal maior
-        w, h = 780, 640
-        mx = (sw - w) // 2
-        my = (sh - h) // 2
-        self.dataset_modal_rect = pg.Rect(mx, my, w, h)
+        self._dataset_stats = None
+        self._batch_results = None
 
-        top_y = my + 78
-        left_label_x = mx + 28
-        left_input_x = mx + 220
-        row_h = 60
-        input_w = 440
-        input_h = 30
-        drop_h = 128
-
-        self.dataset_inputs = {
-            "source": {
-                "value": "Simulado" if self.dataset_source_type == "simulated" else "Real (encoder + UWB)",
-                "label_pos": (0, 0),
-                "rect": pg.Rect(0, 0, input_w, input_h),
-                "dropdown_rect": pg.Rect(0, 0, input_w, drop_h),
-            },
-            "sim_kind": {
-                "value": self.simulated_dataset_kind,
-                "label_pos": (0, 0),
-                "rect": pg.Rect(0, 0, input_w, input_h),
-                "dropdown_rect": pg.Rect(0, 0, input_w, drop_h),
-            },
-            "dataset": {
-                "value": os.path.basename(self._dataset_path) if self._dataset_path else "",
-                "label_pos": (0, 0),
-                "rect": pg.Rect(0, 0, input_w, input_h),
-                "dropdown_rect": pg.Rect(0, 0, input_w, drop_h),
-            },
-            "real_encoder": {
-                "value": os.path.basename(self._real_encoder_file) if self._real_encoder_file else "",
-                "label_pos": (0, 0),
-                "rect": pg.Rect(0, 0, input_w, input_h),
-                "dropdown_rect": pg.Rect(0, 0, input_w, drop_h),
-            },
-            "real_uwb": {
-                "value": os.path.basename(self._real_uwb_file) if self._real_uwb_file else "",
-                "label_pos": (0, 0),
-                "rect": pg.Rect(0, 0, input_w, input_h),
-                "dropdown_rect": pg.Rect(0, 0, input_w, drop_h),
-            },
-            "anchors": {
-                "value": os.path.basename(self._anchors_path) if getattr(self, "_anchors_path", "") else "",
-                "label_pos": (0, 0),
-                "rect": pg.Rect(0, 0, input_w, input_h),
-                "dropdown_rect": pg.Rect(0, 0, input_w, drop_h),
-            },
-            "route": {
-                "value": self._route_label if self._route_label else "",
-                "label_pos": (0, 0),
-                "rect": pg.Rect(0, 0, input_w, input_h),
-                "dropdown_rect": pg.Rect(0, 0, input_w, drop_h),
-            },
-            "map": {
-                "value": self._map_label if self._map_label else "",
-                "label_pos": (0, 0),
-                "rect": pg.Rect(0, 0, input_w, input_h),
-                "dropdown_rect": pg.Rect(0, 0, input_w, drop_h),
-            },
-        }
-
-        self._reflow_dataset_modal_inputs()
-
-        btn_y = my + h - 48
-
-        self.dataset_buttons["ok"] = Button(
-            (mx + w - 220, btn_y, 90, 30),
-            "Carregar",
-            self.host.font,
-        )
-
-        self.dataset_buttons["cancel"] = Button(
-            (mx + w - 115, btn_y, 90, 30),
-            "Cancelar",
-            self.host.font,
-        )
-
-        self.dataset_dropdown_scroll = 0
-        self.anchors_dropdown_scroll = 0
-        self.route_dropdown_scroll = 0
-        self.map_dropdown_scroll = 0
-        self.dataset_dropdown_source_open = False
-        self.dataset_dropdown_real_encoder_open = False
-        self.dataset_dropdown_real_uwb_open = False
-        self.real_encoder_dropdown_scroll = 0
-        self.real_uwb_dropdown_scroll = 0
-
-    def _reflow_dataset_modal_inputs(self) -> None:
-        if self.dataset_modal_rect is None or not self.dataset_inputs:
-            return
-
-        mx = self.dataset_modal_rect.x
-        my = self.dataset_modal_rect.y
-
-        top_y = my + 78
-        left_label_x = mx + 28
-        left_input_x = mx + 220
-        row_h = 60
-        input_w = 440
-        input_h = 30
-        drop_h = 128
-
-        source_value = self.dataset_inputs["source"]["value"].strip()
-        if source_value == "Real (encoder + UWB)":
-            order = ["source", "real_encoder", "real_uwb", "anchors", "route", "map"]
-        else:
-            order = ["source", "sim_kind", "dataset", "anchors", "route", "map"]
-
-        for row_idx, key in enumerate(order):
-            y = top_y + row_h * row_idx
-            self.dataset_inputs[key]["label_pos"] = (left_label_x, y + 6)
-            self.dataset_inputs[key]["rect"] = pg.Rect(left_input_x, y, input_w, input_h)
-            self.dataset_inputs[key]["dropdown_rect"] = pg.Rect(left_input_x, y + 32, input_w, drop_h)
-
-    def _close_modal(self):
-        self.dataset_modal_open = False
-        self._close_all_dataset_dropdowns()
+        return True
 
     def _apply_dataset_config(self):
         """
@@ -530,22 +314,9 @@ class DatasetMode:
                 self.host._set_msg("Selecione um dataset simulado")
                 return
 
-            self.simulated_dataset_kind = simulated_kind or getattr(self, "simulated_dataset_kind", "Front")
-            kind_map = {
-                "front": "Front",
-                "top": "Front",
-                "rear": "Rear",
-                "bot": "Rear",
-                "bottom": "Rear",
-                "mid": "Mid",
-                "middle": "Mid",
-                "bc": "BC",
-                "bc-ekf": "BC",
-                "bcekf": "BC",
-            }
-
-            kind_key = str(self.simulated_dataset_kind).strip().lower()
-            self.simulated_dataset_kind = kind_map.get(kind_key, "Front")
+            self.simulated_dataset_kind = normalize_simulated_kind(
+                simulated_kind or getattr(self, "simulated_dataset_kind", "Front")
+            )
 
             if self.simulated_dataset_kind not in ("Front", "Rear", "Mid", "BC"):
                 self.host._set_msg("Selecione o tipo do dataset simulado")
@@ -647,7 +418,7 @@ class DatasetMode:
             if not self._load_real_encoder_uwb_dataset(encoder_path, uwb_path):
                 return False
 
-        self._close_modal()
+        self.dataset_modal.close()
 
         if self.dataset_source_type == "real_encoder_uwb":
             if self._batch_dists is not None:
@@ -706,266 +477,40 @@ class DatasetMode:
 
 
     def _load_anchors(self, anchors_path: str) -> bool:
-        """Carrega âncoras e valida compatibilidade com dataset carregado (se houver).
-        Também lê, opcionalmente, o mapeamento dos IDs reais do UWB.
+        return apply_anchors_to_dataset_mode(self, anchors_path)
+
+    def _try_load_route(self, route_path: str) -> bool:
+        return apply_route_to_dataset_mode(self, route_path)
+    
+    def _try_load_dataset(self, path: str) -> bool:
         """
+        Carrega somente o arquivo bruto do dataset simulado.
+        A normalização por Front/Rear/Mid/BC acontece depois,
+        quando as âncoras já estiverem carregadas.
+        """
+        self._dataset_path = path
+        self._dataset_label = os.path.basename(path)
+        self._dataset_stats = None
+        self._batch_results = None
+
         try:
-            self._dataset_anchors, _ = load_anchors_from_json(anchors_path)
+            dists, devs = load_simulated_dataset_file(path)
 
-            # guarda caminho e tenta ler metadados extras do JSON bruto
-            self._anchors_path = anchors_path
-            self._anchors_uwb_ids = None
+            self._batch_dists = dists
+            self._batch_devs = devs
 
-            try:
-                raw = json.loads(Path(anchors_path).read_text(encoding="utf-8"))
-                raw_ids = raw.get("anchor_ids_uwb", None)
-
-                if raw_ids is not None:
-                    parsed_ids = []
-                    for x in raw_ids:
-                        sx = str(x).strip()
-                        if sx.lower().startswith("da"):
-                            sx = sx[2:]
-                        parsed_ids.append(int(sx))
-                    self._anchors_uwb_ids = parsed_ids
-
-                    print("[ANCHORS_UWB_IDS]", self._anchors_uwb_ids)
-            except Exception as meta_err:
-                print(f"[DATASET] aviso ao ler anchor_ids_uwb: {meta_err}")
-
-            if self._batch_dists is not None:
-                n_dataset = int(self._batch_dists.shape[1])
-                n_anchors = int(self._dataset_anchors.shape[0])
-
-                # Caso especial: dataset simulado BC usa 2 colunas por âncora
-                if self.dataset_source_type == "simulated" and self.simulated_dataset_kind == "BC":
-                    if n_dataset != 2 * n_anchors:
-                        self.host._set_msg(
-                            f"Dataset BC inválido: esperado front+rear ({2 * n_anchors} colunas), recebido {n_dataset}"
-                        )
-                        return False
-                else:
-                    if n_anchors != n_dataset:
-                        self.host._set_msg(
-                            f"Incompatibilidade: dataset possui {n_dataset} colunas de âncora, "
-                            f"mas o layout possui {n_anchors} âncoras"
-                        )
-                        return False
-
-            return True
-
-        except ValueError as e:
-            print(f"[DATASET] erro ao carregar âncoras: {e}")
-            self.host._set_msg(f"Erro ao carregar âncoras: {str(e)}")
-            return False
-        except Exception as e:
-            print(f"[DATASET] erro ao carregar âncoras: {e}")
-            self.host._set_msg("Erro ao carregar âncoras")
-            return False
-
-    def _try_load_route(self, path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-
-            waypoints = data.get("waypoints", None)
-            if waypoints is None:
-                raise ValueError("Arquivo de rota inválido: campo 'waypoints' não encontrado.")
-
-            pts = np.asarray(waypoints, dtype=float)
-            if pts.ndim != 2 or pts.shape[1] < 2 or len(pts) < 2:
-                raise ValueError("Arquivo de rota inválido: waypoints insuficientes.")
-
-            self._route_waypoints = pts[:, :2].copy()
-            self._reference_route_display = pts[:, :2].copy()
-            self._reference_route_dense = pts[:, :2].copy()
-            self._route_label = os.path.basename(path)
-
+            self.host._set_msg(f"Dataset carregado: {self._dataset_label}")
             return True
 
         except Exception as e:
-            print("[ROUTE_LOAD_FAIL]", e)
+            print(f"[DATASET] erro ao carregar dataset: {e}")
+            self._batch_dists = None
+            self._batch_devs = None
+            self.host._set_msg("Erro ao carregar dataset")
             return False
 
     def _try_load_map(self, map_path: str) -> bool:
-        try:
-            self._map_env, self._map_label = load_map_from_json(map_path)
-            return True
-        except Exception as e:
-            print(f"[DATASET] erro ao carregar mapa: {e}")
-            self.host._set_msg("Erro ao carregar mapa")
-            return False
-
-    def _handle_dataset_modal_events(self, event) -> bool:
-        if not self.dataset_modal_open:
-            return False
-
-        if event.type == pg.KEYDOWN:
-            if event.key == pg.K_ESCAPE:
-                self._close_modal()
-                return True
-
-        source_value = self.dataset_inputs["source"]["value"].strip()
-
-        names = ["source", "anchors", "map"]
-
-        if source_value == "Real (encoder + UWB)":
-            names.extend(["real_encoder", "real_uwb", "route"])
-        else:
-            names.extend(["sim_kind", "dataset", "route"])
-        
-        flags = {
-            "source": "dataset_dropdown_source_open",
-            "sim_kind": "dataset_dropdown_sim_kind_open",
-            "dataset": "dataset_dropdown_data_open",
-            "real_encoder": "dataset_dropdown_real_encoder_open",
-            "real_uwb": "dataset_dropdown_real_uwb_open",
-            "anchors": "dataset_dropdown_anchors_open",
-            "route": "dataset_dropdown_route_open",
-            "map": "dataset_dropdown_map_open",
-        }
-
-        lists = {
-            "source": self.available_dataset_sources,
-            "dataset": self.available_datasets,
-            "sim_kind": self.available_simulated_dataset_kinds,
-            "real_encoder": self.available_real_encoder_files,
-            "real_uwb": self.available_real_uwb_files,
-            "anchors": self.available_anchors,
-            "route": self.available_routes,
-            "map": self.available_maps,
-        }
-
-        # scroll por mouse wheel dentro de dropdown aberto
-        if event.type == pg.MOUSEWHEEL:
-            mouse_pos = pg.mouse.get_pos()
-            for name in names:
-                inp = self.dataset_inputs[name]
-                is_open = getattr(self, flags[name])
-                if is_open and inp["dropdown_rect"].collidepoint(mouse_pos):
-                    # wheel up => sobe lista
-                    self._scroll_dropdown(name, -event.y)
-                    return True
-
-        if event.type == pg.MOUSEBUTTONDOWN:
-            pos = getattr(event, "pos", pg.mouse.get_pos())
-
-            # scroll antigo do pygame
-            if event.button == 4 or event.button == 5:
-                delta = -1 if event.button == 4 else 1
-                for name in names:
-                    inp = self.dataset_inputs[name]
-                    is_open = getattr(self, flags[name])
-                    if is_open and inp["dropdown_rect"].collidepoint(pos):
-                        self._scroll_dropdown(name, delta)
-                        return True
-
-            if event.button == 1:
-                if self.dataset_buttons["ok"].hit(pos):
-                    self._apply_dataset_config()
-                    return True
-
-                if self.dataset_buttons["cancel"].hit(pos):
-                    self._close_modal()
-                    return True
-
-                # primeiro tenta clique em dropdown aberto
-                for name in names:
-                    inp = self.dataset_inputs[name]
-                    flag_name = flags[name]
-                    is_open = getattr(self, flag_name)
-
-                    if is_open:
-                        if inp["dropdown_rect"].collidepoint(pos):
-                            item_h = 26
-                            scroll = self._get_dropdown_scroll(name)
-                            items = lists[name]
-                            max_visible = max(1, inp["dropdown_rect"].h // item_h)
-                            visible_items = items[scroll:scroll + max_visible]
-
-                            idx = (pos[1] - inp["dropdown_rect"].y) // item_h
-                            if 0 <= idx < len(visible_items):
-                                inp["value"] = visible_items[idx]
-                                if name == "source":
-                                    self._reflow_dataset_modal_inputs()
-                            setattr(self, flag_name, False)
-                            return True
-
-                # clique nas caixas abre o dropdown correspondente
-                for name in names:
-                    inp = self.dataset_inputs[name]
-                    if inp["rect"].collidepoint(pos):
-                        self._close_all_dataset_dropdowns()
-                        setattr(self, flags[name], True)
-                        return True
-
-                # clique fora fecha tudo
-                self._close_all_dataset_dropdowns()
-
-        return False
-    
-    def _get_dropdown_state(self, name: str):
-        if name == "source":
-            return self.dataset_dropdown_source_open, 0, self.available_dataset_sources
-        if name == "sim_kind":
-            return self.dataset_dropdown_sim_kind_open, 0, self.available_simulated_dataset_kinds
-        if name == "dataset":
-            return self.dataset_dropdown_data_open, self.dataset_dropdown_scroll, self.available_datasets
-        if name == "real_encoder":
-            return self.dataset_dropdown_real_encoder_open, self.real_encoder_dropdown_scroll, self.available_real_encoder_files
-        if name == "real_uwb":
-            return self.dataset_dropdown_real_uwb_open, self.real_uwb_dropdown_scroll, self.available_real_uwb_files
-        if name == "anchors":
-            return self.dataset_dropdown_anchors_open, self.anchors_dropdown_scroll, self.available_anchors
-        if name == "route":
-            return self.dataset_dropdown_route_open, self.route_dropdown_scroll, self.available_routes
-        if name == "map":
-            return self.dataset_dropdown_map_open, self.map_dropdown_scroll, self.available_maps
-        return False, 0, []
-
-    def _get_dropdown_scroll(self, name: str) -> int:
-        if name == "source":
-            return 0
-        if name == "sim_kind":
-            return 0
-        if name == "dataset":
-            return self.dataset_dropdown_scroll
-        if name == "real_encoder":
-            return self.real_encoder_dropdown_scroll
-        if name == "real_uwb":
-            return self.real_uwb_dropdown_scroll
-        if name == "anchors":
-            return self.anchors_dropdown_scroll
-        if name == "route":
-            return self.route_dropdown_scroll
-        if name == "map":
-            return self.map_dropdown_scroll
-        return 0
-
-    def _set_dropdown_scroll(self, name: str, value: int):
-        if name == "dataset":
-            self.dataset_dropdown_scroll = value
-        elif name == "real_encoder":
-            self.real_encoder_dropdown_scroll = value
-        elif name == "real_uwb":
-            self.real_uwb_dropdown_scroll = value
-        elif name == "anchors":
-            self.anchors_dropdown_scroll = value
-        elif name == "route":
-            self.route_dropdown_scroll = value
-        elif name == "map":
-            self.map_dropdown_scroll = value
-
-    def _scroll_dropdown(self, name: str, delta: int):
-        _, scroll, items = self._get_dropdown_state(name)
-        rect = self.dataset_inputs[name]["dropdown_rect"]
-
-        item_h = 26
-        max_visible = max(1, rect.h // item_h)
-        max_scroll = max(0, len(items) - max_visible)
-
-        new_scroll = max(0, min(max_scroll, scroll + delta))
-        self._set_dropdown_scroll(name, new_scroll)
+        return apply_map_to_dataset_mode(self, map_path)
 
     # =========================================================
     # EVENTOS
@@ -1109,261 +654,27 @@ class DatasetMode:
         if self.dataset_modal_open:
             self.dataset_modal.draw()
 
-    def _draw_dataset_modal(self):
-        screen = self.host.screen
-        font = self.host.font
-        bigfont = self.host.bigfont
-
-        self._reflow_dataset_modal_inputs()
-
-        sw = screen.get_width()
-        sh = screen.get_height()
-
-        w, h = 780, 640
-        mx = (sw - w) // 2
-        my = (sh - h) // 2
-        modal_rect = pg.Rect(mx, my, w, h)
-
-        overlay = pg.Surface((sw, sh), pg.SRCALPHA)
-        overlay.fill((0, 0, 0, 120))
-        screen.blit(overlay, (0, 0))
-
-        pg.draw.rect(screen, (245, 245, 248), modal_rect, border_radius=10)
-        pg.draw.rect(screen, (80, 80, 90), modal_rect, 2, border_radius=10)
-
-        txt = bigfont.render("Configurar Dataset", True, (20, 20, 20))
-        screen.blit(txt, (mx + 18, my + 14))
-
-        entries = [("Fonte:", "source")]
-
-        source_value = self.dataset_inputs["source"]["value"].strip()
-
-        if source_value == "Real (encoder + UWB)":
-            entries.extend([
-                ("Encoder real:", "real_encoder"),
-                ("UWB real:", "real_uwb"),
-                ("Âncoras:", "anchors"),
-                ("Rota ref.:", "route"),
-                ("Mapa:", "map"),
-            ])
-        else:
-            entries.extend([
-                ("Tipo de simulação:", "sim_kind"),
-                ("Dataset simulado:", "dataset"),
-                ("Âncoras:", "anchors"),
-                ("Rota:", "route"),
-                ("Mapa:", "map"),
-            ])
-
-        for label, key in entries:
-            label_x, label_y = self.dataset_inputs[key]["label_pos"]
-            rect = self.dataset_inputs[key]["rect"]
-
-            draw_text(screen, label, label_x, label_y, font, color=(60, 60, 60))
-            self._draw_dropdown_box(screen, rect, self.dataset_inputs[key]["value"], font)
-            self._draw_dropdown_arrow(rect)
-
-        source_value = self.dataset_inputs["source"]["value"].strip()
-
-        self.dataset_buttons["ok"].draw(screen)
-        self.dataset_buttons["cancel"].draw(screen)
-
-        if self.dataset_dropdown_source_open:
-            self._draw_dropdown_list("source", self.dataset_inputs["source"]["dropdown_rect"], self.available_dataset_sources)
-
-        if source_value == "Real (encoder + UWB)":
-            if self.dataset_dropdown_real_encoder_open:
-                self._draw_dropdown_list("real_encoder", self.dataset_inputs["real_encoder"]["dropdown_rect"], self.available_real_encoder_files)
-            if self.dataset_dropdown_real_uwb_open:
-                self._draw_dropdown_list("real_uwb", self.dataset_inputs["real_uwb"]["dropdown_rect"], self.available_real_uwb_files)
-            if self.dataset_dropdown_anchors_open:
-                self._draw_dropdown_list("anchors", self.dataset_inputs["anchors"]["dropdown_rect"], self.available_anchors)
-            if self.dataset_dropdown_route_open:
-                self._draw_dropdown_list("route", self.dataset_inputs["route"]["dropdown_rect"], self.available_routes)
-            if self.dataset_dropdown_map_open:
-                self._draw_dropdown_list("map", self.dataset_inputs["map"]["dropdown_rect"], self.available_maps)
-        else:
-            if self.dataset_dropdown_sim_kind_open:
-                self._draw_dropdown_list("sim_kind", self.dataset_inputs["sim_kind"]["dropdown_rect"], self.available_simulated_dataset_kinds)
-            if self.dataset_dropdown_data_open:
-                self._draw_dropdown_list("dataset", self.dataset_inputs["dataset"]["dropdown_rect"], self.available_datasets)
-            if self.dataset_dropdown_anchors_open:
-                self._draw_dropdown_list("anchors", self.dataset_inputs["anchors"]["dropdown_rect"], self.available_anchors)
-            if self.dataset_dropdown_route_open:
-                self._draw_dropdown_list("route", self.dataset_inputs["route"]["dropdown_rect"], self.available_routes)
-            if self.dataset_dropdown_map_open:
-                self._draw_dropdown_list("map", self.dataset_inputs["map"]["dropdown_rect"], self.available_maps)
-
-    def _draw_dropdown_box(self, screen: pg.Surface, rect: pg.Rect, value: str, font: pg.font.Font) -> None:
-        pg.draw.rect(screen, (255, 255, 255), rect, border_radius=6)
-        pg.draw.rect(screen, (130, 130, 140), rect, 2, border_radius=6)
-
-        txt = font.render(str(value), True, (30, 30, 30))
-        screen.blit(txt, (rect.x + 8, rect.y + 5))
-
-    def _draw_dropdown_arrow(self, rect: pg.Rect):
-        cx = rect.right - 14
-        cy = rect.centery + 1
-        pts = [(cx - 5, cy - 3), (cx + 5, cy - 3), (cx, cy + 4)]
-        pg.draw.polygon(self.host.screen, (80, 80, 80), pts)
-
     def _normalize_simulated_dataset_by_kind(self):
         """
-        Normaliza datasets simulados conforme o tipo selecionado.
-
-        Dataset com N colunas:
-            já representa uma tag/posição única.
-
-        Dataset com 2N colunas:
-            [A0_front, A0_rear, A1_front, A1_rear, ...]
+        Wrapper para normalização do dataset simulado.
         """
-        if self._batch_dists is None or self._dataset_anchors is None:
-            return True
-
-        dists = np.asarray(self._batch_dists, dtype=float)
-        devs = (
-            np.asarray(self._batch_devs, dtype=float)
-            if self._batch_devs is not None
-            else None
+        result = normalize_simulated_dataset_by_kind(
+            batch_dists=self._batch_dists,
+            batch_devs=self._batch_devs,
+            dataset_anchors=self._dataset_anchors,
+            simulated_kind=self.simulated_dataset_kind,
+            cfg=config,
         )
 
-        if dists.ndim != 2:
-            self.host._set_msg("Dataset inválido: matriz de distâncias não é 2D")
+        if not result.ok:
+            self.host._set_msg(result.message)
             return False
 
-        n_anchors = int(np.asarray(self._dataset_anchors).shape[0])
-        n_cols = int(dists.shape[1])
+        self._batch_dists = result.batch_dists
+        self._batch_devs = result.batch_devs
+        self.simulated_dataset_kind = result.simulated_kind
 
-        kind_raw = getattr(self, "simulated_dataset_kind", "Front")
-        kind = str(kind_raw).strip().lower()
-
-        if kind in ("top", "front", "tag1", "t1"):
-            kind = "front"
-        elif kind in ("bot", "bottom", "rear", "tag2", "t2"):
-            kind = "rear"
-        elif kind in ("middle", "center", "centro", "mid"):
-            kind = "mid"
-        elif kind in ("bc", "bc-ekf", "bcekf"):
-            kind = "bc"
-        else:
-            kind = "front"
-
-        self.simulated_dataset_kind = {
-            "front": "Front",
-            "rear": "Rear",
-            "mid": "Mid",
-            "bc": "BC",
-        }[kind]
-
-        # Dataset já reduzido.
-        if n_cols == n_anchors:
-            return True
-
-        # Dataset com duas tags por âncora.
-        if n_cols == 2 * n_anchors:
-            if kind == "bc":
-                # Mantém 2N colunas para _prepare_bc_ekf_data_for_simulated_bc().
-                return True
-
-            front = dists[:, 0::2]
-            rear = dists[:, 1::2]
-
-            if devs is not None:
-                dev_front = devs[:, 0::2]
-                dev_rear = devs[:, 1::2]
-            else:
-                dev_front = None
-                dev_rear = None
-
-            if kind == "front":
-                self._batch_dists = front
-                self._batch_devs = (
-                    dev_front
-                    if dev_front is not None
-                    else np.full_like(front, float(getattr(config, "UWB_NOISE_STD", 0.05)))
-                )
-                return True
-
-            if kind == "rear":
-                self._batch_dists = rear
-                self._batch_devs = (
-                    dev_rear
-                    if dev_rear is not None
-                    else np.full_like(rear, float(getattr(config, "UWB_NOISE_STD", 0.05)))
-                )
-                return True
-
-            if kind == "mid":
-                self._batch_dists = 0.5 * (front + rear)
-
-                if dev_front is not None and dev_rear is not None:
-                    self._batch_devs = 0.5 * np.sqrt(dev_front**2 + dev_rear**2)
-                else:
-                    self._batch_devs = np.full_like(
-                        self._batch_dists,
-                        float(getattr(config, "UWB_NOISE_STD", 0.05)),
-                    )
-
-                return True
-
-        self.host._set_msg(
-            f"Incompatibilidade: dataset possui {n_cols} colunas de âncora, "
-            f"mas o layout possui {n_anchors} âncoras"
-        )
-        return False
-
-    def _draw_dropdown_list(self, name: str, rect: pg.Rect, items: list[str]):
-        if not items:
-            items = ["(vazio)"]
-
-        item_h = 26
-        max_visible = max(1, rect.h // item_h)
-        scroll = self._get_dropdown_scroll(name)
-
-        visible_items = items[scroll:scroll + max_visible]
-        real_h = len(visible_items) * item_h
-        draw_rect = pg.Rect(rect.x, rect.y, rect.w, real_h)
-
-        pg.draw.rect(self.host.screen, (255, 255, 255), draw_rect, border_radius=4)
-        pg.draw.rect(self.host.screen, (120, 120, 130), draw_rect, 2, border_radius=4)
-
-        mouse_pos = pg.mouse.get_pos()
-        y = draw_rect.y
-
-        for item in visible_items:
-            item_rect = pg.Rect(draw_rect.x, y, draw_rect.w, item_h)
-
-            if item_rect.collidepoint(mouse_pos):
-                pg.draw.rect(self.host.screen, (230, 238, 255), item_rect)
-
-            txt = self.host.font.render(str(item), True, (30, 30, 30))
-            self.host.screen.blit(txt, (item_rect.x + 8, item_rect.y + 4))
-
-            pg.draw.line(
-                self.host.screen,
-                (225, 225, 230),
-                (item_rect.x, item_rect.bottom),
-                (item_rect.right, item_rect.bottom),
-                1
-            )
-            y += item_h
-
-        # scrollbar visual
-        if len(items) > max_visible:
-            bar_w = 8
-            bar_x = draw_rect.right - bar_w - 2
-            bar_y = draw_rect.y + 2
-            bar_h = draw_rect.h - 4
-
-            pg.draw.rect(self.host.screen, (240, 240, 240), (bar_x, bar_y, bar_w, bar_h))
-
-            thumb_h = max(20, int(bar_h * (max_visible / len(items))))
-            max_scroll = len(items) - max_visible
-            thumb_y = bar_y
-            if max_scroll > 0:
-                thumb_y = bar_y + int((scroll / max_scroll) * (bar_h - thumb_h))
-
-            pg.draw.rect(self.host.screen, (160, 160, 170), (bar_x, thumb_y, bar_w, thumb_h), border_radius=3)
+        return True
 
     # =========================================================
     # LOADERS
@@ -2650,13 +1961,7 @@ class DatasetMode:
             )
             return False
 
-        n_cols = int(self._batch_dists.shape[1])
-        n_anchors = int(self._dataset_anchors.shape[0])
-
-        if n_cols != n_anchors:
-            self.host._set_msg(
-                f"UWB/layout incompatíveis: {n_cols} vs {n_anchors} âncoras"
-            )
+        if not validate_dataset_anchor_compatibility(self):
             return False
 
         return True
