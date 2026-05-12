@@ -1,6 +1,12 @@
 # src/ui/ui_elements.py
+from __future__ import annotations
+
+from dataclasses import dataclass
 import pygame as pg
-from typing import List, Sequence, Tuple, Union
+
+from typing import List, Sequence, Tuple, Union, Optional
+
+from src.ui.botton import Button
 
 # Cores comuns
 BLACK = (0, 0, 0)
@@ -352,3 +358,153 @@ class ToggleRow:
         # texto
         txt = self.font.render(self.label, True, (0,0,0))
         surf.blit(txt, (self.box.right + 10, self.rect.y + (self.rect.h - txt.get_height())//2))
+
+@dataclass
+class ModalStyle:
+    bg: tuple[int, int, int] = (248, 248, 252)
+    border: tuple[int, int, int] = (120, 120, 130)
+    overlay: tuple[int, int, int, int] = (0, 0, 0, 90)
+    title_color: tuple[int, int, int] = (25, 25, 25)
+    label_color: tuple[int, int, int] = (55, 55, 55)
+    hint_color: tuple[int, int, int] = (110, 110, 110)
+
+
+class ModalFrame:
+    """
+    Modal genérico reutilizável.
+
+    Responsabilidades:
+    - calcular/guardar rect;
+    - desenhar overlay;
+    - desenhar caixa;
+    - desenhar título.
+    """
+
+    def __init__(
+        self,
+        rect: pg.Rect,
+        title: str,
+        font: pg.font.Font,
+        bigfont: pg.font.Font,
+        style: Optional[ModalStyle] = None,
+    ):
+        self.rect = pg.Rect(rect)
+        self.title = title
+        self.font = font
+        self.bigfont = bigfont
+        self.style = style or ModalStyle()
+
+    @classmethod
+    def centered(
+        cls,
+        screen: pg.Surface,
+        width: int,
+        height: int,
+        title: str,
+        font: pg.font.Font,
+        bigfont: pg.font.Font,
+        y_offset: int = 0,
+        style: Optional[ModalStyle] = None,
+    ):
+        sw, sh = screen.get_size()
+        rect = pg.Rect(
+            (sw - width) // 2,
+            (sh - height) // 2 + y_offset,
+            width,
+            height,
+        )
+        return cls(rect, title, font, bigfont, style=style)
+
+    def draw(self, screen: pg.Surface):
+        overlay = pg.Surface(screen.get_size(), pg.SRCALPHA)
+        overlay.fill(self.style.overlay)
+        screen.blit(overlay, (0, 0))
+
+        pg.draw.rect(screen, self.style.bg, self.rect, border_radius=8)
+        pg.draw.rect(screen, self.style.border, self.rect, 1, border_radius=8)
+
+        title_surf = self.bigfont.render(self.title, True, self.style.title_color)
+        screen.blit(title_surf, (self.rect.x + 18, self.rect.y + 16))
+
+    def content_origin(self, left: int = 24, top: int = 76):
+        return self.rect.x + left, self.rect.y + top
+
+    def contains(self, pos):
+        return self.rect.collidepoint(pos)
+
+
+class FormDropdownRow:
+    """
+    Linha padrão de formulário:
+        Label: [ TextBoxDropdown ]
+
+    O dropdown continua sendo o TextBoxDropdown já existente no projeto.
+    """
+
+    def __init__(
+        self,
+        label: str,
+        dropdown,
+        *,
+        label_width: int = 180,
+        row_height: int = 60,
+        dropdown_width: int = 440,
+        dropdown_height: int = 30,
+    ):
+        self.label = label
+        self.dropdown = dropdown
+        self.label_width = int(label_width)
+        self.row_height = int(row_height)
+        self.dropdown_width = int(dropdown_width)
+        self.dropdown_height = int(dropdown_height)
+
+    def set_position(self, x: int, y: int):
+        self.x = int(x)
+        self.y = int(y)
+
+        self.dropdown.rect.topleft = (self.x + self.label_width, self.y)
+        self.dropdown.rect.size = (self.dropdown_width, self.dropdown_height)
+
+    def draw(self, screen: pg.Surface, font: pg.font.Font, color=(55, 55, 55)):
+        label_surf = font.render(self.label, True, color)
+        screen.blit(label_surf, (self.x, self.y + 6))
+        self.dropdown.draw(screen)
+
+    def handle_event(self, event):
+        return self.dropdown.handle_event(event)
+
+    @property
+    def opened(self):
+        return bool(getattr(self.dropdown, "dropdown_open", False))
+
+
+class ModalButtonBar:
+    """
+    Barra padrão de botões no rodapé do modal.
+    """
+
+    def __init__(
+        self,
+        font: pg.font.Font,
+        ok_text: str = "Carregar",
+        cancel_text: str = "Cancelar",
+    ):
+        self.btn_ok = Button((0, 0, 90, 30), ok_text, font, bg=(245, 245, 245))
+        self.btn_cancel = Button((0, 0, 90, 30), cancel_text, font, bg=(245, 245, 245))
+
+    def set_position(self, x_right: int, y: int, gap: int = 14):
+        self.btn_cancel.rect.topleft = (x_right - self.btn_cancel.rect.w, y)
+        self.btn_ok.rect.topleft = (
+            self.btn_cancel.rect.x - gap - self.btn_ok.rect.w,
+            y,
+        )
+
+    def draw(self, screen: pg.Surface):
+        self.btn_ok.draw(screen)
+        self.btn_cancel.draw(screen)
+
+    def hit_ok(self, pos):
+        return self.btn_ok.hit(pos)
+
+    def hit_cancel(self, pos):
+        return self.btn_cancel.hit(pos)

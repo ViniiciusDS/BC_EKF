@@ -60,6 +60,8 @@ from src.ui.algo_modes.dataset_render import (
     draw_dataset_analyzer,
 )
 
+from src.ui.algo_modes.dataset_modal import DatasetConfigModal
+
 WHITE = (255, 255, 255)
 BLACK = (0, 0, 0)
 GRAY_D = (90, 90, 90)
@@ -100,6 +102,7 @@ class DatasetMode:
         os.makedirs(self.maps_dir, exist_ok=True)
 
         # modal
+        self.dataset_modal = DatasetConfigModal(self)
         self.dataset_modal_open = False
         self.dataset_dropdown_data_open = False
         self.dataset_dropdown_anchors_open = False
@@ -327,7 +330,7 @@ class DatasetMode:
         self.dataset_dropdown_real_uwb_open = False
 
     def _open_dataset_modal(self):
-        self.dataset_modal_open = True
+        self.dataset_modal.open()
         self._close_all_dataset_dropdowns()
 
         self.available_datasets = self._list_dataset_files()
@@ -463,47 +466,107 @@ class DatasetMode:
         self._close_all_dataset_dropdowns()
 
     def _apply_dataset_config(self):
-        dataset_source = self.dataset_inputs["source"]["value"].strip()
-        dataset_file = self.dataset_inputs["dataset"]["value"].strip()
-        real_encoder_file = self.dataset_inputs["real_encoder"]["value"].strip()
-        real_uwb_file = self.dataset_inputs["real_uwb"]["value"].strip()
-        anchors_file = self.dataset_inputs["anchors"]["value"].strip()
-        route_file = self.dataset_inputs["route"]["value"].strip()
-        map_file = self.dataset_inputs["map"]["value"].strip()
-        sim_kind = self.dataset_inputs["sim_kind"]["value"].strip()
+        """
+        Compatibilidade com o modal antigo.
+        Pode ser removida depois que o DatasetConfigModal estiver estável.
+        """
+        return self._apply_dataset_config_from_modal_values()
 
-        self._bc_ekf_data = None
-
-        self.dataset_source_type = (
-            "real_encoder_uwb" if dataset_source == "Real (encoder + UWB)" else "simulated"
+    def _apply_dataset_config_from_modal_values(self):
+        """
+        Ponte entre o novo DatasetConfigModal e o fluxo atual de carregamento.
+        """
+        dataset_file = getattr(self, "_modal_dataset_file", "")
+        real_encoder_file = getattr(self, "_modal_real_encoder_file", "")
+        real_uwb_file = getattr(self, "_modal_real_uwb_file", "")
+        anchor_file = getattr(self, "_modal_anchor_file", "")
+        route_file = getattr(self, "_modal_route_file", "")
+        map_file = getattr(self, "_modal_map_file", "")
+        simulated_kind = getattr(
+            self,
+            "_modal_simulated_kind",
+            getattr(self, "simulated_dataset_kind", "Front")
         )
 
+        # A partir daqui, reaproveite a lógica que já existe em _apply_dataset_config().
+        return self._apply_dataset_config_values(
+            dataset_file=dataset_file,
+            real_encoder_file=real_encoder_file,
+            real_uwb_file=real_uwb_file,
+            anchor_file=anchor_file,
+            route_file=route_file,
+            map_file=map_file,
+            simulated_kind=simulated_kind,
+        )
+
+    def _apply_dataset_config_values(
+            self,
+            *,
+            dataset_file="",
+            real_encoder_file="",
+            real_uwb_file="",
+            anchor_file="",
+            route_file="",
+            map_file="",
+            simulated_kind="Front",
+        ):
+        """
+        Núcleo do fluxo de carregamento de dataset extraído de _apply_dataset_config().
+        Recebe os nomes de arquivo/paths a partir do modal novo e reaplica a lógica
+        existente sem depender diretamente dos `dataset_inputs`.
+        """
+        # decide tipo a partir dos arquivos passados: prioridade para real se houver arquivos reais
+        is_real = bool(real_encoder_file or real_uwb_file)
+        self._bc_ekf_data = None
+
+        if is_real:
+            self.dataset_source_type = "real_encoder_uwb"
+        else:
+            self.dataset_source_type = "simulated"
+
+        # Simulado
         if self.dataset_source_type == "simulated":
             if not dataset_file:
                 self.host._set_msg("Selecione um dataset simulado")
                 return
 
-            if sim_kind not in ("Front", "Rear", "MID", "BC"):
-                self.host._set_msg("Selecione o tipo do dataset simulado")
-                return
+            self.simulated_dataset_kind = simulated_kind or getattr(self, "simulated_dataset_kind", "Front")
+            kind_map = {
+                "front": "Front",
+                "top": "Front",
+                "rear": "Rear",
+                "bot": "Rear",
+                "bottom": "Rear",
+                "mid": "Mid",
+                "middle": "Mid",
+                "bc": "BC",
+                "bc-ekf": "BC",
+                "bcekf": "BC",
+            }
 
-            self.simulated_dataset_kind = sim_kind
+            kind_key = str(self.simulated_dataset_kind).strip().lower()
+            self.simulated_dataset_kind = kind_map.get(kind_key, "Front")
+
+            if self.simulated_dataset_kind not in ("Front", "Rear", "Mid", "BC"):
+                self.host._set_msg("Selecione o tipo do dataset simulado")
+                return False
 
             # 1) dataset
             dataset_path = os.path.join(self.dataset_dir, dataset_file)
-            self._try_load_dataset(dataset_path)
+            if not self._try_load_dataset(dataset_path):
+                return False
 
             # 2) âncoras
-            if anchors_file:
-                anchors_path = os.path.join(self.anchors_dir, anchors_file)
+            if anchor_file:
+                anchors_path = os.path.join(self.anchors_dir, anchor_file)
                 if not self._load_anchors(anchors_path):
-                    return
+                    return False
 
             # 3) rota
             if route_file:
                 route_path = os.path.join(self.routes_dir, route_file)
                 if not self._try_load_route(route_path):
-                    return
+                    return False
 
                 # No modo simulado, a rota selecionada também pode ser usada
                 # como referência/fallback para preparar o BC-EKF quando não
@@ -511,47 +574,78 @@ class DatasetMode:
                 if self._route_waypoints is not None:
                     self._dataset_route = np.asarray(self._route_waypoints, dtype=float).copy()
 
-
             # 4) mapa
             if map_file:
                 map_path = os.path.join(self.maps_dir, map_file)
                 if not self._try_load_map(map_path):
-                    return
-            
-            # 5) prepara BC-EKF somente no final, com tudo carregado
-            self._bc_ekf_data = None
+                    return False
+
+            # 5) normaliza pelo tipo Front/Rear/Mid/BC
+            if not self._normalize_simulated_dataset_by_kind():
+                return False
+
+            # 6) se for BC, prepara BC-EKF
             if self.simulated_dataset_kind == "BC":
                 self._prepare_bc_ekf_data_for_simulated_bc()
 
-        elif self.dataset_source_type == "real_encoder_uwb":
+                if self._bc_ekf_data is None:
+                    self.host._set_msg("Falha ao preparar BC-EKF para dataset BC")
+                    return False
+
+            # 7) checagem final depois de reduzir para N colunas
+            if self._batch_dists is None or self._dataset_anchors is None:
+                self.host._set_msg("Dataset ou âncoras não carregados")
+                return False
+
+            n_cols = int(self._batch_dists.shape[1])
+            n_anchors = int(np.asarray(self._dataset_anchors).shape[0])
+
+            if n_cols != n_anchors:
+                self.host._set_msg(
+                    f"Incompatibilidade: dataset possui {n_cols} colunas de âncora, "
+                    f"mas o layout possui {n_anchors} âncoras"
+                )
+                return False
+
+            self._dataset_label = (
+                f"SIM | tipo={self.simulated_dataset_kind} | "
+                f"dataset={os.path.basename(dataset_file)}"
+            )
+
+            self.host._set_msg(
+                f"Dataset simulado configurado: tipo={self.simulated_dataset_kind}, "
+                f"{self._batch_dists.shape[0]} amostras"
+            )
+
+        # Real (encoder + UWB)
+        else:
             if not real_encoder_file:
                 self.host._set_msg("Selecione um arquivo de encoder")
-                return
+                return False
             if not real_uwb_file:
                 self.host._set_msg("Selecione um arquivo UWB")
-                return
+                return False
 
-            if anchors_file:
-                anchors_path = os.path.join(self.anchors_dir, anchors_file)
+            if anchor_file:
+                anchors_path = os.path.join(self.anchors_dir, anchor_file)
                 if not self._load_anchors(anchors_path):
-                    return
+                    return False
 
             if route_file:
                 route_path = os.path.join(self.routes_dir, route_file)
                 if not self._try_load_route(route_path):
-                    return
+                    return False
 
             if map_file:
                 map_path = os.path.join(self.maps_dir, map_file)
                 if not self._try_load_map(map_path):
-                    return
+                    return False
 
             encoder_path = os.path.join(self.real_data_dir, real_encoder_file)
             uwb_path = os.path.join(self.real_data_dir, real_uwb_file)
 
             if not self._load_real_encoder_uwb_dataset(encoder_path, uwb_path):
-                return
-
+                return False
 
         self._close_modal()
 
@@ -884,8 +978,9 @@ class DatasetMode:
             if event.type == pg.QUIT:
                 return _actions_quit()
 
-            if self._handle_dataset_modal_events(event):
-                continue
+            if self.dataset_modal_open:
+                if self.dataset_modal.handle_event(event):
+                    continue
 
             elif event.type == pg.KEYDOWN:
                 if event.key == pg.K_ESCAPE:
@@ -931,7 +1026,7 @@ class DatasetMode:
                         return actions
 
                     elif self.btn_load_dataset.hit(pos):
-                        self._open_dataset_modal()
+                        self.dataset_modal.open()
                         continue
 
                     elif self.btn_run_batch.hit(pos):
@@ -1012,7 +1107,7 @@ class DatasetMode:
                 self._btn_algos[algo].draw(self.host.screen)
 
         if self.dataset_modal_open:
-            self._draw_dataset_modal()
+            self.dataset_modal.draw()
 
     def _draw_dataset_modal(self):
         screen = self.host.screen
@@ -1112,6 +1207,111 @@ class DatasetMode:
         pts = [(cx - 5, cy - 3), (cx + 5, cy - 3), (cx, cy + 4)]
         pg.draw.polygon(self.host.screen, (80, 80, 80), pts)
 
+    def _normalize_simulated_dataset_by_kind(self):
+        """
+        Normaliza datasets simulados conforme o tipo selecionado.
+
+        Dataset com N colunas:
+            já representa uma tag/posição única.
+
+        Dataset com 2N colunas:
+            [A0_front, A0_rear, A1_front, A1_rear, ...]
+        """
+        if self._batch_dists is None or self._dataset_anchors is None:
+            return True
+
+        dists = np.asarray(self._batch_dists, dtype=float)
+        devs = (
+            np.asarray(self._batch_devs, dtype=float)
+            if self._batch_devs is not None
+            else None
+        )
+
+        if dists.ndim != 2:
+            self.host._set_msg("Dataset inválido: matriz de distâncias não é 2D")
+            return False
+
+        n_anchors = int(np.asarray(self._dataset_anchors).shape[0])
+        n_cols = int(dists.shape[1])
+
+        kind_raw = getattr(self, "simulated_dataset_kind", "Front")
+        kind = str(kind_raw).strip().lower()
+
+        if kind in ("top", "front", "tag1", "t1"):
+            kind = "front"
+        elif kind in ("bot", "bottom", "rear", "tag2", "t2"):
+            kind = "rear"
+        elif kind in ("middle", "center", "centro", "mid"):
+            kind = "mid"
+        elif kind in ("bc", "bc-ekf", "bcekf"):
+            kind = "bc"
+        else:
+            kind = "front"
+
+        self.simulated_dataset_kind = {
+            "front": "Front",
+            "rear": "Rear",
+            "mid": "Mid",
+            "bc": "BC",
+        }[kind]
+
+        # Dataset já reduzido.
+        if n_cols == n_anchors:
+            return True
+
+        # Dataset com duas tags por âncora.
+        if n_cols == 2 * n_anchors:
+            if kind == "bc":
+                # Mantém 2N colunas para _prepare_bc_ekf_data_for_simulated_bc().
+                return True
+
+            front = dists[:, 0::2]
+            rear = dists[:, 1::2]
+
+            if devs is not None:
+                dev_front = devs[:, 0::2]
+                dev_rear = devs[:, 1::2]
+            else:
+                dev_front = None
+                dev_rear = None
+
+            if kind == "front":
+                self._batch_dists = front
+                self._batch_devs = (
+                    dev_front
+                    if dev_front is not None
+                    else np.full_like(front, float(getattr(config, "UWB_NOISE_STD", 0.05)))
+                )
+                return True
+
+            if kind == "rear":
+                self._batch_dists = rear
+                self._batch_devs = (
+                    dev_rear
+                    if dev_rear is not None
+                    else np.full_like(rear, float(getattr(config, "UWB_NOISE_STD", 0.05)))
+                )
+                return True
+
+            if kind == "mid":
+                self._batch_dists = 0.5 * (front + rear)
+
+                if dev_front is not None and dev_rear is not None:
+                    self._batch_devs = 0.5 * np.sqrt(dev_front**2 + dev_rear**2)
+                else:
+                    self._batch_devs = np.full_like(
+                        self._batch_dists,
+                        float(getattr(config, "UWB_NOISE_STD", 0.05)),
+                    )
+
+                return True
+
+        self.host._set_msg(
+            f"Incompatibilidade: dataset possui {n_cols} colunas de âncora, "
+            f"mas o layout possui {n_anchors} âncoras"
+        )
+        return False
+
     def _draw_dropdown_list(self, name: str, rect: pg.Rect, items: list[str]):
         if not items:
             items = ["(vazio)"]
@@ -1169,7 +1369,7 @@ class DatasetMode:
     # LOADERS
     # =========================================================
 
-    def _try_load_dataset(self, path: str):
+    def _try_load_dataset(self, path: str) -> bool:
         self._dataset_path = path
         self._dataset_label = os.path.basename(path)
         self._dataset_stats = None
@@ -1187,12 +1387,14 @@ class DatasetMode:
                 self._batch_devs = devs
 
             self.host._set_msg(f"Dataset carregado: {self._dataset_label}")
+            return True
 
         except Exception as e:
             print(f"[DATASET] erro ao carregar dataset: {e}")
             self._batch_dists = None
             self._batch_devs = None
             self.host._set_msg("Erro ao carregar dataset")
+            return False
 
     def _load_sim_txt_dataset(self, path: str):
         rows = []
@@ -2004,6 +2206,29 @@ class DatasetMode:
 
         return out
 
+    def _apply_dataset_config_from_modal_values(self):
+        """
+        Ponte entre o DatasetConfigModal e o fluxo atual de carregamento.
+        """
+        dataset_file = getattr(self, "_modal_dataset_file", "")
+        real_encoder_file = getattr(self, "_modal_real_encoder_file", "")
+        real_uwb_file = getattr(self, "_modal_real_uwb_file", "")
+        anchor_file = getattr(self, "_modal_anchor_file", "")
+        route_file = getattr(self, "_modal_route_file", "")
+        map_file = getattr(self, "_modal_map_file", "")
+        sim_kind = getattr(self, "_modal_simulated_kind", self.simulated_dataset_kind)
+
+        self.simulated_dataset_kind = sim_kind or "Front"
+
+        return self._apply_dataset_config_values(
+            dataset_file=dataset_file,
+            real_encoder_file=real_encoder_file,
+            real_uwb_file=real_uwb_file,
+            anchor_file=anchor_file,
+            route_file=route_file,
+            map_file=map_file,
+            simulated_kind=self.simulated_dataset_kind,
+        )
 
     def _write_normalized_encoder_temp_csv(self, normalized_rows):
         """
