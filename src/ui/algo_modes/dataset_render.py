@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pygame as pg
 
-from src.ui.drawing import draw_grid, draw_axes, draw_anchors, draw_path, draw_text
+from src.ui.drawing import draw_grid, draw_axes
 from src.environment.environment import draw_environment
 from src.ui.legend_overlay import draw_legend_overlay
 from src.ui.algo_modes.shared import (
@@ -121,50 +121,137 @@ def _draw_polyline_world(screen, cam, points, color, width=2, dashed=False, dash
             s += dash_px + gap_px
 
 
-def _draw_estimated_track(mode, algo_name, result):
-    if not isinstance(result, dict):
+def _draw_estimated_track(mode, algo, result):
+    """
+    Desenha a trajetória estimada de um algoritmo.
+
+    Aceita tanto:
+    - result como dict: {"posicoes": array}, {"positions": array}, {"trajectory": array}
+    - result diretamente como array Nx2/Nx3
+
+    A função também ignora pontos inválidos para evitar crash no pygame.
+    """
+    import numpy as np
+    import pygame as pg
+
+    if result is None:
         return
 
-    if not mode.selected.get(algo_name, False):
-        return
-
-    pos = result.get("posicoes", None)
-    pts = _safe_xy_array(pos)
-
-    if pts is None or len(pts) < 1:
-        return
-
-    color = ALGO_COLORS.get(algo_name, (0, 0, 0))
     screen = mode.host.screen
     cam = mode.host.cam
 
-    # Estilo mais próximo do render antigo
+    # -------------------------------------------------
+    # 1) Extrair pontos sem usar "or" com numpy array
+    # -------------------------------------------------
+    pts = None
+
+    if isinstance(result, dict):
+        if "posicoes" in result and result["posicoes"] is not None:
+            pts = result["posicoes"]
+        elif "positions" in result and result["positions"] is not None:
+            pts = result["positions"]
+        elif "trajectory" in result and result["trajectory"] is not None:
+            pts = result["trajectory"]
+        elif "traj" in result and result["traj"] is not None:
+            pts = result["traj"]
+    else:
+        pts = result
+
+    if pts is None:
+        return
+
+    # -------------------------------------------------
+    # 2) Converter para array numérico
+    # -------------------------------------------------
+    try:
+        pts = np.asarray(pts, dtype=float)
+    except Exception:
+        return
+
+    if pts.ndim != 2 or pts.shape[0] < 2 or pts.shape[1] < 2:
+        return
+
+    # Pygame precisa de pares x,y.
+    pts = pts[:, :2]
+
+    # Remove NaN/Inf.
+    mask = np.all(np.isfinite(pts), axis=1)
+    pts = pts[mask]
+
+    if pts.shape[0] < 2:
+        return
+
+    # -------------------------------------------------
+    # 3) Quebrar a trajetória em segmentos válidos
+    # -------------------------------------------------
+    color = getattr(mode, "algo_colors", {}).get(algo, None)
+
+    if color is None:
+        try:
+            from src.ui.algo_modes.shared import ALGO_COLORS
+            color = ALGO_COLORS.get(algo, (0, 0, 0))
+        except Exception:
+            color = (0, 0, 0)
+
     line_width = 2
-    marker_radius = 3
-    marker_border = 1
 
-    # Linha mais forte
-    if len(pts) >= 2:
-        screen_pts = [cam.world_to_screen(float(x), float(y)) for x, y in pts]
-        pg.draw.lines(screen, color, False, screen_pts, line_width)
+    try:
+        # -------------------------------------------------
+        # Converte pontos para coordenadas de tela
+        # -------------------------------------------------
+        screen_pts = []
+        valid_pts = []
 
-    # Marcadores mais visíveis
-    # Para datasets grandes, reduz um pouco a densidade para não pesar.
-    step = 1
-    if len(pts) > 1500:
-        step = 2
-    if len(pts) > 3500:
-        step = 3
+        for x, y in pts:
+            screen_pt = cam.world_to_screen(float(x), float(y))
+            
+            # Valida o ponto de tela
+            if isinstance(screen_pt, (tuple, list)) and len(screen_pt) >= 2:
+                if np.isfinite(screen_pt[0]) and np.isfinite(screen_pt[1]):
+                    screen_pts.append((int(screen_pt[0]), int(screen_pt[1])))
+                    valid_pts.append([x, y])
 
-    for x, y in pts[::step]:
-        sx, sy = cam.world_to_screen(float(x), float(y))
-        p = (int(sx), int(sy))
+        if len(screen_pts) < 2:
+            return
 
-        # borda preta ajuda principalmente no laranja/amarelo
-        if marker_border > 0:
-            pg.draw.circle(screen, (0, 0, 0), p, marker_radius + marker_border)
+        valid_pts = np.array(valid_pts, dtype=float)
 
-        pg.draw.circle(screen, color, p, marker_radius)
+        # -------------------------------------------------
+        # 4) Desenhar segmentos, evitando conectar outliers
+        # -------------------------------------------------
+        max_world_jump = 1.5  # metros; ajuste se necessário
+
+        segments = []
+        current = []
+
+        for i, (sx, sy) in enumerate(screen_pts):
+            if i == 0:
+                current = [(sx, sy)]
+                continue
+
+            jump = float(np.linalg.norm(valid_pts[i] - valid_pts[i - 1]))
+
+            if jump > max_world_jump:
+                if len(current) >= 2:
+                    segments.append(current)
+                current = [(sx, sy)]
+            else:
+                current.append((sx, sy))
+
+        if len(current) >= 2:
+            segments.append(current)
+
+        for seg in segments:
+            if len(seg) >= 2:
+                pg.draw.lines(screen, color, False, seg, line_width)
+
+        # Desenha os pontos por cima.
+        for sx, sy in screen_pts:
+            pg.draw.circle(screen, color, (sx, sy), 3)
+            pg.draw.circle(screen, (0, 0, 0), (sx, sy), 3, 1)
+
+    except Exception:
+        return
 
 
 def draw_reference_routes(mode):

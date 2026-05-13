@@ -451,6 +451,13 @@ ALGO_VARIANTS = {
         {"key": "trilat_geo_sang2019", "label": "◉ trilat. geo", "short": "geo"},
         {"key": "trilat_geo_triplet_sang2019", "label": "◉ trilat. trinca", "short": "trinca"},
     ],
+    "lms": [
+    {"key": None, "label": "○ LS off", "short": "off"},
+    {"key": "lms", "label": "◉ LS atual", "short": "atual"},
+    {"key": "ls_sang2019", "label": "◉ LS Sang19", "short": "Sang19"},
+    {"key": "ls_li2023", "label": "◉ LS Li23", "short": "Li23"},
+    {"key": "ls_gn_li2023", "label": "◉ LS+GN Li23", "short": "LS+GN"},
+    ],
 }
 
 
@@ -458,6 +465,9 @@ ALGO_RESULT_ALIAS = {
     # As variantes aparecem no Analyzer/render como o grupo original.
     "trilat_geo_sang2019": "trilaterate3d",
     "trilat_geo_triplet_sang2019": "trilaterate3d",
+    "ls_sang2019": "lms",
+    "ls_li2023": "lms",
+    "ls_gn_li2023": "lms",
 }
 
 
@@ -471,6 +481,7 @@ def default_algorithm_variant_state():
     """
     return {
         "trilaterate3d": "trilaterate3d",
+        "lms": "lms",
     }
 
 

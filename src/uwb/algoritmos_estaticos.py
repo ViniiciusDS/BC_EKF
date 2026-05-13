@@ -296,6 +296,34 @@ def trilat_geo_triplet_sang2019(
 ###########################################################
 # 2. LMS — Mínimos Quadrados Lineares com N âncoras
 ###########################################################
+def _as_anchors_3d(anchors_Nx3):
+    anchors = np.asarray(anchors_Nx3, dtype=float)
+
+    if anchors.ndim != 2 or anchors.shape[0] < 3 or anchors.shape[1] < 2:
+        raise ValueError("São necessárias pelo menos 3 âncoras com coordenadas x,y")
+
+    if anchors.shape[1] == 2:
+        anchors = np.column_stack([anchors, np.zeros(len(anchors))])
+
+    return anchors[:, :3]
+
+
+def _valid_range_rows(anchors, distances):
+    d = np.asarray(distances, dtype=float)
+    A = np.asarray(anchors, dtype=float)
+
+    valid = np.isfinite(d) & np.all(np.isfinite(A), axis=1)
+
+    return A[valid], d[valid], np.where(valid)[0]
+
+
+def _safe_lstsq(A, b):
+    A = np.asarray(A, dtype=float)
+    b = np.asarray(b, dtype=float)
+
+    x, *_ = np.linalg.lstsq(A, b, rcond=None)
+    return x
+
 def lms(
     anchors_Nx3: np.ndarray,
     distances_N: np.ndarray,
@@ -337,6 +365,142 @@ def lms(
 
     return P_rel + A0
 
+def ls_sang2019(anchors_Nx3, distances_N):
+    """
+    Multilateração por mínimos quadrados em forma fechada,
+    baseada em Sang et al. (2019).
+
+    Retorna posição 3D [x, y, z].
+    """
+    anchors = _as_anchors_3d(anchors_Nx3)
+    anchors, d, _ = _valid_range_rows(anchors, distances_N)
+
+    if len(d) < 3:
+        raise ValueError("ls_sang2019 exige pelo menos 3 ranges válidos")
+
+    p1 = anchors[0]
+    d1 = d[0]
+
+    A = anchors[1:] - p1
+
+    b = 0.5 * (
+        d1**2
+        - d[1:]**2
+        + np.sum(anchors[1:] ** 2, axis=1)
+        - np.sum(p1 ** 2)
+    )
+
+    return _safe_lstsq(A, b)
+
+def ls_li2023_2d(anchors_Nx3, distances_N):
+    anchors = _as_anchors_3d(anchors_Nx3)
+    anchors, d, _ = _valid_range_rows(anchors, distances_N)
+
+    if len(d) < 3:
+        raise ValueError("ls_li2023_2d exige pelo menos 3 ranges válidos")
+
+    pref = anchors[-1, :2]
+    dref = d[-1]
+
+    ai = anchors[:-1, :2]
+    di = d[:-1]
+
+    A = ai - pref
+    C = (
+        dref**2
+        - di**2
+        + np.sum(ai**2, axis=1)
+        - np.sum(pref**2)
+    )
+
+    x2 = 0.5 * _safe_lstsq(A, C)
+    return np.array([x2[0], x2[1], 0.0], dtype=float)
+
+def ls_li2023(anchors_Nx3, distances_N):
+    """
+    Least Squares baseado em Li et al. (2023).
+
+    Usa a última âncora válida como referência.
+    Retorna posição 3D [x, y, z].
+    """
+    anchors = _as_anchors_3d(anchors_Nx3)
+    anchors, d, _ = _valid_range_rows(anchors, distances_N)
+
+    if len(d) < 3:
+        raise ValueError("ls_li2023 exige pelo menos 3 ranges válidos")
+
+    pref = anchors[-1]
+    dref = d[-1]
+
+    ai = anchors[:-1]
+    di = d[:-1]
+
+    A = ai - pref
+
+    C = (
+        dref**2
+        - di**2
+        + np.sum(ai**2, axis=1)
+        - np.sum(pref**2)
+    )
+
+    x = 0.5 * _safe_lstsq(A, C)
+    return x
+
+def ls_gn_li2023(
+    anchors_Nx3,
+    distances_N,
+    *,
+    max_iter=10,
+    tol=1e-6,
+):
+    """
+    Otimização baseada em LS + Gauss-Newton, inspirada em Li et al. (2023).
+
+    Passos:
+    1. Usa ls_li2023 como estimativa inicial.
+    2. Refina a posição minimizando o erro entre ranges medidos e ranges previstos.
+
+    Retorna posição 3D [x, y, z].
+    """
+    anchors = _as_anchors_3d(anchors_Nx3)
+    anchors, d, _ = _valid_range_rows(anchors, distances_N)
+
+    if len(d) < 3:
+        raise ValueError("ls_gn_li2023 exige pelo menos 3 ranges válidos")
+
+    x = ls_li2023(anchors, d).astype(float)
+
+    for _ in range(max_iter):
+        diff = anchors - x[None, :]
+        pred = np.linalg.norm(diff, axis=1)
+
+        valid = np.isfinite(pred) & (pred > 1e-9)
+
+        if valid.sum() < 3:
+            break
+
+        # Seguindo a forma da Eq. 12:
+        # B * delta = L
+        # com B = (anchor - x0) / d0
+        # e L = d0 - d_medido
+        B = diff[valid] / pred[valid, None]
+        L = pred[valid] - d[valid]
+
+        try:
+            delta = _safe_lstsq(B, L)
+        except Exception:
+            break
+
+        x_new = x + delta
+
+        if np.linalg.norm(delta) < tol:
+            x = x_new
+            break
+
+        x = x_new
+
+    return x
 
 ##################################################################
 # 3. GAUSS-NEWTON — Mínimos Quadrados Não-Lineares iterativos
@@ -574,6 +738,44 @@ def run_batch(
                                     anchors_Nx3,
                                     distances[k],
                                 )
+                            except Exception:
+                                posicoes[k] = np.nan
+
+                    elif nome == "ls_sang2019":
+                        for k in range(M):
+                            try:
+                                p = ls_sang2019(
+                                    anchors_Nx3,
+                                    distances[k],
+                                )
+                                p = np.asarray(p, dtype=float).reshape(-1)
+                                posicoes[k] = p[:posicoes.shape[1]]
+                            except Exception:
+                                posicoes[k] = np.nan
+
+
+                    elif nome == "ls_li2023":
+                        for k in range(M):
+                            try:
+                                p = ls_li2023(
+                                    anchors_Nx3,
+                                    distances[k],
+                                )
+                                p = np.asarray(p, dtype=float).reshape(-1)
+                                posicoes[k] = p[:posicoes.shape[1]]
+                            except Exception:
+                                posicoes[k] = np.nan
+
+
+                    elif nome == "ls_gn_li2023":
+                        for k in range(M):
+                            try:
+                                p = ls_gn_li2023(
+                                    anchors_Nx3,
+                                    distances[k],
+                                )
+                                p = np.asarray(p, dtype=float).reshape(-1)
+                                posicoes[k] = p[:posicoes.shape[1]]
                             except Exception:
                                 posicoes[k] = np.nan
 
