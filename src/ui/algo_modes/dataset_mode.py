@@ -14,6 +14,11 @@ from src.ui.algo_modes.shared import (
     ALGO_ORDER,
     MODE_DATASET,
     default_selected,
+    default_algorithm_variant_state,
+    algorithm_active_key,
+    algorithm_result_alias,
+    cycle_algorithm_variant,
+    algorithm_button_label,
 )
 from src.analysis.algo_metrics import (
     compute_dataset_cluster_stats,
@@ -187,6 +192,8 @@ class DatasetMode:
 
         self.selected = default_selected()
 
+        self.selected_algo_variants = default_algorithm_variant_state()
+
         self._reference_route_display = None   # waypoints originais do JSON
         self._reference_route_dense = None     # rota reamostrada para métricas
 
@@ -200,6 +207,12 @@ class DatasetMode:
         self.host.mode = MODE_DATASET
 
         self.selected = getattr(host, "selected", default_selected())
+
+        self.selected_algo_variants = getattr(
+            host,
+            "selected_algo_variants",
+            default_algorithm_variant_state()
+        )
 
         self._dataset_path = getattr(host, "_dataset_path", None)
         self._dataset_label = getattr(host, "_dataset_label", "")
@@ -401,6 +414,113 @@ class DatasetMode:
         else:
             self.host._set_msg("Dataset configurado")
 
+    def _refresh_dataset_algo_buttons(self):
+        """
+        Atualiza texto dos botões laterais considerando variantes.
+        """
+        if not hasattr(self, "_btn_algos") or self._btn_algos is None:
+            return
+
+        for algo in ALGO_ORDER:
+            btn = self._btn_algos.get(algo)
+
+            if btn is None:
+                continue
+
+            label = algorithm_button_label(
+                algo,
+                self.selected,
+                self.selected_algo_variants,
+            )
+
+            # O Button do projeto usa .text.
+            # Mantemos .label também por segurança.
+            if hasattr(btn, "text"):
+                btn.text = label
+            if hasattr(btn, "label"):
+                btn.label = label
+
+
+    def _cycle_sidebar_algorithm(self, algo_key: str):
+        """
+        Clique em botão de algoritmo.
+
+        Para algoritmos sem variantes:
+            liga/desliga.
+
+        Para algoritmos com variantes:
+            off -> variante 1 -> variante 2 -> ... -> off.
+        """
+        cycle_algorithm_variant(
+            algo_key,
+            self.selected,
+            self.selected_algo_variants,
+        )
+
+        self.host.selected = self.selected
+        self.host.selected_algo_variants = self.selected_algo_variants
+
+        if hasattr(self.host, "_refresh_algo_buttons"):
+            self.host._refresh_algo_buttons()
+
+        self._refresh_dataset_algo_buttons()
+
+        self.host._set_msg(
+            f"{algo_key}: "
+            f"{algorithm_button_label(algo_key, self.selected, self.selected_algo_variants)}"
+        )
+
+
+    def _resolve_algos_to_run(self):
+        """
+        Converte os botões laterais em nomes concretos para run_batch().
+        """
+        algos = []
+
+        for base_key in ALGO_ORDER:
+            concrete_key = algorithm_active_key(
+                base_key,
+                self.selected,
+                self.selected_algo_variants,
+            )
+
+            if concrete_key is not None:
+                algos.append(concrete_key)
+
+        return algos
+
+
+    def _remap_batch_results_to_sidebar_keys(self, raw_results: dict):
+        """
+        O run_batch retorna chaves concretas:
+            trilat_geo_sang2019
+
+        Mas o render/analyzer trabalham melhor com os grupos do sidebar:
+            trilaterate3d
+
+        Então remapeamos variantes para o grupo original.
+        """
+        if not isinstance(raw_results, dict):
+            return raw_results
+
+        out = {}
+
+        for concrete_key, result in raw_results.items():
+            base_key = algorithm_result_alias(concrete_key)
+
+            if isinstance(result, dict):
+                result = dict(result)
+                result["algo_key_actual"] = concrete_key
+                result["algo_label"] = algorithm_button_label(
+                    base_key,
+                    self.selected,
+                    self.selected_algo_variants,
+                )
+
+            out[base_key] = result
+
+        return out
+
     def _metric_mode_label(self, mode=None):
         mode = mode or self.metric_mode
 
@@ -572,9 +692,7 @@ class DatasetMode:
                     else:
                         for nome, btn in self._btn_algos.items():
                             if btn.hit(pos):
-                                self.selected[nome] = not self.selected[nome]
-                                self.host.selected = self.selected
-                                self.host._refresh_algo_buttons()
+                                self._cycle_sidebar_algorithm(nome)
                                 break
 
             elif event.type == pg.MOUSEBUTTONUP:
@@ -610,6 +728,8 @@ class DatasetMode:
     def draw(self):
         # Primeiro desenha mundo, status, analyzer, legenda e limpa painel lateral
         draw_dataset_mode(self)
+
+        self._refresh_dataset_algo_buttons()
 
         # Depois desenha os botões principais por cima
         self.btn_back.draw(self.host.screen)
@@ -664,7 +784,7 @@ class DatasetMode:
             self.host._set_msg("Selecione as âncoras primeiro")
             return
 
-        algos_to_run = [a for a in ALGO_ORDER if self.selected.get(a, False)]
+        algos_to_run = self._resolve_algos_to_run()
 
         # BC-EKF só faz sentido com dataset simulado do tipo BC
         if self.dataset_source_type == "simulated":
@@ -705,7 +825,7 @@ class DatasetMode:
 
             p_true = self._get_batch_ground_truth_xy()
 
-            self._batch_results = run_batch(
+            raw_results = run_batch(
                 anchors_Nx3=anchors,
                 distances=self._batch_dists,
                 deviations=devs,
@@ -713,6 +833,8 @@ class DatasetMode:
                 p_true=p_true,
                 bc_ekf_data=self._bc_ekf_data,
             )
+
+            self._batch_results = self._remap_batch_results_to_sidebar_keys(raw_results)
 
             if not self._batch_results:
                 self.host._set_msg("Batch executado, mas vazio")

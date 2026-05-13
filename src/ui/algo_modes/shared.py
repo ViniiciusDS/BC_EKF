@@ -437,3 +437,120 @@ def load_route_waypoints_from_json(path: str):
         raise ValueError("Arquivo de rota inválido: waypoints insuficientes.")
 
     return pts[:, :2].copy()
+
+# =========================================================
+# ALGORITHM VARIANTS / SIDEBAR SELECTION
+# =========================================================
+
+ALGO_VARIANTS = {
+    # O botão "trilaterate3d" vira um seletor de variantes.
+    # key=None significa desligado.
+    "trilaterate3d": [
+        {"key": None, "label": "○ trilat. off", "short": "off"},
+        {"key": "trilaterate3d", "label": "◉ trilat. 3D", "short": "3D"},
+        {"key": "trilat_geo_sang2019", "label": "◉ trilat. geo", "short": "geo"},
+        {"key": "trilat_geo_triplet_sang2019", "label": "◉ trilat. trinca", "short": "trinca"},
+    ],
+}
+
+
+ALGO_RESULT_ALIAS = {
+    # As variantes aparecem no Analyzer/render como o grupo original.
+    "trilat_geo_sang2019": "trilaterate3d",
+    "trilat_geo_triplet_sang2019": "trilaterate3d",
+}
+
+
+def default_algorithm_variant_state():
+    """
+    Estado inicial das variantes.
+
+    Por padrão, mantém o comportamento antigo:
+    - trilaterate3d começa usando a implementação antiga.
+    - os demais algoritmos seguem usando apenas selected True/False.
+    """
+    return {
+        "trilaterate3d": "trilaterate3d",
+    }
+
+
+def get_algorithm_variants(base_key: str):
+    return ALGO_VARIANTS.get(base_key, [])
+
+
+def algorithm_result_alias(concrete_key: str) -> str:
+    return ALGO_RESULT_ALIAS.get(concrete_key, concrete_key)
+
+
+def algorithm_active_key(base_key: str, selected: dict, variant_state: dict | None = None):
+    """
+    Retorna o nome concreto do algoritmo que deve ser enviado ao run_batch().
+
+    Para algoritmos sem variantes:
+        selected[base_key] True  -> base_key
+        selected[base_key] False -> None
+
+    Para algoritmos com variantes:
+        retorna variant_state[base_key], ou None se estiver desligado.
+    """
+    variant_state = variant_state or {}
+
+    if base_key in ALGO_VARIANTS:
+        return variant_state.get(base_key, base_key if selected.get(base_key, False) else None)
+
+    return base_key if selected.get(base_key, False) else None
+
+
+def cycle_algorithm_variant(base_key: str, selected: dict, variant_state: dict | None = None):
+    """
+    Avança o estado de um botão.
+
+    Se o algoritmo tiver variantes:
+        off -> v1 -> v2 -> ... -> off
+
+    Se não tiver variantes:
+        toggle True/False antigo.
+    """
+    variant_state = variant_state or {}
+
+    variants = get_algorithm_variants(base_key)
+
+    if not variants:
+        selected[base_key] = not selected.get(base_key, False)
+        return selected.get(base_key, False), variant_state.get(base_key)
+
+    current = variant_state.get(base_key, None)
+
+    keys = [v["key"] for v in variants]
+
+    try:
+        idx = keys.index(current)
+    except ValueError:
+        idx = 0
+
+    next_key = keys[(idx + 1) % len(keys)]
+    variant_state[base_key] = next_key
+
+    selected[base_key] = next_key is not None
+
+    return selected[base_key], next_key
+
+
+def algorithm_button_label(base_key: str, selected: dict, variant_state: dict | None = None):
+    """
+    Texto que aparece no botão lateral.
+    """
+    variant_state = variant_state or {}
+
+    variants = get_algorithm_variants(base_key)
+
+    if not variants:
+        return f"◉ {base_key}" if selected.get(base_key, False) else f"○ {base_key}"
+
+    current = variant_state.get(base_key, None)
+
+    for v in variants:
+        if v["key"] == current:
+            return v["label"]
+
+    return variants[0]["label"]

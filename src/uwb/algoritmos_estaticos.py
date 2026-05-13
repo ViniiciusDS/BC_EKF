@@ -16,6 +16,7 @@ from __future__ import annotations
 import numpy as np
 from typing import Optional
 import warnings
+from itertools import combinations
 
 from src.bc_ekf import run_bc_ekf_from_data
 
@@ -84,6 +85,213 @@ def trilaterate3d(
 
     return P_rel + P1
 
+##########################################################
+# 1B. TRILATERAÇÃO GEOMÉTRICA — Sang et al. (2019)
+##########################################################
+
+def _range_residual_score(p, anchors, distances):
+    anchors = np.asarray(anchors, dtype=float)
+    distances = np.asarray(distances, dtype=float)
+    p = np.asarray(p, dtype=float)
+
+    valid = (
+        np.isfinite(distances)
+        & np.all(np.isfinite(anchors), axis=1)
+    )
+
+    if valid.sum() == 0:
+        return np.inf
+
+    pred = np.linalg.norm(anchors[valid] - p, axis=1)
+    err = pred - distances[valid]
+
+    return float(np.sqrt(np.mean(err**2)))
+
+
+def _solve_trilat_geo_triplet_sang2019(
+    anchors_3x3,
+    distances_3,
+    *,
+    score_anchors=None,
+    score_distances=None,
+    eps=1e-9,
+):
+    """
+    Resolve a trilateração geométrica de Sang et al. (2019)
+    para uma trinca de âncoras.
+
+    A1 é deslocada para a origem, A2 define o eixo local X,
+    e A3 define o plano local XY.
+
+    Retorna uma posição 3D.
+    """
+    A = np.asarray(anchors_3x3, dtype=float)
+    d = np.asarray(distances_3, dtype=float)
+
+    if A.shape[0] < 3 or A.shape[1] < 3:
+        raise ValueError("Trilateração geométrica requer 3 âncoras 3D")
+
+    if len(d) < 3:
+        raise ValueError("Trilateração geométrica requer 3 distâncias")
+
+    A1, A2, A3 = A[0], A[1], A[2]
+    d1, d2, d3 = float(d[0]), float(d[1]), float(d[2])
+
+    ex_vec = A2 - A1
+    U = float(np.linalg.norm(ex_vec))
+
+    if U < eps:
+        raise ValueError("A1 e A2 coincidentes na trilateração geométrica")
+
+    ex = ex_vec / U
+
+    A3_rel = A3 - A1
+    Vx = float(np.dot(A3_rel, ex))
+
+    ey_vec = A3_rel - Vx * ex
+    Vy = float(np.linalg.norm(ey_vec))
+
+    if Vy < eps:
+        raise ValueError("Âncoras colineares na trilateração geométrica")
+
+    ey = ey_vec / Vy
+
+    ez = np.cross(ex, ey)
+    ez_norm = float(np.linalg.norm(ez))
+
+    if ez_norm < eps:
+        raise ValueError("Base local degenerada na trilateração geométrica")
+
+    ez = ez / ez_norm
+
+    # Equações apresentadas por Sang et al. (2019)
+    xt = (d1**2 - d2**2 + U**2) / (2.0 * U)
+    yt = (d1**2 - d3**2 + Vx**2 + Vy**2 - 2.0 * xt * Vx) / (2.0 * Vy)
+
+    z2 = d1**2 - xt**2 - yt**2
+
+    # Em dados reais ruidosos, z2 pode ficar levemente negativo.
+    if z2 < -1.0:
+        raise ValueError("Trilateração geométrica sem solução real consistente")
+
+    z_abs = float(np.sqrt(max(0.0, z2)))
+
+    p_base = A1 + xt * ex + yt * ey
+
+    candidates = [
+        p_base + z_abs * ez,
+        p_base - z_abs * ez,
+    ]
+
+    # Se houver mais âncoras, usa-as para resolver a ambiguidade de sinal.
+    if score_anchors is not None and score_distances is not None:
+        scores = [
+            _range_residual_score(c, score_anchors, score_distances)
+            for c in candidates
+        ]
+        return candidates[int(np.argmin(scores))]
+
+    # Sem quarta âncora, retorna a solução positiva.
+    return candidates[0]
+
+
+def trilat_geo_sang2019(
+    anchors_Nx3: np.ndarray,
+    distances_N: np.ndarray,
+) -> np.ndarray:
+    """
+    Trilateração geométrica baseada em Sang et al. (2019).
+
+    Usa as três primeiras medições válidas. Quando há mais de três âncoras,
+    usa as demais apenas para escolher o sinal de z que minimiza o resíduo.
+    """
+    anchors = np.asarray(anchors_Nx3, dtype=float)
+    distances = np.asarray(distances_N, dtype=float)
+
+    if anchors.ndim != 2 or anchors.shape[0] < 3:
+        raise ValueError("trilat_geo_sang2019 exige ≥ 3 âncoras")
+
+    if anchors.shape[1] == 2:
+        anchors = np.column_stack([anchors, np.zeros(len(anchors))])
+
+    valid = (
+        np.isfinite(distances)
+        & np.all(np.isfinite(anchors), axis=1)
+    )
+
+    idx = np.where(valid)[0]
+
+    if len(idx) < 3:
+        raise ValueError("trilat_geo_sang2019 exige ≥ 3 ranges válidos")
+
+    triplet = idx[:3]
+
+    return _solve_trilat_geo_triplet_sang2019(
+        anchors[triplet],
+        distances[triplet],
+        score_anchors=anchors[idx],
+        score_distances=distances[idx],
+    )
+
+
+def trilat_geo_triplet_sang2019(
+    anchors_Nx3: np.ndarray,
+    distances_N: np.ndarray,
+) -> np.ndarray:
+    """
+    Extensão prática da trilateração geométrica de Sang et al. (2019).
+
+    Testa todas as trincas válidas de âncoras e escolhe a solução
+    com menor resíduo em relação a todas as âncoras disponíveis.
+
+    Essa versão é mais robusta em cenários com mais de três âncoras.
+    """
+    anchors = np.asarray(anchors_Nx3, dtype=float)
+    distances = np.asarray(distances_N, dtype=float)
+
+    if anchors.ndim != 2 or anchors.shape[0] < 3:
+        raise ValueError("trilat_geo_triplet_sang2019 exige ≥ 3 âncoras")
+
+    if anchors.shape[1] == 2:
+        anchors = np.column_stack([anchors, np.zeros(len(anchors))])
+
+    valid = (
+        np.isfinite(distances)
+        & np.all(np.isfinite(anchors), axis=1)
+    )
+
+    idx = np.where(valid)[0]
+
+    if len(idx) < 3:
+        raise ValueError("trilat_geo_triplet_sang2019 exige ≥ 3 ranges válidos")
+
+    best_p = None
+    best_score = np.inf
+
+    for triplet in combinations(idx, 3):
+        triplet = np.asarray(triplet, dtype=int)
+
+        try:
+            p = _solve_trilat_geo_triplet_sang2019(
+                anchors[triplet],
+                distances[triplet],
+                score_anchors=anchors[idx],
+                score_distances=distances[idx],
+            )
+
+            score = _range_residual_score(p, anchors[idx], distances[idx])
+
+            if score < best_score:
+                best_score = score
+                best_p = p
+
+        except Exception:
+            continue
+
+    if best_p is None:
+        raise ValueError("Nenhuma trinca válida para trilateração geométrica")
+
+    return best_p
 
 ###########################################################
 # 2. LMS — Mínimos Quadrados Lineares com N âncoras
@@ -347,6 +555,27 @@ def run_batch(
 
                     elif nome == "lmsp":
                         posicoes[i] = lmsp(anchors_Nx3, d, dev)
+
+                    elif nome == "trilat_geo_sang2019":
+                        for k in range(M):
+                            try:
+                                posicoes[k] = trilat_geo_sang2019(
+                                    anchors_Nx3,
+                                    distances[k],
+                                )
+                            except Exception:
+                                posicoes[k] = np.nan
+
+
+                    elif nome == "trilat_geo_triplet_sang2019":
+                        for k in range(M):
+                            try:
+                                posicoes[k] = trilat_geo_triplet_sang2019(
+                                    anchors_Nx3,
+                                    distances[k],
+                                )
+                            except Exception:
+                                posicoes[k] = np.nan
 
                 except Exception as e:
                     # Em caso de falha numérica, mantém última posição conhecida
