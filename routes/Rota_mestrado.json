@@ -1,0 +1,46 @@
+{
+  "waypoints": [
+    [
+      1.652,
+      1.977
+    ],
+    [
+      6.190,
+      1.994
+    ],
+    [
+      6.082,
+      3.834
+    ],
+    [
+      1.650,
+      3.829
+    ],
+    [
+      1.644,
+      5.736
+    ],
+    [
+      6.191,
+      5.700
+    ],
+    [
+      6.186,
+      7.546
+    ],
+    [
+      1.651,
+      7.351
+    ]
+  ],
+  "robot_config": {
+    "perfect_motion": false,
+    "perfect_odometry": false,
+    "perfect_uwb": false,
+    "perfect_filter_model": false,
+    "use_odometry": true
+  },
+  "meta": {
+    "count": 8
+  }
+}

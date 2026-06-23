@@ -17,7 +17,8 @@ DEFAULT_MAP_NAME = "default_map.json"
 WHEEL_RADIUS = 0.035          # m
 WHEEL_BASE = 0.15            # m  (distância entre rodas)
 TAG_BASELINE = 0.25          # m  (distância entre tags = 2*l)
-TAG_HEIGHT = 0.20            # m  (altura das tags em relação ao chão)
+TAG_HEIGHT = 0.20            # m  (altura das tags em relação ao chão)3
+ANCHOR_HEIGHT = 1.0          # m, altura padrão das âncoras no modo simulação
 
 
 # --- Encoder real ---
@@ -38,7 +39,7 @@ REAL_ODOM_INITIAL_THETA_DEG = 00.0
 UWB_BASELINE = 0.25          # m  (distância entre tags = 2*l)
 
 # Limites de velocidade/aceleração do robô
-MAX_LINEAR_VELOCITY  = 0.8   # m/s
+MAX_LINEAR_VELOCITY  = 0.30   # m/s
 MAX_LINEAR_ACCEL     = 0.2   # m/s^2
 MAX_ANGULAR_VELOCITY = 1.0   # rad/s
 MAX_ANGULAR_ACCEL    = 0.5   # rad/s^2

@@ -19,6 +19,7 @@ from src.ui.algo_modes.shared import (
     algorithm_result_alias,
     cycle_algorithm_variant,
     algorithm_button_label,
+    resolve_file_with_extensions,
 )
 from src.analysis.algo_metrics import (
     compute_dataset_cluster_stats,
@@ -309,19 +310,31 @@ class DatasetMode:
                 return False
 
             # 1) dataset
-            dataset_path = os.path.join(self.dataset_dir, dataset_file)
+            dataset_path = resolve_file_with_extensions(
+                self.dataset_dir,
+                dataset_file,
+                (".txt", ".csv", ".jsonl"),
+            )
             if not self._try_load_dataset(dataset_path):
                 return False
 
             # 2) âncoras
             if anchor_file:
-                anchors_path = os.path.join(self.anchors_dir, anchor_file)
+                anchors_path = resolve_file_with_extensions(
+                    self.anchors_dir,
+                    anchor_file,
+                    (".txt", ".csv"),
+                )
                 if not self._load_anchors(anchors_path):
                     return False
 
             # 3) rota
             if route_file:
-                route_path = os.path.join(self.routes_dir, route_file)
+                route_path = resolve_file_with_extensions(
+                    self.routes_dir,
+                    route_file,
+                    (".txt", ".csv"),
+                )
                 if not self._try_load_route(route_path):
                     return False
 
@@ -333,7 +346,11 @@ class DatasetMode:
 
             # 4) mapa
             if map_file:
-                map_path = os.path.join(self.maps_dir, map_file)
+                map_path = resolve_file_with_extensions(
+                    self.maps_dir,
+                    map_file,
+                    (".txt", ".csv"),
+                )
                 if not self._try_load_map(map_path):
                     return False
 
@@ -384,17 +401,29 @@ class DatasetMode:
                 return False
 
             if anchor_file:
-                anchors_path = os.path.join(self.anchors_dir, anchor_file)
+                anchors_path = resolve_file_with_extensions(
+                    self.anchors_dir,
+                    anchor_file,
+                    (".txt", ".csv"),
+                )
                 if not self._load_anchors(anchors_path):
                     return False
 
             if route_file:
-                route_path = os.path.join(self.routes_dir, route_file)
+                route_path = resolve_file_with_extensions(
+                    self.routes_dir,
+                    route_file,
+                    (".txt", ".csv"),
+                )
                 if not self._try_load_route(route_path):
                     return False
 
             if map_file:
-                map_path = os.path.join(self.maps_dir, map_file)
+                map_path = resolve_file_with_extensions(
+                    self.maps_dir,
+                    map_file,
+                    (".txt", ".csv"),
+                )
                 if not self._try_load_map(map_path):
                     return False
 

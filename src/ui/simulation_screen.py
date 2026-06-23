@@ -80,17 +80,17 @@ class SimulationScreen:
 
         # -------- estados gerais da simulação --------
         self.autopilot = False
-        self.speed_factor = 5
+        self.speed_factor = 1
         self.show_debug = False
         self.perfect_motion = False
 
         # comandos de controle
-        self.V_MAX = getattr(config, "V_MAX", 0.6)
-        self.W_MAX = getattr(config, "W_MAX", 1.0)
+        self.V_MAX = getattr(config, "MAX_LINEAR_VELOCITY", getattr(config, "V_MAX", 0.6))
+        self.W_MAX = getattr(config, "MAX_ANGULAR_VELOCITY", getattr(config, "W_MAX", 1.0))
         self.v_cmd = 0.0
         self.w_cmd = 0.0
-        self.accel_lin = 0.02
-        self.accel_ang = 0.08
+        self.accel_lin = getattr(config, "MAX_LINEAR_ACCEL", 0.2) * getattr(config, "TIME_STEP", 0.05)
+        self.accel_ang = getattr(config, "MAX_ANGULAR_ACCEL", 0.5) * getattr(config, "TIME_STEP", 0.05)
         
         self.robot_cfg = {
             "perfect_motion": False,
@@ -240,7 +240,7 @@ class SimulationScreen:
 
         self._pm_seg_i = 0
         self._pm_s = 0.0
-        self._pm_vref = 0.6  # velocidade ao longo do caminho quando perfect
+        self._pm_vref = self.V_MAX
 
         self.btn_gen_dataset = Button((0,0,190,30), "Gerar Dataset", self.font, bg=(245,235,210))
         self.dataset_tag_mode = "mid"   # "front" | "rear" | "mid" | "bc"
@@ -445,7 +445,7 @@ class SimulationScreen:
                     self.show_debug = not self.show_debug
 
                 elif event.key == pg.K_SPACE:
-                    self.autopilot = not self.autopilot
+                    self._toggle_autopilot()
 
                 elif event.key == pg.K_LEFTBRACKET:
                     self.speed_factor = max(1, self.speed_factor - 1)
@@ -463,21 +463,39 @@ class SimulationScreen:
                     self.cam.reset_view()
 
                 elif event.key == pg.K_g:
-                    self.recording = not self.recording
-                    if not self.recording and len(self.recorded_points) > 1:
-                        self.waypoints = np.array(self.recorded_points, dtype=float)
-                        self.wp_idx = 0
-                        self.autopilot = True                    
-                        self._pm_seg_i = 0
-                        self._pm_s = 0.0
-                        self._reset_gdop_stats()
+                    # Caso 1: já estava gravando e apertou G novamente.
+                    if self.recording:
+                        self.recording = False
+
+                        # Se gravou pontos, transforma em rota.
+                        if len(self.recorded_points) > 1:
+                            self.waypoints = np.array(self.recorded_points, dtype=float)
+                            self.wp_idx = 0
+                            self._pm_seg_i = 0
+                            self._pm_s = 0.0
+                            self._reset_gdop_stats()
+                            self._restart_current_route(enable_autopilot=True)
+                            print("[SIM] Rota gravada e iniciada.")
+
+                        # Se não gravou pontos, GG reinicia a rota carregada/atual.
+                        else:
+                            self._restart_current_route(enable_autopilot=True)
+
+                    # Caso 2: não estava gravando.
+                    else:
+                        self.recording = True
+                        self.recorded_points = []
+                        print("[SIM] Gravação de rota iniciada. Clique no mapa para adicionar pontos.")
 
                 elif event.key == pg.K_RETURN:
                     if self.recording and len(self.recorded_points) > 1:
+                        self.recording = False
                         self.waypoints = np.array(self.recorded_points, dtype=float)
                         self.wp_idx = 0
-                        self.autopilot = True
-                        self.recording = False
+                        self._pm_seg_i = 0
+                        self._pm_s = 0.0
+                        self._restart_current_route(enable_autopilot=True)
+                        print("[SIM] Rota gravada via ENTER e iniciada.")
 
                 elif event.key == pg.K_DELETE:
                     self.recorded_points = []
@@ -586,11 +604,21 @@ class SimulationScreen:
                         if self.recording:
                             self.recorded_points.append((wx, wy))
                         else:
-                            z = getattr(config, "TAG_HEIGHT", 0.5)
-                            self.anchors_dyn = np.hstack([self.anchors_dyn, np.array([[wx], [wy], [z]])])
-                            self.sim.anchors = self.anchors_dyn
-                            self.sim.R = np.eye(2 * self.anchors_dyn.shape[1]) * 0.0025
-                            self.shared_uwb.anchors_xy = [(float(self.anchors_dyn[0,i]), float(self.anchors_dyn[1,i])) for i in range(self.anchors_dyn.shape[1])]
+                            z = getattr(config, "ANCHOR_HEIGHT", getattr(config, "TAG_HEIGHT", 0.5))
+
+                            current = np.asarray(self.anchors_dyn, dtype=float)
+
+                            if current.size == 0:
+                                current = np.zeros((3, 0), dtype=float)
+
+                            # Corrige automaticamente caso tenha ficado 4xN de carregamento antigo.
+                            if current.ndim == 2 and current.shape[0] > 3:
+                                current = current[:3, :]
+
+                            new_anchor = np.array([[float(wx)], [float(wy)], [float(z)]], dtype=float)
+                            anchors_new = np.hstack([current, new_anchor])
+
+                            self._sync_anchors_everywhere(anchors_new)
                     else:
                         # >>> HUD (LMB)
 
@@ -643,14 +671,22 @@ class SimulationScreen:
                             try:
                                 x = float(self.textbox_x.text.replace(",", "."))
                                 y = float(self.textbox_y.text.replace(",", "."))
-                                z = getattr(config, "TAG_HEIGHT", 0.5)
+                                z = getattr(config, "ANCHOR_HEIGHT", getattr(config, "TAG_HEIGHT", 0.5))
 
-                                new_anchor = np.array([[x], [y], [z]])
-                                self.anchors_dyn = np.hstack([self.anchors_dyn, new_anchor])
-                                self.sim.anchors = self.anchors_dyn
-                                self.sim.R = np.eye(2 * self.anchors_dyn.shape[1]) * 0.0025
-                                self.shared_uwb.anchors_xy = [(float(self.anchors_dyn[0,i]), float(self.anchors_dyn[1,i])) for i in range(self.anchors_dyn.shape[1])]
-                                print(f"Âncora adicionada em ({x}, {y})")
+                                current = np.asarray(self.anchors_dyn, dtype=float)
+
+                                if current.size == 0:
+                                    current = np.zeros((3, 0), dtype=float)
+
+                                if current.ndim == 2 and current.shape[0] > 3:
+                                    current = current[:3, :]
+
+                                new_anchor = np.array([[float(x)], [float(y)], [float(z)]], dtype=float)
+                                anchors_new = np.hstack([current, new_anchor])
+
+                                self._sync_anchors_everywhere(anchors_new)
+
+                                print(f"Âncora adicionada em ({x}, {y}, {z})")
                             except ValueError:
                                 print("Coordenadas inválidas para âncora.")
                             continue
@@ -689,10 +725,8 @@ class SimulationScreen:
                         if self.anchors_dyn.shape[1] > 0:
                             dif = self.anchors_dyn[:2, :].T - np.array([wx, wy])[None, :]
                             j = int(np.argmin(np.sum(dif**2, axis=1)))
-                            self.anchors_dyn = np.delete(self.anchors_dyn, j, axis=1)
-                            self.sim.anchors = self.anchors_dyn
-                            self.sim.R = (np.eye(2 * self.anchors_dyn.shape[1]) * 0.0025) if self.anchors_dyn.shape[1] > 0 else np.eye(2) * 1e6
-                            self.shared_uwb.anchors_xy = [(float(self.anchors_dyn[0,i]), float(self.anchors_dyn[1,i])) for i in range(self.anchors_dyn.shape[1])]
+                            anchors_new = np.delete(self.anchors_dyn, j, axis=1)
+                            self._sync_anchors_everywhere(anchors_new)
             if event.type == pg.MOUSEBUTTONUP:
                 if event.button == 2:
                     self.panning = False
@@ -737,7 +771,7 @@ class SimulationScreen:
             x_for_ctrl = getattr(self.sim, "x_true", self.sim.x_est)
             self.v_cmd, self.w_cmd, self.wp_idx = waypoint_controller(
                 x_for_ctrl, self.waypoints, self.wp_idx,
-                v_max=0.25, w_max=0.8
+                v_max=self.V_MAX, w_max=self.W_MAX
             )
 
         # física
@@ -762,7 +796,7 @@ class SimulationScreen:
 
                 self.v_cmd, self.w_cmd, self.wp_idx = waypoint_controller(
                     x_for_ctrl, self.waypoints, self.wp_idx,
-                    v_max=0.25, w_max=0.8
+                    v_max=self.V_MAX, w_max=self.W_MAX
                 )
 
             use_odo = bool(cfg.get("use_odometry", True))
@@ -1307,25 +1341,119 @@ class SimulationScreen:
         self.modal_dropdown.active = False
         self.modal_namebox.active = False
 
-    def _apply_loaded_anchors(self, anchors_xy):
-        '''Aplica as âncoras carregadas do arquivo, atualizando o estado compartilhado, a simulação e o desenho.'''
-        # anchors_xy: list[(x,y)]
+    def _normalize_loaded_anchors(self, anchors_data, default_z=None):
+        """
+        Normaliza âncoras carregadas de arquivo.
+
+        Aceita:
+            [[x,y], [x,y], ...]
+            [[x,y,z], [x,y,z], ...]
+
+        Retorna:
+            anchors_dyn: np.ndarray 3xN
+            anchors_xy: list[(x,y)]
+        """
+        arr = np.asarray(anchors_data, dtype=float)
+
+        if arr.size == 0:
+            return np.zeros((3, 0), dtype=float), []
+
+        if arr.ndim != 2:
+            raise ValueError(f"Formato inválido de âncoras: shape={arr.shape}")
+
+        if arr.shape[1] < 2:
+            raise ValueError(f"Âncoras precisam ter pelo menos x,y: shape={arr.shape}")
+
+        xy = arr[:, :2].astype(float)
+
+        if arr.shape[1] >= 3:
+            z = arr[:, 2].astype(float)
+        else:
+            if default_z is None:
+                default_z = getattr(config, "ANCHOR_HEIGHT", 0.0)
+            z = np.full(arr.shape[0], float(default_z), dtype=float)
+
+        anchors_dyn = np.vstack([
+            xy[:, 0],
+            xy[:, 1],
+            z,
+        ])
+
+        anchors_xy = [
+            (float(x), float(y))
+            for x, y in xy
+        ]
+
+        return anchors_dyn, anchors_xy
+
+
+    def _sync_anchors_everywhere(self, anchors_dyn):
+        """
+        Sincroniza âncoras em todos os estados que dependem delas:
+        - desenho/simulação;
+        - BC-EKF/simulador;
+        - matriz R;
+        - SharedUwbState;
+        - pipeline UWB.
+        """
+        anchors_dyn = np.asarray(anchors_dyn, dtype=float)
+
+        if anchors_dyn.size == 0:
+            anchors_dyn = np.zeros((3, 0), dtype=float)
+
+        if anchors_dyn.ndim != 2:
+            raise ValueError(f"anchors_dyn inválido: shape={anchors_dyn.shape}")
+
+        # Aceita Nx3 por segurança e converte para 3xN.
+        if anchors_dyn.shape[0] != 3 and anchors_dyn.shape[1] == 3:
+            anchors_dyn = anchors_dyn.T
+
+        # Se veio 4xN por erro antigo, corta para x,y,z.
+        if anchors_dyn.shape[0] > 3:
+            anchors_dyn = anchors_dyn[:3, :]
+
+        if anchors_dyn.shape[0] != 3:
+            raise ValueError(f"anchors_dyn precisa ser 3xN, recebido {anchors_dyn.shape}")
+
+        self.anchors_dyn = anchors_dyn
+
+        if self.sim is not None:
+            self.sim.anchors = self.anchors_dyn
+
+            n = int(self.anchors_dyn.shape[1])
+            self.sim.R = (
+                np.eye(2 * n) * 0.0025
+                if n > 0
+                else np.eye(2) * 1e6
+            )
+
+        if self.shared_uwb is not None:
+            self.shared_uwb.anchors_xy = [
+                (float(self.anchors_dyn[0, i]), float(self.anchors_dyn[1, i]))
+                for i in range(self.anchors_dyn.shape[1])
+            ]
+
+            self.shared_uwb.reindex_anchor_params()
+            self.shared_uwb.sync_pipeline_from_state()
+
+        self._reset_gdop_stats()
+
+    def _apply_loaded_anchors(self, anchors_data):
+        """
+        Aplica âncoras carregadas ou recebidas manualmente.
+
+        Suporta arquivos antigos Nx2 e arquivos novos Nx3.
+        """
         if not self.shared_uwb:
             return
 
-        # atualiza shared IN-PLACE pra manter referência
-        self.shared_uwb.anchors_xy[:] = [(float(x), float(y)) for (x,y) in anchors_xy]
-        self.shared_uwb.reindex_anchor_params()
-        self.shared_uwb.sync_pipeline_from_state()
+        anchors_dyn, anchors_xy = self._normalize_loaded_anchors(
+            anchors_data,
+            default_z=getattr(config, "ANCHOR_HEIGHT", 0.0),
+        )
 
-        # atualiza sim + draw
-        self.anchors_dyn = self.shared_uwb.anchors_np3()
-        self.sim.anchors = self.anchors_dyn
-
-        # atualiza R conforme N
-        n = self.anchors_dyn.shape[1]
-        self.sim.R = (np.eye(2*n) * 0.0025) if n > 0 else (np.eye(2) * 1e6)
-
+        self._sync_anchors_everywhere(anchors_dyn)
+        
     def _save_anchors_to_file(self, name: str):
         """Salva âncoras + parâmetros completos."""
         if not self.shared_uwb:
@@ -1345,40 +1473,63 @@ class SimulationScreen:
         
 
     def _load_anchors_from_file(self, filename: str):
-        """Carrega âncoras + parâmetros completos."""
+        """
+        Carrega âncoras + parâmetros completos.
+
+        Corrige o problema de arquivos Nx3:
+        - shared_uwb.anchors_xy recebe apenas x,y;
+        - anchors_dyn e sim.anchors recebem x,y,z.
+        """
         path = os.path.join(self.anchors_dir, filename)
-        
+
         try:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            
-            # Carrega no shared_uwb usando from_dict()
+
+            anchors_raw = data.get("anchors_xy", [])
+
+            default_z = (
+                data.get("meta", {}).get("anchor_height_m", None)
+                if isinstance(data.get("meta", {}), dict)
+                else None
+            )
+
+            anchors_dyn, anchors_xy = self._normalize_loaded_anchors(
+                anchors_raw,
+                default_z=default_z,
+            )
+
             if self.shared_uwb:
-                # Mantém seed atual
-                current_seed = self.shared_uwb.pipeline.seed
-                
-                # Atualiza campos
-                self.shared_uwb.anchors_xy = data.get("anchors_xy", [])
-                
+                current_seed = getattr(self.shared_uwb.pipeline, "seed", self.shared_uwb.seed)
+
+                # IMPORTANTÍSSIMO:
+                # shared_uwb.anchors_xy guarda apenas x,y.
+                self.shared_uwb.anchors_xy = anchors_xy
+
                 if "tag_params" in data:
                     self.shared_uwb.tag_params = dict_to_node_params(data["tag_params"])
-                
-                if "anchor_params" in data:
+
+                if "anchor_params" in data and isinstance(data["anchor_params"], dict):
                     self.shared_uwb.anchor_params = {
                         int(k): dict_to_node_params(v)
                         for k, v in data["anchor_params"].items()
                     }
-                
-                # Reaplica seed e sincroniza
-                self.shared_uwb.pipeline.seed = current_seed
+
+                self.shared_uwb.seed = int(current_seed)
+
+                if self.shared_uwb.pipeline is not None:
+                    self.shared_uwb.pipeline.seed = int(current_seed)
+
                 self.shared_uwb.reindex_anchor_params()
                 self.shared_uwb.sync_pipeline_from_state()
-                
-                # Atualiza visualização
-                self.anchors_dyn = self.shared_uwb.anchors_np3()
-            
-            print(f"[SIM] Âncoras + parâmetros carregados: {path}")
-        
+
+            self._sync_anchors_everywhere(anchors_dyn)
+
+            print(
+                f"[SIM] Âncoras + parâmetros carregados: {path} | "
+                f"anchors_dyn={self.anchors_dyn.shape}"
+            )
+
         except Exception as e:
             print(f"[SIM] Erro ao carregar âncoras: {e}")
 
@@ -1446,7 +1597,9 @@ class SimulationScreen:
             if len(wps) >= 2:
                 self.waypoints = np.array(wps, dtype=float)
                 self.wp_idx = 0
-                self.autopilot = True
+                self._pm_seg_i = 0
+                self._pm_s = 0.0
+                self._restart_current_route(enable_autopilot=True)
             else:
                 self.waypoints = None
                 self.wp_idx = 0
@@ -1755,7 +1908,10 @@ class SimulationScreen:
         self.gdop_hist.clear()
 
     def _reset_robot_to_route_start(self):
-        """Posiciona o robô no primeiro waypoint e reinicia índices da rota."""
+        """
+        Posiciona o robô no primeiro waypoint e reinicia índices da rota.
+        Também realinha o estado estimado do EKF para evitar sair perdido.
+        """
         if self.waypoints is None or len(self.waypoints) < 2:
             return False
 
@@ -1763,26 +1919,116 @@ class SimulationScreen:
         p1 = self.waypoints[1]
         theta0 = float(math.atan2(p1[1] - p0[1], p1[0] - p0[0]))
 
-        # move o robô (ground truth)
+        x0 = np.array([float(p0[0]), float(p0[1]), theta0], dtype=float)
+
+        # Ground truth / robô físico simulado
         if hasattr(self.sim, "robot"):
-            self.sim.robot.x = float(p0[0])
-            self.sim.robot.y = float(p0[1])
-            self.sim.robot.theta = theta0
+            self.sim.robot.x = float(x0[0])
+            self.sim.robot.y = float(x0[1])
+            self.sim.robot.theta = float(x0[2])
 
         if hasattr(self.sim, "x_true"):
-            self.sim.x_true = np.array([float(p0[0]), float(p0[1]), theta0], dtype=float)
+            self.sim.x_true = x0.copy()
 
-        # reinicia autopilot/índices
+        # Estado estimado/predito do EKF.
+        # Isso evita o BC-EKF começar com estado antigo.
+        if hasattr(self.sim, "x_est"):
+            self.sim.x_est = x0.copy()
+
+        if hasattr(self.sim, "P"):
+            self.sim.P = np.diag([0.1, 0.1, 0.1]).astype(float)
+
+        if hasattr(self.sim, "last_debug"):
+            self.sim.last_debug = None
+
+        # Índices da rota
         self.wp_idx = 0
-        self.autopilot = True
         self.v_cmd = 0.0
         self.w_cmd = 0.0
 
-        # reset do perfect-motion progress (se estiver usando)
+        # perfect motion
         self._pm_seg_i = 0
         self._pm_s = 0.0
 
         return True
+
+    def _clear_simulation_histories(self):
+        """
+        Limpa trilhas e históricos visuais/numéricos da simulação.
+        """
+        self.path_true.clear()
+        self.path_pred.clear()
+        self.path_est.clear()
+
+        self.ts_hist.clear()
+        self.pos_err_hist.clear()
+        self.head_err_hist.clear()
+
+        if hasattr(self.sim, "history_true"):
+            self.sim.history_true.clear()
+        if hasattr(self.sim, "history_pred"):
+            self.sim.history_pred.clear()
+        if hasattr(self.sim, "history_est"):
+            self.sim.history_est.clear()
+
+        self._reset_gdop_stats()
+
+
+    def _restart_current_route(self, enable_autopilot=True) -> bool:
+        """
+        Reinicia a rota atualmente carregada/desenhada no primeiro waypoint.
+
+        Usado por:
+        - GG sem pontos gravados;
+        - SPACE quando a rota já terminou;
+        - carregamento de rota.
+        """
+        ok = self._reset_robot_to_route_start()
+
+        if not ok:
+            print("[SIM] Nenhuma rota carregada para reiniciar.")
+            return False
+
+        self._clear_simulation_histories()
+
+        self.autopilot = bool(enable_autopilot)
+        self.recording = False
+        self.v_cmd = 0.0
+        self.w_cmd = 0.0
+
+        print("[SIM] Rota reiniciada.")
+        return True
+
+
+    def _toggle_autopilot(self):
+        """
+        Liga/desliga autopilot com tratamento de rota finalizada.
+        """
+        if self.waypoints is None or len(self.waypoints) < 2:
+            self.autopilot = False
+            print("[SIM] Autopilot indisponível: nenhuma rota carregada.")
+            return
+
+        # Se a rota já terminou, SPACE reinicia do começo.
+        if (not self.autopilot) and self.wp_idx >= len(self.waypoints):
+            self._restart_current_route(enable_autopilot=True)
+            return
+
+        # Se ainda não terminou, apenas alterna.
+        self.autopilot = not self.autopilot
+
+        if self.autopilot:
+            # Se estava em estado inválido, volta para início.
+            if self.wp_idx < 0 or self.wp_idx >= len(self.waypoints):
+                self._restart_current_route(enable_autopilot=True)
+            else:
+                self.v_cmd = 0.0
+                self.w_cmd = 0.0
+        else:
+            self.v_cmd = 0.0
+            self.w_cmd = 0.0
+
+        print(f"[SIM] Autopilot: {'ON' if self.autopilot else 'OFF'}")
 
     def _start_dataset_recording(self):
         """Inicia gravação de dataset e reinicia a rota."""

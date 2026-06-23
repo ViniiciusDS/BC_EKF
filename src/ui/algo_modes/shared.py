@@ -458,6 +458,20 @@ ALGO_VARIANTS = {
     {"key": "ls_li2023", "label": "◉ LS Li23", "short": "Li23"},
     {"key": "ls_gn_li2023", "label": "◉ LS+GN Li23", "short": "LS+GN"},
     ],
+    "lmsp": [
+    {"key": None, "label": "○ LMS-P off", "short": "off"},
+    {"key": "lmsp", "label": "◉ LMS-P atual", "short": "atual"},
+    {"key": "wls_sigma", "label": "◉ WLS sigma", "short": "sigma"},
+    {"key": "wls_rkf_fan2022", "label": "◉ WLS-RKF", "short": "Fan22"},
+    {"key": "rwls_wang2017", "label": "◉ RWLS Wang17", "short": "Wang17"},
+    ],
+    "gauss_newton": [
+    {"key": None, "label": "○ GN off", "short": "off"},
+    {"key": "gauss_newton", "label": "◉ GN atual", "short": "atual"},
+    {"key": "gn_wang2020", "label": "◉ GN Wang20", "short": "Wang20"},
+    {"key": "gn_wang2020_damped", "label": "◉ GN damped", "short": "damped"},
+    {"key": "gn_wang2020_mahal", "label": "◉ GN Mahalan.", "short": "Mahalan."},
+    ],
 }
 
 
@@ -468,6 +482,12 @@ ALGO_RESULT_ALIAS = {
     "ls_sang2019": "lms",
     "ls_li2023": "lms",
     "ls_gn_li2023": "lms",
+    "wls_sigma": "lmsp",
+    "wls_rkf_fan2022": "lmsp",
+    "rwls_wang2017": "lmsp",
+    "gn_wang2020": "gauss_newton",
+    "gn_wang2020_damped": "gauss_newton",
+    "gn_wang2020_mahal": "gauss_newton",
 }
 
 
@@ -482,6 +502,8 @@ def default_algorithm_variant_state():
     return {
         "trilaterate3d": "trilaterate3d",
         "lms": "lms",
+        "lmsp": "lmsp",
+        "gauss_newton": "gauss_newton",
     }
 
 
@@ -565,3 +587,107 @@ def algorithm_button_label(base_key: str, selected: dict, variant_state: dict | 
             return v["label"]
 
     return variants[0]["label"]
+
+def resolve_file_with_extensions(dirname: str, filename: str, exts: tuple[str, ...]) -> str:
+    """
+    Resolve um arquivo mesmo quando o nome veio sem extensão.
+
+    Exemplo:
+        dirname = resultados/datasets
+        filename = dataset_bc_20260601_144123_C1_C2
+        exts = (".txt", ".csv")
+
+    Tenta:
+        dataset_bc_20260601_144123_C1_C2
+        dataset_bc_20260601_144123_C1_C2.txt
+        dataset_bc_20260601_144123_C1_C2.csv
+
+    Também tenta casamento case-insensitive.
+    """
+    import os
+
+    filename = str(filename).strip()
+
+    if not filename:
+        return os.path.join(dirname, filename)
+
+    # Se já veio caminho absoluto ou relativo completo, testa direto.
+    direct = filename
+    if not os.path.isabs(direct):
+        direct = os.path.join(dirname, filename)
+
+    if os.path.isfile(direct):
+        return direct
+
+    root, ext = os.path.splitext(filename)
+
+    # Se tem extensão conhecida mas não existe, retorna direto.
+    # Se tem extensão parcial/desconhecida, tenta resolver por prefixo.
+    known_exts = tuple(e.lower() for e in exts)
+
+    if ext and ext.lower() in known_exts:
+        return direct
+
+    # Tenta completar extensão.
+    for e in exts:
+        candidate = os.path.join(dirname, filename + e)
+        if os.path.isfile(candidate):
+            return candidate
+
+    # Tenta busca case-insensitive.
+    if os.path.isdir(dirname):
+        target_names = [filename + e for e in exts]
+
+        lower_targets = {t.lower(): t for t in target_names}
+
+        for real_name in os.listdir(dirname):
+            if real_name.lower() in lower_targets:
+                return os.path.join(dirname, real_name)
+
+    # Tenta busca por prefixo quando o texto veio truncado pelo campo.
+    if os.path.isdir(dirname):
+        prefix = filename.lower()
+
+        matches = []
+
+        for real_name in os.listdir(dirname):
+            full = os.path.join(dirname, real_name)
+
+            if not os.path.isfile(full):
+                continue
+
+            low = real_name.lower()
+
+            if not low.endswith(known_exts):
+                continue
+
+            if low.startswith(prefix):
+                matches.append(real_name)
+
+        if len(matches) == 1:
+            return os.path.join(dirname, matches[0])
+
+        # Caso o prefixo contenha uma extensão parcial, tenta com o root.
+        if ext:
+            root_prefix = root.lower()
+            matches = []
+
+            for real_name in os.listdir(dirname):
+                full = os.path.join(dirname, real_name)
+
+                if not os.path.isfile(full):
+                    continue
+
+                low = real_name.lower()
+
+                if not low.endswith(known_exts):
+                    continue
+
+                if low.startswith(root_prefix):
+                    matches.append(real_name)
+
+            if len(matches) == 1:
+                return os.path.join(dirname, matches[0])
+            
+    # fallback
+    return direct

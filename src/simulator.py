@@ -391,5 +391,6 @@ class Simulator:
         except np.linalg.LinAlgError:
             return float("inf")
 
-        gdop = float(np.trace(inv))
+        gdop = float(np.sqrt(np.trace(inv)))
+        
         return gdop

@@ -1,0 +1,118 @@
+{
+  "anchors_xy": [
+    [
+      0.92,
+      1.244
+    ],
+    [
+      6.933,
+      1.291
+    ],
+    [
+      0.896,
+      8.592
+    ],
+    [
+      6.943,
+      8.567
+    ],
+    [
+      1.0,
+      5.0
+    ],
+    [
+      7.0,
+      5.0
+    ],
+    [
+      4.0,
+      8.6
+    ]
+  ],
+  "tag_params": {
+    "clock": {
+      "drift_ppm": 0.0
+    },
+    "ant": {
+      "tx_ns": 0.0,
+      "rx_ns": 0.0
+    },
+    "range_bias_m": 0.0
+  },
+  "anchor_params": {
+    "0": {
+      "clock": {
+        "drift_ppm": 0.0
+      },
+      "ant": {
+        "tx_ns": 0.0,
+        "rx_ns": 0.0
+      },
+      "range_bias_m": 0.0
+    },
+    "1": {
+      "clock": {
+        "drift_ppm": 0.0
+      },
+      "ant": {
+        "tx_ns": 0.0,
+        "rx_ns": 0.0
+      },
+      "range_bias_m": 0.0
+    },
+    "2": {
+      "clock": {
+        "drift_ppm": 0.0
+      },
+      "ant": {
+        "tx_ns": 0.0,
+        "rx_ns": 0.0
+      },
+      "range_bias_m": 0.0
+    },
+    "3": {
+      "clock": {
+        "drift_ppm": 0.0
+      },
+      "ant": {
+        "tx_ns": 0.0,
+        "rx_ns": 0.0
+      },
+      "range_bias_m": 0.0
+    },
+    "4": {
+      "clock": {
+        "drift_ppm": 0.0
+      },
+      "ant": {
+        "tx_ns": 0.0,
+        "rx_ns": 0.0
+      },
+      "range_bias_m": 0.0
+    },
+    "5": {
+      "clock": {
+        "drift_ppm": 0.0
+      },
+      "ant": {
+        "tx_ns": 0.0,
+        "rx_ns": 0.0
+      },
+      "range_bias_m": 0.0
+    },
+    "6": {
+      "clock": {
+        "drift_ppm": 0.0
+      },
+      "ant": {
+        "tx_ns": 0.0,
+        "rx_ns": 0.0
+      },
+      "range_bias_m": 0.0
+    }
+  },
+  "meta": {
+    "count": 7,
+    "timestamp": "2026-05-30T16:06:09.886939"
+  }
+}

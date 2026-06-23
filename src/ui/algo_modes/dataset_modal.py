@@ -1,8 +1,6 @@
 from __future__ import annotations
-from posixpath import dirname
 
 import pygame as pg
-import os
 
 from src.ui.ui_elements import (
     TextBoxDropdown,
@@ -67,6 +65,8 @@ class DatasetConfigModal:
 
         self.open_dropdown = None
         self.max_dropdown_items = 7
+        self.dropdown_scroll = 0
+
         
         self.refresh_options()
 
@@ -76,9 +76,9 @@ class DatasetConfigModal:
         # Sincroniza estado atual do DatasetMode para os dropdowns.
         source = getattr(self.mode, "dataset_source_type", "simulated")
         if source == "real_encoder_uwb":
-            self.dd_source.set_text("Real (encoder + UWB)")
+            self._set_dropdown_value(self.dd_source, "Real (encoder + UWB)")
         else:
-            self.dd_source.set_text("Simulado")
+            self._set_dropdown_value(self.dd_source, "Simulado")
 
         kind = getattr(self.mode, "simulated_dataset_kind", "Front")
 
@@ -92,7 +92,10 @@ class DatasetConfigModal:
             "bc": "BC",
         }
 
-        self.dd_sim_kind.set_text(kind_map.get(str(kind).strip().lower(), "Front"))
+        self._set_dropdown_value(
+            self.dd_sim_kind,
+            kind_map.get(str(kind).strip().lower(), "Front"),
+        )
 
         self.mode.dataset_modal_open = True
 
@@ -150,9 +153,17 @@ class DatasetConfigModal:
             ["Front", "Rear", "Mid", "BC"],
         )
 
+        dataset_files = safe_list(dataset_dir, (".txt", ".csv", ".jsonl"))
+
+        # Remove arquivos de trajetória exportada, caso estejam na mesma pasta.
+        dataset_files = [
+            f for f in dataset_files
+            if "_traj" not in f.lower()
+        ]
+
         self._set_dropdown_options(
             self.dd_dataset,
-            safe_list(dataset_dir, (".txt", ".csv", ".jsonl")),
+            dataset_files,
         )
 
         encoder_files = safe_list(real_data_dir, (".csv", ".txt"))
@@ -194,8 +205,21 @@ class DatasetConfigModal:
         dd.options_all = options
         dd.options_filtered = options
 
-        # Se o texto atual não existe mais nas opções, limpa.
-        if getattr(dd, "text", "") and dd.text not in options:
+        current_value = getattr(dd, "selected_value", None)
+        current_text = getattr(dd, "text", "")
+
+        # Se o valor selecionado ainda existe, preserva.
+        if current_value and current_value in options:
+            return
+
+        # Se o texto atual ainda existe exatamente, usa como selected_value.
+        if current_text and current_text in options:
+            dd.selected_value = current_text
+            return
+
+        # Se não existe mais, limpa.
+        if current_text:
+            dd.selected_value = ""
             dd.set_text("")
 
     def _draw_open_dropdown_list(self, screen, dd):
@@ -216,6 +240,14 @@ class DatasetConfigModal:
             return
 
         max_items = min(self.max_dropdown_items, len(options))
+
+        max_scroll = max(0, len(options) - max_items)
+        self.dropdown_scroll = max(0, min(self.dropdown_scroll, max_scroll))
+
+        start = self.dropdown_scroll
+        end = start + max_items
+        visible_options = options[start:end]
+
         list_rect = pg.Rect(
             rect.x,
             rect.bottom + 2,
@@ -228,7 +260,7 @@ class DatasetConfigModal:
 
         mouse_pos = pg.mouse.get_pos()
 
-        for i, opt in enumerate(options[:max_items]):
+        for i, opt in enumerate(visible_options):
             item_rect = pg.Rect(
                 rect.x,
                 rect.bottom + 2 + i * item_h,
@@ -242,8 +274,14 @@ class DatasetConfigModal:
             txt = font.render(str(opt), True, (25, 25, 25))
             screen.blit(txt, (item_rect.x + 6, item_rect.y + 5))
 
+        # Indicador simples de scroll
+        if len(options) > max_items:
+            indicator = f"{start + 1}-{min(end, len(options))}/{len(options)}"
+            txt = font.render(indicator, True, (90, 90, 90))
+            screen.blit(txt, (list_rect.right - txt.get_width() - 6, list_rect.bottom - item_h + 5))
+
     def is_real(self):
-        return (self.dd_source.text or "").strip().lower().startswith("real")
+        return self._get_dropdown_value(self.dd_source).lower().startswith("real")
 
     def active_rows(self):
         return self.rows_real if self.is_real() else self.rows_sim
@@ -307,6 +345,16 @@ class DatasetConfigModal:
 
             return True
 
+        if event.type == pg.MOUSEWHEEL:
+            if self.open_dropdown is not None:
+                options = self._dropdown_options(self.open_dropdown)
+                max_scroll = max(0, len(options) - self.max_dropdown_items)
+
+                self.dropdown_scroll -= int(event.y)
+                self.dropdown_scroll = max(0, min(self.dropdown_scroll, max_scroll))
+
+                return True
+            
         if event.type == pg.MOUSEBUTTONDOWN and event.button == 1:
             pos = event.pos
 
@@ -348,8 +396,9 @@ class DatasetConfigModal:
                 clicked_dropdown.active = True
                 clicked_dropdown.dropdown_open = True
                 self.open_dropdown = clicked_dropdown
+                self.dropdown_scroll = 0
                 return True
-
+            
             # 4) Clique fora fecha o modal.
             if self.frame and not self.frame.contains(pos):
                 self.close()
@@ -395,15 +444,20 @@ class DatasetConfigModal:
 
         if list_rect.collidepoint(pos):
             item_h = 26
-            idx = int((pos[1] - list_rect.y) // item_h)
+            local_idx = int((pos[1] - list_rect.y) // item_h)
 
-            if 0 <= idx < min(self.max_dropdown_items, len(options)):
-                dd.set_text(str(options[idx]))
+            max_items = min(self.max_dropdown_items, len(options))
+            real_idx = self.dropdown_scroll + local_idx
 
-                # Fecha usando a referência local, não self.open_dropdown depois de zerar.
+            if 0 <= local_idx < max_items and 0 <= real_idx < len(options):
+                full_value = str(options[real_idx])
+
+                self._set_dropdown_value(dd, full_value)
+
                 dd.active = False
                 dd.dropdown_open = False
                 self.open_dropdown = None
+                self.dropdown_scroll = 0
 
                 if dd is self.dd_source:
                     self.refresh_options()
@@ -423,10 +477,12 @@ class DatasetConfigModal:
             dd.active = False
 
         self.open_dropdown = None
+        self.dropdown_scroll = 0
 
     def apply(self):
         """
         Copia a seleção do modal para o DatasetMode e chama a aplicação real.
+        Usa selected_value para evitar truncamento do nome dos arquivos.
         """
         m = self.mode
 
@@ -434,25 +490,57 @@ class DatasetConfigModal:
         m.dataset_source_type = "real_encoder_uwb" if is_real else "simulated"
 
         if is_real:
-            m._modal_real_encoder_file = self.dd_encoder.text.strip()
-            m._modal_real_uwb_file = self.dd_uwb.text.strip()
+            m._modal_real_encoder_file = self._get_dropdown_value(self.dd_encoder)
+            m._modal_real_uwb_file = self._get_dropdown_value(self.dd_uwb)
             m._modal_dataset_file = ""
         else:
-            m._modal_dataset_file = self.dd_dataset.text.strip()
+            m._modal_dataset_file = self._get_dropdown_value(self.dd_dataset)
             m._modal_real_encoder_file = ""
             m._modal_real_uwb_file = ""
 
-            selected_kind = self.dd_sim_kind.text.strip() or "Front"
+            selected_kind = self._get_dropdown_value(self.dd_sim_kind) or "Front"
             m._modal_simulated_kind = selected_kind
             m.simulated_dataset_kind = selected_kind
 
-        m._modal_anchor_file = self.dd_anchors.text.strip()
-        m._modal_route_file = self.dd_route.text.strip()
-        m._modal_map_file = self.dd_map.text.strip()
+        m._modal_anchor_file = self._get_dropdown_value(self.dd_anchors)
+        m._modal_route_file = self._get_dropdown_value(self.dd_route)
+        m._modal_map_file = self._get_dropdown_value(self.dd_map)
+
+        print("[DATASET_MODAL_APPLY] dataset =", repr(m._modal_dataset_file))
+        print("[DATASET_MODAL_APPLY] anchors =", repr(m._modal_anchor_file))
+        print("[DATASET_MODAL_APPLY] route   =", repr(m._modal_route_file))
+        print("[DATASET_MODAL_APPLY] map     =", repr(m._modal_map_file))
 
         ok = m._apply_dataset_config_from_modal_values()
 
         if ok is not False:
             self.close()
 
+    def _set_dropdown_value(self, dd, value: str):
+        """
+        Define o valor real selecionado no dropdown.
+
+        O TextBoxDropdown pode cortar o texto exibido para caber no campo.
+        Por isso guardamos o valor completo em selected_value.
+        """
+        value = str(value or "")
+
+        dd.selected_value = value
+        dd.set_text(value)
+
+
+    def _get_dropdown_value(self, dd) -> str:
+        """
+        Recupera o valor real selecionado.
+
+        Prioridade:
+        1. selected_value completo;
+        2. texto atual, caso o usuário tenha digitado manualmente.
+        """
+        selected = getattr(dd, "selected_value", None)
+
+        if selected:
+            return str(selected).strip()
+
+        return str(getattr(dd, "text", "") or "").strip()
     
