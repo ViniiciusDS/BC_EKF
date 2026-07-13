@@ -1,0 +1,83 @@
+{
+  "anchors_xy": [
+    [
+      3.995,
+      5.414,
+      0.437
+    ],
+    [
+      3.874,
+      -5.137,
+      0.433
+    ],
+    [
+      -4.028,
+      5.42,
+      2.608
+    ],
+    [
+      -3.997,
+      -5.137,
+      0.412
+    ],
+    [
+      -8.401,
+      1.02,
+      2.765
+    ],
+    [
+      -12.487,
+      -1.781,
+      2.745
+    ],
+    [
+      -14.511,
+      0.208,
+      2.762
+    ],
+    [
+      -20.586,
+      -0.776,
+      2.487
+    ]
+  ],
+  "anchor_ids_uwb": [
+    "0x9BD8",
+    "0xE36B",
+    "0x9CD3",
+    "0x9D0D",
+    "0x1597",
+    "0x160D",
+    "0x1578",
+    "0x1533"
+  ],
+  "tag_params": {
+    "clock": {
+      "drift_ppm": 0.0
+    },
+    "ant": {
+      "tx_ns": 0.0,
+      "rx_ns": 0.0
+    },
+    "range_bias_m": 0.0
+  },
+  "anchor_params": {},
+  "meta": {
+    "source": "imec / IDLab Two-way Ranging Correction Dataset",
+    "original_folder": "2023_IDLAB_JULY_CIR-TWR-app_sl_2023_Jul_10_15_21_28_2023-07-10-13-23-07",
+    "distance_unit_converted": "mm_to_m",
+    "anchor_unit_converted": "mm_to_m",
+    "selected_anchor_count": 8,
+    "selected_anchors": [
+      "0x9BD8",
+      "0xE36B",
+      "0x9CD3",
+      "0x9D0D",
+      "0x1597",
+      "0x160D",
+      "0x1578",
+      "0x1533"
+    ],
+    "note": "Dataset converted for range-only Dataset Mode; not BC-EKF because this public dataset does not provide robot encoder and dual-tag baseline in the BC-EKF format."
+  }
+}

@@ -1,0 +1,50 @@
+{
+  "anchors_xy": [
+    [
+      -4.028,
+      5.42,
+      2.608
+    ],
+    [
+      3.874,
+      -5.137,
+      0.433
+    ],
+    [
+      -3.997,
+      -5.317,
+      2.619
+    ],
+    [
+      3.875,
+      -5.317,
+      2.647
+    ]
+  ],
+  "anchor_ids_uwb": [
+    "0x9CD3",
+    "0xE36B",
+    "0xE4AF",
+    "0xE589"
+  ],
+  "tag_params": {
+    "clock": {
+      "drift_ppm": 0.0
+    },
+    "ant": {
+      "tx_ns": 0.0,
+      "rx_ns": 0.0
+    },
+    "range_bias_m": 0.0
+  },
+  "anchor_params": {},
+  "meta": {
+    "source": "imec/IDLab Two-way Ranging Correction Dataset",
+    "conversion": "strict synchronized superframes only; no range interpolation",
+    "original_zip": "2023_IDLAB_JULY_CIR-TWR-app_sl_2023_Jul_10_15_21_28_2023-07-10-13-23-07.zip",
+    "samples": 61,
+    "anchor_count": 4,
+    "sigma_m": 0.2,
+    "unit": "m"
+  }
+}

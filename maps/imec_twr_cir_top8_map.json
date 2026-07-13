@@ -1,0 +1,53 @@
+{
+  "obstacles": [
+    {
+      "p0": [
+        -21.586,
+        -6.137
+      ],
+      "p1": [
+        4.995,
+        -6.137
+      ],
+      "material": "wall"
+    },
+    {
+      "p0": [
+        4.995,
+        -6.137
+      ],
+      "p1": [
+        4.995,
+        6.42
+      ],
+      "material": "wall"
+    },
+    {
+      "p0": [
+        4.995,
+        6.42
+      ],
+      "p1": [
+        -21.586,
+        6.42
+      ],
+      "material": "wall"
+    },
+    {
+      "p0": [
+        -21.586,
+        6.42
+      ],
+      "p1": [
+        -21.586,
+        -6.137
+      ],
+      "material": "wall"
+    }
+  ],
+  "noise_zones": [],
+  "meta": {
+    "source": "bounding rectangle from anchors and ground truth",
+    "units": "m"
+  }
+}
