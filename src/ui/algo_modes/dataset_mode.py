@@ -51,6 +51,11 @@ from src.ui.algo_modes.dataset_render import (
     draw_dataset_analyzer,
 )
 from src.ui.algo_modes.dataset_modal import DatasetConfigModal
+from src.ui.algo_modes.dataset_odometry_pipeline import (
+    ROBOT2026_PROFILE,
+    load_robot2026_odometry,
+    resolve_robot2026_source,
+)
 from src.ui.algo_modes.dataset_sim_pipeline import (
     SimPipelineResult,
     load_simulated_dataset_file,
@@ -156,10 +161,15 @@ class DatasetMode:
         self.available_dataset_sources = [
             "Simulado",
             "Real (encoder + UWB)",
+            "Real (odometria 2026)",
         ]
 
 
         self.real_data_dir = os.path.join("resultados", "datasets")
+        # Perfil experimental independente, sem mudar o config global do simulador.
+        self.robot2026_raw_dir = os.path.join("dados_reais", "robot2026")
+        self.robot2026_processed_dir = os.path.join("resultados", "robot2026")
+        self._robot2026_data = None
 
         self.show_analyzer = True
         self.btn_toggle_analyzer = Button(
@@ -280,13 +290,21 @@ class DatasetMode:
             route_file="",
             map_file="",
             simulated_kind="Front",
+            odom_file="",
+            odom_session="1",
         ):
         """
         Núcleo do fluxo de carregamento de dataset extraído de _apply_dataset_config().
         Recebe os nomes de arquivo/paths a partir do modal novo e reaplica a lógica
         existente sem depender diretamente dos `dataset_inputs`.
         """
-        # decide tipo a partir dos arquivos passados: prioridade para real se houver arquivos reais
+        # Fonte explícita: odometria isolada não depende de ranges nem de âncoras.
+        if self.dataset_source_type == "real_odometry_2026":
+            return self._apply_robot2026_odometry_config(
+                odom_file, odom_session, route_file, map_file
+            )
+
+        # Para os modos legados, mantém a detecção de arquivos existente.
         is_real = bool(real_encoder_file or real_uwb_file)
         self._bc_ekf_data = None
 
@@ -442,6 +460,88 @@ class DatasetMode:
                 )
         else:
             self.host._set_msg("Dataset configurado")
+
+
+    def _apply_robot2026_odometry_config(
+        self, selection: str, session: str, route_file: str, map_file: str
+    ) -> bool:
+        """Reconstrói a odometria PCNT sem UWB nem alterações no simulador.
+
+        Os CSVs convertidos são recalculados com o perfil de 4560 CPR;
+        a odometria não é interpretada como ground truth.
+        """
+        try:
+            if not selection:
+                raise ValueError("Selecione um arquivo PCNT ou uma sessão convertida")
+            path = resolve_robot2026_source(
+                selection, self.robot2026_raw_dir, self.robot2026_processed_dir
+            )
+            data = load_robot2026_odometry(
+                path, session_id=int(session or "1"), profile=ROBOT2026_PROFILE
+            )
+            # Valida arquivos opcionais antes de substituir o dataset em memória.
+            route_path = (
+                resolve_file_with_extensions(self.routes_dir, route_file, (".json",))
+                if route_file else None
+            )
+            map_path = (
+                resolve_file_with_extensions(self.maps_dir, map_file, (".json",))
+                if map_file else None
+            )
+            if route_path and not os.path.isfile(route_path):
+                raise FileNotFoundError(f"Rota não encontrada: {route_path}")
+            if map_path and not os.path.isfile(map_path):
+                raise FileNotFoundError(f"Mapa não encontrado: {map_path}")
+
+            self._batch_dists = None
+            self._batch_devs = None
+            self._batch_results = None
+            self._dataset_stats = None
+            self._bc_ekf_data = None
+            self._dataset_truth = None
+            self._dataset_anchors = None
+            self._anchors_uwb_ids = None
+            self._real_dataset = None
+            self._real_aligned_rows = None
+            self._real_uwb_rows = None
+            self._real_range_matrix = None
+            self._real_sigma_matrix = None
+            self._real_anchor_ids = []
+            self._route_waypoints = None
+            self._reference_route_display = None
+            self._reference_route_dense = None
+            self._map_env = None
+            self._map_label = ""
+
+            self._robot2026_data = data
+            self._dataset_path = str(data.path)
+            self._dataset_label = (
+                f"ODOM2026 | sessao={data.session_id} | CPR=4560"
+            )
+            self._dataset_route = data.poses_xytheta.copy()
+            self._real_odom_path = data.poses_xytheta.tolist()
+            self._real_timestamps = data.timestamps_s.tolist()
+
+            if route_path and not self._try_load_route(route_path):
+                return False
+            if map_path and not self._try_load_map(map_path):
+                return False
+
+            # O host mantém os campos compartilhados ao trocar de tela.
+            self.host._dataset_path = self._dataset_path
+            self.host._dataset_label = self._dataset_label
+            self.host._batch_dists = None
+            self.host._batch_devs = None
+            self.host._batch_results = None
+            self.host._dataset_anchors = None
+            self.host._set_msg(
+                f"Odometria: {data.sample_count} amostras, "
+                f"{data.duration_s:.1f}s, CPR 4560, sem UWB"
+            )
+            return True
+        except (OSError, ValueError) as exc:
+            self.host._set_msg(f"Erro ao carregar odometria 2026: {exc}")
+            return False
 
     def _refresh_dataset_algo_buttons(self):
         """
@@ -657,6 +757,9 @@ class DatasetMode:
                     return _actions_menu()
                 
                 elif event.key == pg.K_F10:
+                    if self.dataset_source_type == "real_odometry_2026":
+                        self.host._set_msg("Odometria carregada: falta UWB para rodar algoritmos")
+                        continue
                     try:
                         if self._batch_dists is None:
                             raise ValueError("Nenhum dataset batch carregado")
@@ -805,6 +908,9 @@ class DatasetMode:
     def _run_batch(self):
         '''Executa os algoritmos selecionados no batch atual.
         Verifica pré-requisitos (dataset, âncoras, tipo) e prepara dados'''
+        if self.dataset_source_type == "real_odometry_2026":
+            self.host._set_msg("Odometria carregada: adicione UWB para rodar os algoritmos")
+            return
         if self._batch_dists is None:
             self.host._set_msg("Carregue um dataset primeiro")
             return
@@ -1565,6 +1671,8 @@ class DatasetMode:
         route_file = getattr(self, "_modal_route_file", "")
         map_file = getattr(self, "_modal_map_file", "")
         sim_kind = getattr(self, "_modal_simulated_kind", self.simulated_dataset_kind)
+        odom_file = getattr(self, "_modal_odom_file", "")
+        odom_session = getattr(self, "_modal_odom_session", "1")
 
         self.simulated_dataset_kind = sim_kind or "Front"
 
@@ -1576,6 +1684,8 @@ class DatasetMode:
             route_file=route_file,
             map_file=map_file,
             simulated_kind=self.simulated_dataset_kind,
+            odom_file=odom_file,
+            odom_session=odom_session,
         )
 
     def _write_normalized_encoder_temp_csv(self, normalized_rows):

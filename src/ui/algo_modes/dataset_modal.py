@@ -9,6 +9,7 @@ from src.ui.ui_elements import (
     ModalButtonBar,
 )
 from src.ui.algo_modes.shared import list_files_by_extension
+from src.ui.algo_modes.dataset_odometry_pipeline import list_robot2026_sources
 
 class DatasetConfigModal:
     """
@@ -27,7 +28,7 @@ class DatasetConfigModal:
         self.dd_source = TextBoxDropdown(
             pg.Rect(0, 0, 440, 30),
             font,
-            options=["Simulado", "Real (encoder + UWB)"],
+            options=["Simulado", "Real (encoder + UWB)", "Real (odometria 2026)"],
         )
 
         self.dd_sim_kind = TextBoxDropdown(
@@ -39,6 +40,10 @@ class DatasetConfigModal:
         self.dd_dataset = TextBoxDropdown(pg.Rect(0, 0, 440, 30), font, options=[])
         self.dd_encoder = TextBoxDropdown(pg.Rect(0, 0, 440, 30), font, options=[])
         self.dd_uwb = TextBoxDropdown(pg.Rect(0, 0, 440, 30), font, options=[])
+        self.dd_odom = TextBoxDropdown(pg.Rect(0, 0, 440, 30), font, options=[], max_len=255)
+        self.dd_odom_session = TextBoxDropdown(
+            pg.Rect(0, 0, 440, 30), font, options=["1", "2"], max_len=8
+        )
         self.dd_anchors = TextBoxDropdown(pg.Rect(0, 0, 440, 30), font, options=[])
         self.dd_route = TextBoxDropdown(pg.Rect(0, 0, 440, 30), font, options=[])
         self.dd_map = TextBoxDropdown(pg.Rect(0, 0, 440, 30), font, options=[])
@@ -63,6 +68,14 @@ class DatasetConfigModal:
             FormDropdownRow("Mapa:", self.dd_map),
         ]
 
+        self.rows_odometry = [
+            FormDropdownRow("Fonte:", self.dd_source),
+            FormDropdownRow("Arquivo PCNT:", self.dd_odom),
+            FormDropdownRow("Sessão (bruto):", self.dd_odom_session),
+            FormDropdownRow("Rota ref.:", self.dd_route),
+            FormDropdownRow("Mapa:", self.dd_map),
+        ]
+
         self.open_dropdown = None
         self.max_dropdown_items = 7
         self.dropdown_scroll = 0
@@ -77,8 +90,13 @@ class DatasetConfigModal:
         source = getattr(self.mode, "dataset_source_type", "simulated")
         if source == "real_encoder_uwb":
             self._set_dropdown_value(self.dd_source, "Real (encoder + UWB)")
+        elif source == "real_odometry_2026":
+            self._set_dropdown_value(self.dd_source, "Real (odometria 2026)")
         else:
             self._set_dropdown_value(self.dd_source, "Simulado")
+
+        if not self._get_dropdown_value(self.dd_odom_session):
+            self._set_dropdown_value(self.dd_odom_session, "2")
 
         kind = getattr(self.mode, "simulated_dataset_kind", "Front")
 
@@ -145,7 +163,7 @@ class DatasetConfigModal:
 
         self._set_dropdown_options(
             self.dd_source,
-            ["Simulado", "Real (encoder + UWB)"],
+            ["Simulado", "Real (encoder + UWB)", "Real (odometria 2026)"],
         )
 
         self._set_dropdown_options(
@@ -182,6 +200,16 @@ class DatasetConfigModal:
             self.dd_uwb,
             uwb_filtered if uwb_filtered else uwb_files,
         )
+
+        # O novo pipeline aceita arquivo bruto ou CSV por sessão do conversor.
+        self._set_dropdown_options(
+            self.dd_odom,
+            list_robot2026_sources(
+                getattr(m, "robot2026_raw_dir", "dados_reais/robot2026"),
+                getattr(m, "robot2026_processed_dir", "resultados/robot2026"),
+            ),
+        )
+        self._set_dropdown_options(self.dd_odom_session, ["1", "2", "3", "4", "5"])
 
         self._set_dropdown_options(
             self.dd_anchors,
@@ -281,9 +309,14 @@ class DatasetConfigModal:
             screen.blit(txt, (list_rect.right - txt.get_width() - 6, list_rect.bottom - item_h + 5))
 
     def is_real(self):
-        return self._get_dropdown_value(self.dd_source).lower().startswith("real")
+        return self._get_dropdown_value(self.dd_source) == "Real (encoder + UWB)"
+
+    def is_odometry(self):
+        return self._get_dropdown_value(self.dd_source) == "Real (odometria 2026)"
 
     def active_rows(self):
+        if self.is_odometry():
+            return self.rows_odometry
         return self.rows_real if self.is_real() else self.rows_sim
 
     def draw(self):
@@ -487,9 +520,19 @@ class DatasetConfigModal:
         m = self.mode
 
         is_real = self.is_real()
-        m.dataset_source_type = "real_encoder_uwb" if is_real else "simulated"
+        is_odometry = self.is_odometry()
+        m.dataset_source_type = (
+            "real_odometry_2026" if is_odometry else
+            "real_encoder_uwb" if is_real else "simulated"
+        )
 
-        if is_real:
+        if is_odometry:
+            m._modal_odom_file = self._get_dropdown_value(self.dd_odom)
+            m._modal_odom_session = self._get_dropdown_value(self.dd_odom_session) or "1"
+            m._modal_dataset_file = ""
+            m._modal_real_encoder_file = ""
+            m._modal_real_uwb_file = ""
+        elif is_real:
             m._modal_real_encoder_file = self._get_dropdown_value(self.dd_encoder)
             m._modal_real_uwb_file = self._get_dropdown_value(self.dd_uwb)
             m._modal_dataset_file = ""

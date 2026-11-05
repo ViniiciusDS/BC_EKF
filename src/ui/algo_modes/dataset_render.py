@@ -287,7 +287,7 @@ def draw_reference_routes(mode):
     # Rota odométrica/reconstruída. Evita duplicar se for igual à referência.
     odom = (
         getattr(mode, "_dataset_route", None)
-        if getattr(mode, "dataset_source_type", "") == "real_encoder_uwb"
+        if getattr(mode, "dataset_source_type", "") in ("real_encoder_uwb", "real_odometry_2026")
         else None
     )
 
@@ -391,6 +391,11 @@ def draw_dataset_status(mode):
         n = int(mode._batch_dists.shape[0])
         txt = font.render(f"Amostras: {n}", True, (150, 150, 150))
         screen.blit(txt, (sidebar_x, y))
+    elif getattr(mode, "dataset_source_type", "") == "real_odometry_2026":
+        odom = getattr(mode, "_robot2026_data", None)
+        if odom is not None:
+            txt = font.render(f"Odometria: {odom.sample_count} pontos", True, (110, 110, 110))
+            screen.blit(txt, (sidebar_x, y))
 
 
 def draw_dataset_analyzer(mode):
@@ -422,6 +427,32 @@ def draw_dataset_analyzer(mode):
     )
 
 
+def draw_robot2026_odometry_info(mode):
+    """Resumo da odometria isolada, sem apresentar RMSE como ground truth."""
+    if getattr(mode, "dataset_source_type", "") != "real_odometry_2026":
+        return
+    odom = getattr(mode, "_robot2026_data", None)
+    if odom is None or odom.sample_count == 0:
+        return
+    screen = mode.host.screen
+    font = mode.host.font
+    x, y, w, h = 10, 40, 485, 100
+    panel = pg.Surface((w, h), pg.SRCALPHA)
+    panel.fill((250, 250, 252, 224))
+    screen.blit(panel, (x, y))
+    pg.draw.rect(screen, (125, 125, 135), pg.Rect(x, y, w, h), 1)
+    xf, yf, heading = odom.poses_xytheta[-1]
+    lines = [
+        "Odometria real - sem UWB / sem ground truth",
+        f"Sessao {odom.session_id} | {odom.sample_count} amostras | {odom.duration_s:.1f} s",
+        f"Raio {odom.profile.wheel_radius_m:.5f} m | Base {odom.profile.wheel_base_m:.3f} m | CPR {odom.profile.ticks_per_wheel_rev:.0f}",
+        f"Pose final: x={xf:.3f} m, y={yf:.3f} m, heading={np.degrees(heading) % 360:.1f} graus",
+    ]
+    for i, line in enumerate(lines):
+        text_surface = font.render(line, True, (30, 30, 40))
+        screen.blit(text_surface, (x + 8, y + 7 + 23 * i))
+
+
 def draw_dataset_legend(mode):
     if getattr(mode, "show_legend_overlay", False):
         mode._legend_close_rect = draw_legend_overlay(
@@ -440,6 +471,7 @@ def draw_dataset_mode(mode):
     O modal ainda fica no dataset_mode.py por enquanto.
     """
     draw_dataset_world(mode)
+    draw_robot2026_odometry_info(mode)
     draw_dataset_status(mode)
     draw_dataset_sidebar_controls(mode)
 
