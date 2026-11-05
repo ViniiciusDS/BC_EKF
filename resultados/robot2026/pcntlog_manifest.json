@@ -1,0 +1,63 @@
+{
+  "profile": {
+    "wheel_radius_m": 0.03425,
+    "wheel_base_m": 0.229,
+    "ticks_per_wheel_rev": 2280.0,
+    "invert_left": false,
+    "invert_right": true,
+    "left_scale": 1.0,
+    "right_scale": 1.0,
+    "initial_x_m": 0.0,
+    "initial_y_m": 0.0,
+    "initial_theta_rad": 0.0
+  },
+  "sessions": [
+    {
+      "session_id": 1,
+      "source_rows": 942,
+      "start_time_ms_raw": 293,
+      "end_time_ms_raw": 235543,
+      "duration_s": 235.25,
+      "laps_end": 2,
+      "has_uwb": false,
+      "valid_uwb_rows": 0,
+      "possibly_reused_uwb_rows": 0,
+      "encoder_file": "robot2026_session_01_encoder.csv",
+      "odometry_file": "robot2026_session_01_odometry.csv",
+      "uwb_file": null,
+      "final_pose": {
+        "x_m": 7.370005744564001,
+        "y_m": 6.642811166221345,
+        "theta_rad": -36.492181165061766
+      }
+    },
+    {
+      "session_id": 2,
+      "source_rows": 34483,
+      "start_time_ms_raw": 290,
+      "end_time_ms_raw": 8620796,
+      "duration_s": 8620.506,
+      "laps_end": 103,
+      "has_uwb": false,
+      "valid_uwb_rows": 0,
+      "possibly_reused_uwb_rows": 0,
+      "encoder_file": "robot2026_session_02_encoder.csv",
+      "odometry_file": "robot2026_session_02_odometry.csv",
+      "uwb_file": null,
+      "final_pose": {
+        "x_m": -2.865174320129105,
+        "y_m": 3.5982500628666183,
+        "theta_rad": -1433.888661862771
+      }
+    }
+  ],
+  "important": [
+    "Nenhuma amostra foi decimada; sessões separadas por reset do timestamp.",
+    "Contagem direita invertida; os CSV de encoder já têm sinais corrigidos.",
+    "timestamps dos CSV encoder/UWB estão em milissegundos relativos à sessão.",
+    "ID UWB nos CSV é o slot SPI 0..4, não necessariamente o ID físico da âncora.",
+    "Mesmas médias UWB consecutivas podem ser frames reutilizados.",
+    "PcntLog antigo com 5 colunas não contém dados UWB.",
+    "Odometria é estimativa; não deve ser tratada como ground truth."
+  ]
+}
