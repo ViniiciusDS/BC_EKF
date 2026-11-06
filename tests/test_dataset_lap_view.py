@@ -56,6 +56,10 @@ class TestDatasetLapView(unittest.TestCase):
         self.assertEqual(sum(p.complete for p in parts), 103)
         self.assertEqual(parts[-1].number, 104)
         self.assertFalse(parts[-1].complete)
+        self.assertIn("parcial", selection_label(
+            "single", select_laps(parts, "single", 104), len(parts)))
+        self.assertIn("parcial", selection_label(
+            "range", select_laps(parts, "range", 101, 5), len(parts)))
         self.assertEqual(len(select_laps(parts, "range", 101, 5)), 4)
 
 
