@@ -142,7 +142,8 @@ def load_robot2026_odometry(
     with path.open("r", encoding="utf-8-sig", newline="") as f:
         first = next(csv.reader(f), [])
     raw = False
-    if len(first) in (5, 20):
+    # PCNT bruto: 5 colunas fixas + triplas UWB de quantidade variável.
+    if len(first) == 5 or (len(first) >= 8 and (len(first) - 5) % 3 == 0):
         try:
             raw = all(np.isfinite(float(value.strip())) for value in first[:5])
         except (ValueError, TypeError):
