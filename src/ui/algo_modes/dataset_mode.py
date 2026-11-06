@@ -1132,8 +1132,12 @@ class DatasetMode:
                     algos_to_run = [a for a in algos_to_run if a != "bc_ekf"]
                     self.host._set_msg("BC-EKF ignorado: dados BC não foram preparados corretamente")
 
+        if self.dataset_source_type == "real_odom_uwb_2026" and "bc_ekf" in algos_to_run:
+            algos_to_run = [a for a in algos_to_run if a != "bc_ekf"]
+            self.host._set_msg("BC-EKF ignorado: uma tag, sem baseline")
+
         if not algos_to_run:
-            self.host._set_msg("Selecione pelo menos um algoritmo")
+            self.host._set_msg("Selecione pelo menos um algoritmo compatível")
             return
 
         try:
@@ -1173,7 +1177,10 @@ class DatasetMode:
                 self.host._set_msg("Batch executado, mas vazio")
                 return
 
-            self._dataset_stats = self._compute_dataset_stats(self._batch_results)
+            self._dataset_stats = (
+                None if self.dataset_source_type == "real_odom_uwb_2026"
+                else self._compute_dataset_stats(self._batch_results)
+            )
 
             ranking = self._dataset_ranking()
             for algo in self._batch_results:
@@ -1182,7 +1189,11 @@ class DatasetMode:
                     None
                 )
 
-            self.host._set_msg("Batch executado")
+            self.host._set_msg(
+                "Batch executado (sem ground truth; trajetórias apenas)"
+                if self.dataset_source_type == "real_odom_uwb_2026"
+                else "Batch executado"
+            )
 
         except Exception as e:
             print(f"[DATASET] erro no batch: {e}")
@@ -2131,6 +2142,9 @@ class DatasetMode:
         - encoder_route: comparação com odometria reconstruída;
         - cluster: dispersão relativa.
         """
+        if self.dataset_source_type == "real_odom_uwb_2026":
+            return None  # Sem ground truth independente
+
         if self.dataset_source_type == "real_encoder_uwb":
             reference_route = (
                 self._reference_route_display
