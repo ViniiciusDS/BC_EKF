@@ -87,5 +87,5 @@ def selection_label(mode: str, selected: tuple[LapSlice, ...], total: int) -> st
         if not selected[0].complete:
             return f"Trecho parcial {selected[0].number}/{total}"
         return f"Volta {selected[0].number}/{total}"
-    suffix = "*" if not selected[-1].complete else ""
+    suffix = " + parcial" if not selected[-1].complete else ""
     return f"Voltas {selected[0].number}-{selected[-1].number}/{total}{suffix}"
