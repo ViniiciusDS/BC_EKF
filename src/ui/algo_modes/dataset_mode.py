@@ -58,6 +58,7 @@ from src.ui.algo_modes.dataset_odometry_pipeline import (
 )
 from src.ui.algo_modes.dataset_lap_view import (
     split_laps,
+    split_time_windows,
     select_laps,
     selection_label,
 )
@@ -67,6 +68,7 @@ from src.ui.algo_modes.dataset_uwb2026_pipeline import (
     read_robot2026_profile_from_anchor_json,
     validate_robot2026_anchor_geometry,
     read_uwb2026_processing_settings,
+    read_robot2026_view_settings,
 )
 from src.ui.algo_modes.shared import load_anchors_from_json
 from src.ui.algo_modes.dataset_sim_pipeline import (
@@ -188,6 +190,7 @@ class DatasetMode:
         self._robot2026_uwb_indices = np.array([], dtype=int)
         # Seleção de voltas altera somente o desenho; preserva todas as amostras.
         self._robot2026_laps = ()
+        self._odom_is_time_window = False
         self._odom_track_template = None
         self.show_odom_track_template = False
         self.odom_view_mode = "single"  # single -> range -> all
@@ -551,6 +554,7 @@ class DatasetMode:
             self._robot2026_data = data
             self._robot2026_uwb_data = None
             self._robot2026_uwb_indices = np.array([], dtype=int)
+            self._odom_is_time_window = False
             self._robot2026_laps = split_laps(data.laps)
             self._odom_track_template = build_track_from_first_complete_lap(
                 data.poses_xytheta, self._robot2026_laps
@@ -612,6 +616,7 @@ class DatasetMode:
             slots = read_pcnt_anchor_slot_mapping(anchor_path, len(anchors))
             profile = read_robot2026_profile_from_anchor_json(anchor_path)
             settings = read_uwb2026_processing_settings(anchor_path)
+            view_settings = read_robot2026_view_settings(anchor_path)
             combined = load_robot2026_single_tag_uwb(
                 path, session_id=int(session or "1"), anchor_count=len(anchors),
                 slot_to_anchor_index=slots, profile=profile, **settings,
@@ -622,6 +627,14 @@ class DatasetMode:
                 return False
             self._robot2026_uwb_data = combined
             self._robot2026_uwb_indices = combined.sample_indices.copy()
+            if view_settings["segmentation"] == "time_windows":
+                self._robot2026_laps = split_time_windows(
+                    combined.odometry.timestamps_s, view_settings["window_duration_s"]
+                )
+                self._odom_is_time_window = True
+                # Não criar uma falsa "pista aproximada" a partir da janela.
+                self._odom_track_template = None
+                self.show_odom_track_template = False
             self._dataset_anchors = anchors
             self._anchors_path = str(anchor_path)
             self._anchors_uwb_ids = None  # slots SPI foram mapeados explicitamente
@@ -674,11 +687,17 @@ class DatasetMode:
         )
 
     def _odometry_view_label(self):
-        return selection_label(
+        label = selection_label(
             self.odom_view_mode,
             self._selected_odom_laps(),
             len(self._robot2026_laps),
         )
+        if self._odom_is_time_window:
+            return (label.replace("Voltas", "Janelas")
+                         .replace("Volta", "Janela")
+                         .replace("Todas", "Todas as janelas")
+                         .replace("Trecho parcial", "Janela parcial"))
+        return label
 
     def _cycle_odom_lap_view(self):
         """Alterna entre uma volta, intervalo e todas as voltas."""
