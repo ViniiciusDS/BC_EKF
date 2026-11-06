@@ -512,7 +512,7 @@ class DatasetConfigModal:
                     self.refresh_options()
                     # Evita reutilizar a rota dos experimentos simulados
                     # como se fosse referência física do robô 2026.
-                    if self.is_odometry():
+                    if self.is_odometry() or self.is_odom_uwb():
                         self._set_dropdown_value(self.dd_route, "(Nenhuma)")
                         self._set_dropdown_value(self.dd_map, "(Nenhum)")
 
@@ -573,11 +573,6 @@ class DatasetConfigModal:
         map_value = self._get_dropdown_value(self.dd_map)
         m._modal_route_file = "" if route_value == "(Nenhuma)" else route_value
         m._modal_map_file = "" if map_value == "(Nenhum)" else map_value
-
-        print("[DATASET_MODAL_APPLY] dataset =", repr(m._modal_dataset_file))
-        print("[DATASET_MODAL_APPLY] anchors =", repr(m._modal_anchor_file))
-        print("[DATASET_MODAL_APPLY] route   =", repr(m._modal_route_file))
-        print("[DATASET_MODAL_APPLY] map     =", repr(m._modal_map_file))
 
         ok = m._apply_dataset_config_from_modal_values()
 
