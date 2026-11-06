@@ -53,7 +53,8 @@ def read_robot2026_profile_from_anchor_json(
         raise ValueError("robot_2026 deve ser um objeto JSON")
     allowed = {
         "wheel_radius_m", "wheel_base_m", "ticks_per_wheel_rev",
-        "invert_left", "invert_right", "left_scale", "right_scale",
+        "invert_left", "invert_right", "swap_encoder_columns",
+        "left_scale", "right_scale",
         "initial_x_m", "initial_y_m", "initial_theta_deg", "initial_theta_rad",
     }
     unknown = sorted(set(values) - allowed)
@@ -71,7 +72,7 @@ def read_robot2026_profile_from_anchor_json(
             if not math.isfinite(number):
                 raise ValueError("initial_theta_deg deve ser finito")
             params["initial_theta_rad"] = math.radians(number)
-        elif key in ("invert_left", "invert_right"):
+        elif key in ("invert_left", "invert_right", "swap_encoder_columns"):
             if type(value) is not bool:
                 raise ValueError(f"{key} deve ser booleano")
             params[key] = value
@@ -147,6 +148,8 @@ def load_robot2026_single_tag_uwb(
         raise ValueError("Índice de slot fora do layout")
     if len(set(assigned)) != len(assigned):
         raise ValueError("Âncora mapeada repetidamente")
+    if min_valid_anchors > len(assigned):
+        raise ValueError("Mínimo de ranges supera número de âncoras mapeadas")
 
     path = Path(pcnt_path)
     sessions = load_pcnt_sessions(path)
@@ -203,6 +206,33 @@ def load_robot2026_single_tag_uwb(
         invalid_readings=invalid,
         slot_to_anchor_index=slot_to_anchor_index,
     )
+
+
+
+def read_uwb2026_processing_settings(anchor_json: str | Path) -> dict:
+    """Configuração reproduzível de filtros sem modificar os dados brutos.
+
+    O padrão preserva as regras PR4/PR5. Para quatro âncoras e
+    trilateração 3D, pode-se exigir quatro medições novas.
+    """
+    with Path(anchor_json).open("r", encoding="utf-8") as file:
+        root = json.load(file)
+    config = root.get("uwb_2026", {})
+    if not isinstance(config, dict):
+        raise ValueError("uwb_2026 deve ser um objeto")
+    allowed = {"min_valid_anchors", "min_sigma_m"}
+    if set(config) - allowed:
+        raise ValueError(
+            "Campos inválidos em uwb_2026: " +
+            ", ".join(sorted(set(config) - allowed))
+        )
+    n = config.get("min_valid_anchors", 3)
+    sigma = config.get("min_sigma_m", .02)
+    if type(n) is not int or not 3 <= n <= 5:
+        raise ValueError("uwb_2026.min_valid_anchors deve ser inteiro entre 3 e 5")
+    if isinstance(sigma, bool) or not np.isfinite(float(sigma)) or float(sigma) <= 0:
+        raise ValueError("uwb_2026.min_sigma_m deve ser positivo")
+    return {"min_valid_anchors": n, "min_sigma_m": float(sigma)}
 
 
 def validate_robot2026_anchor_geometry(positions: np.ndarray) -> None:
@@ -263,10 +293,11 @@ def inspect_robot2026_capture(
         validate_robot2026_anchor_geometry(pos)
         mapping = read_pcnt_anchor_slot_mapping(anchor_path, len(pos))
         profile = read_robot2026_profile_from_anchor_json(anchor_path)
+        settings = read_uwb2026_processing_settings(anchor_path)
         data = load_robot2026_single_tag_uwb(
             path, session_id=int(session_id),
             anchor_count=len(pos), slot_to_anchor_index=mapping,
-            profile=profile,
+            profile=profile, **settings,
         )
     except (ValueError, TypeError, KeyError, OSError) as exc:
         out["warnings"].append(str(exc))
@@ -277,6 +308,8 @@ def inspect_robot2026_capture(
         "anchor_count": int(len(pos)),
         "spi_slot_to_anchor_index": list(mapping),
         "effective_cpr": profile.ticks_per_wheel_rev,
+        "raw_encoder_order_swapped": profile.swap_encoder_columns,
+        "new_ranges_required": settings["min_valid_anchors"],
         "start_pose_xytheta": [
             profile.initial_x_m, profile.initial_y_m, profile.initial_theta_rad
         ],
