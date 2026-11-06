@@ -291,6 +291,34 @@ def draw_reference_routes(mode):
         else None
     )
 
+    # O modo 2026 desenha as voltas independentemente, sem ligar o fim
+    # de uma volta ao início da seguinte com um segmento artificial.
+    if getattr(mode, "dataset_source_type", "") == "real_odometry_2026":
+        data = getattr(mode, "_robot2026_data", None)
+        if data is not None:
+            selected = mode._selected_odom_laps()
+            for lap in selected:
+                pts = data.poses_xytheta[lap.start:lap.stop, :2]
+                _draw_polyline_world(
+                    screen, cam, pts,
+                    color=(65, 65, 65) if mode.odom_view_mode == "all" else (10, 10, 10),
+                    width=1 if mode.odom_view_mode == "all" else 2,
+                )
+            # Início e fim da seleção visível, não o estado global da sessão.
+            if selected:
+                for point, color, caption in (
+                    (data.poses_xytheta[selected[0].start, :2], (30, 150, 70), "I"),
+                    (data.poses_xytheta[selected[-1].stop - 1, :2], (210, 50, 50), "F"),
+                ):
+                    px, py = cam.world_to_screen(float(point[0]), float(point[1]))
+                    if np.isfinite(px) and np.isfinite(py):
+                        marker = (int(px), int(py))
+                        pg.draw.circle(screen, (20, 20, 20), marker, 6)
+                        pg.draw.circle(screen, color, marker, 5)
+                        label = mode.host.font.render(caption, True, color)
+                        screen.blit(label, (marker[0] + 7, marker[1] - 13))
+        return
+
     if odom is not None:
         arr = np.asarray(odom, dtype=float)
         if arr.ndim == 2 and arr.shape[1] >= 2 and len(arr) >= 2:
@@ -370,6 +398,38 @@ def draw_dataset_sidebar_controls(mode):
     )
     mode.btn_toggle_legend.draw(screen)
 
+    # Controles de voltas ocupam o espaço entre o status e os botões inferiores.
+    if (
+        getattr(mode, "dataset_source_type", "") == "real_odometry_2026"
+        and getattr(mode, "_robot2026_data", None) is not None
+    ):
+        font = mode.host.font
+        y = metric_y - 138
+        label = font.render(
+            f"Visualizar: {mode._odometry_view_label()}", True, (65, 65, 72)
+        )
+        screen.blit(label, (sidebar_x, y - 22))
+
+        mode.btn_lap_mode.rect.topleft = (sidebar_x, y)
+        mode.btn_lap_mode.text = {
+            "single": "Modo: Uma volta",
+            "range": "Modo: Intervalo",
+            "all": "Modo: Todas",
+        }.get(mode.odom_view_mode, "Modo: Uma volta")
+        mode.btn_lap_mode.draw(screen)
+
+        if mode.odom_view_mode != "all":
+            mode.btn_lap_prev.rect.topleft = (sidebar_x, y + 37)
+            mode.btn_lap_next.rect.topleft = (sidebar_x + 98, y + 37)
+            mode.btn_lap_prev.draw(screen)
+            mode.btn_lap_next.draw(screen)
+
+        if mode.odom_view_mode == "range":
+            mode.btn_lap_less.rect.topleft = (sidebar_x, y + 74)
+            mode.btn_lap_more.rect.topleft = (sidebar_x + 98, y + 74)
+            mode.btn_lap_less.draw(screen)
+            mode.btn_lap_more.draw(screen)
+
 
 def draw_dataset_status(mode):
     """
@@ -436,17 +496,21 @@ def draw_robot2026_odometry_info(mode):
         return
     screen = mode.host.screen
     font = mode.host.font
-    x, y, w, h = 10, 40, 485, 100
+    x, y, w, h = 10, 40, 485, 125
     panel = pg.Surface((w, h), pg.SRCALPHA)
     panel.fill((250, 250, 252, 224))
     screen.blit(panel, (x, y))
     pg.draw.rect(screen, (125, 125, 135), pg.Rect(x, y, w, h), 1)
-    xf, yf, heading = odom.poses_xytheta[-1]
+    selected = mode._selected_odom_laps()
+    end_idx = selected[-1].stop - 1 if selected else odom.sample_count - 1
+    visible_count = sum(lap.sample_count for lap in selected)
+    xf, yf, heading = odom.poses_xytheta[end_idx]
     lines = [
         "Odometria real - sem UWB / sem ground truth",
-        f"Sessao {odom.session_id} | {odom.sample_count} amostras | {odom.duration_s:.1f} s",
+        f"Sessao {odom.session_id} | dataset completo: {odom.sample_count} amostras | {odom.duration_s:.1f} s",
+        f"Exibindo {mode._odometry_view_label()} | {visible_count} pontos desenhados",
         f"Raio {odom.profile.wheel_radius_m:.5f} m | Base {odom.profile.wheel_base_m:.3f} m | CPR {odom.profile.ticks_per_wheel_rev:.0f}",
-        f"Pose final: x={xf:.3f} m, y={yf:.3f} m, heading={np.degrees(heading) % 360:.1f} graus",
+        f"Fim exibido: x={xf:.3f} m, y={yf:.3f} m, heading={np.degrees(heading) % 360:.1f} graus",
     ]
     for i, line in enumerate(lines):
         text_surface = font.render(line, True, (30, 30, 40))

@@ -56,6 +56,11 @@ from src.ui.algo_modes.dataset_odometry_pipeline import (
     load_robot2026_odometry,
     resolve_robot2026_source,
 )
+from src.ui.algo_modes.dataset_lap_view import (
+    split_laps,
+    select_laps,
+    selection_label,
+)
 from src.ui.algo_modes.dataset_sim_pipeline import (
     SimPipelineResult,
     load_simulated_dataset_file,
@@ -170,6 +175,17 @@ class DatasetMode:
         self.robot2026_raw_dir = os.path.join("dados_reais", "robot2026")
         self.robot2026_processed_dir = os.path.join("resultados", "robot2026")
         self._robot2026_data = None
+        # Seleção de voltas altera somente o desenho; preserva todas as amostras.
+        self._robot2026_laps = ()
+        self.odom_view_mode = "single"  # single -> range -> all
+        self.odom_lap_start = 1
+        self.odom_lap_window = 5
+        font = self.host.font if self.host else None
+        self.btn_lap_mode = Button((0, 0, 190, 32), "Voltas: Uma", font)
+        self.btn_lap_prev = Button((0, 0, 92, 30), "Anterior", font)
+        self.btn_lap_next = Button((0, 0, 92, 30), "Proxima", font)
+        self.btn_lap_less = Button((0, 0, 92, 30), "- Faixa", font)
+        self.btn_lap_more = Button((0, 0, 92, 30), "+ Faixa", font)
 
         self.show_analyzer = True
         self.btn_toggle_analyzer = Button(
@@ -514,6 +530,10 @@ class DatasetMode:
             self._map_label = ""
 
             self._robot2026_data = data
+            self._robot2026_laps = split_laps(data.laps)
+            self.odom_view_mode = "single"
+            self.odom_lap_start = 1
+            self.odom_lap_window = 5
             self._dataset_path = str(data.path)
             self._dataset_label = (
                 f"ODOM2026 | sessao={data.session_id} | CPR=4560"
@@ -542,6 +562,46 @@ class DatasetMode:
         except (OSError, ValueError) as exc:
             self.host._set_msg(f"Erro ao carregar odometria 2026: {exc}")
             return False
+
+
+    def _selected_odom_laps(self):
+        """Obtém fatias de visualização; não modifica a odometria original."""
+        return select_laps(
+            self._robot2026_laps,
+            self.odom_view_mode,
+            self.odom_lap_start,
+            self.odom_lap_window,
+        )
+
+    def _odometry_view_label(self):
+        return selection_label(
+            self.odom_view_mode,
+            self._selected_odom_laps(),
+            len(self._robot2026_laps),
+        )
+
+    def _cycle_odom_lap_view(self):
+        """Alterna entre uma volta, intervalo e todas as voltas."""
+        modes = ("single", "range", "all")
+        pos = modes.index(self.odom_view_mode)
+        self.odom_view_mode = modes[(pos + 1) % len(modes)]
+        self.host._set_msg(f"Visualização: {self._odometry_view_label()}")
+
+    def _shift_odom_lap(self, delta: int):
+        """Navega para a volta/intervalo anterior ou seguinte."""
+        count = len(self._robot2026_laps)
+        if not count or self.odom_view_mode == "all":
+            return
+        self.odom_lap_start = max(1, min(count, self.odom_lap_start + int(delta)))
+        self.host._set_msg(f"Visualização: {self._odometry_view_label()}")
+
+    def _resize_odom_lap_window(self, delta: int):
+        """Expande/reduz o intervalo sem descartar amostras."""
+        count = len(self._robot2026_laps)
+        if not count or self.odom_view_mode != "range":
+            return
+        self.odom_lap_window = max(1, min(count, self.odom_lap_window + int(delta)))
+        self.host._set_msg(f"Visualização: {self._odometry_view_label()}")
 
     def _refresh_dataset_algo_buttons(self):
         """
@@ -809,6 +869,46 @@ class DatasetMode:
                             self.host._export_csv()
                         continue
                     
+                    elif (
+                        self.dataset_source_type == "real_odometry_2026"
+                        and self._robot2026_data is not None
+                        and self.btn_lap_mode.hit(pos)
+                    ):
+                        self._cycle_odom_lap_view()
+                        continue
+
+                    elif (
+                        self.dataset_source_type == "real_odometry_2026"
+                        and self._robot2026_data is not None
+                        and self.btn_lap_prev.hit(pos)
+                    ):
+                        self._shift_odom_lap(-1)
+                        continue
+
+                    elif (
+                        self.dataset_source_type == "real_odometry_2026"
+                        and self._robot2026_data is not None
+                        and self.btn_lap_next.hit(pos)
+                    ):
+                        self._shift_odom_lap(1)
+                        continue
+
+                    elif (
+                        self.dataset_source_type == "real_odometry_2026"
+                        and self._robot2026_data is not None
+                        and self.btn_lap_less.hit(pos)
+                    ):
+                        self._resize_odom_lap_window(-1)
+                        continue
+
+                    elif (
+                        self.dataset_source_type == "real_odometry_2026"
+                        and self._robot2026_data is not None
+                        and self.btn_lap_more.hit(pos)
+                    ):
+                        self._resize_odom_lap_window(1)
+                        continue
+
                     elif self.btn_metric_mode.hit(pos):
                         self._cycle_metric_mode()
                         continue
