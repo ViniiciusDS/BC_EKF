@@ -218,12 +218,12 @@ class DatasetConfigModal:
 
         self._set_dropdown_options(
             self.dd_route,
-            safe_list(routes_dir, (".json",)),
+            ["(Nenhuma)"] + safe_list(routes_dir, (".json",)),
         )
 
         self._set_dropdown_options(
             self.dd_map,
-            safe_list(maps_dir, (".json",)),
+            ["(Nenhum)"] + safe_list(maps_dir, (".json",)),
         )
 
     def _set_dropdown_options(self, dd, options):
@@ -494,6 +494,11 @@ class DatasetConfigModal:
 
                 if dd is self.dd_source:
                     self.refresh_options()
+                    # Evita reutilizar a rota dos experimentos simulados
+                    # como se fosse referência física do robô 2026.
+                    if self.is_odometry():
+                        self._set_dropdown_value(self.dd_route, "(Nenhuma)")
+                        self._set_dropdown_value(self.dd_map, "(Nenhum)")
 
                 return True
 
@@ -546,8 +551,10 @@ class DatasetConfigModal:
             m.simulated_dataset_kind = selected_kind
 
         m._modal_anchor_file = self._get_dropdown_value(self.dd_anchors)
-        m._modal_route_file = self._get_dropdown_value(self.dd_route)
-        m._modal_map_file = self._get_dropdown_value(self.dd_map)
+        route_value = self._get_dropdown_value(self.dd_route)
+        map_value = self._get_dropdown_value(self.dd_map)
+        m._modal_route_file = "" if route_value == "(Nenhuma)" else route_value
+        m._modal_map_file = "" if map_value == "(Nenhum)" else map_value
 
         print("[DATASET_MODAL_APPLY] dataset =", repr(m._modal_dataset_file))
         print("[DATASET_MODAL_APPLY] anchors =", repr(m._modal_anchor_file))
