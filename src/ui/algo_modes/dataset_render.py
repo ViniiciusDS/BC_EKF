@@ -404,7 +404,7 @@ def draw_dataset_sidebar_controls(mode):
         and getattr(mode, "_robot2026_data", None) is not None
     ):
         font = mode.host.font
-        y = metric_y - 138
+        y = metric_y - 118
         label = font.render(
             f"Visualizar: {mode._odometry_view_label()}", True, (65, 65, 72)
         )
