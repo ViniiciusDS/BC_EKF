@@ -25,6 +25,8 @@ class Robot2026Profile:
     ticks_per_wheel_rev: float = 2280.0
     invert_left: bool = False
     invert_right: bool = True
+    # Logs novos podem trazer WR,WL em vez de WL,WR.
+    swap_encoder_columns: bool = False
     left_scale: float = 1.0
     right_scale: float = 1.0
     initial_x_m: float = 0.0
@@ -105,11 +107,20 @@ def convert_session(session: Iterable[RawPcntRow], cfg: Robot2026Profile) -> lis
     zero = rows[0]
     x, y, theta = cfg.initial_x_m, cfg.initial_y_m, cfg.initial_theta_rad
     last_t_ms = zero.timestamp_ms
-    last_l, last_r = sgn_l * zero.left_count, sgn_r * zero.right_count
+    # Configurável por ensaio: não muda a convenção dos logs antigos.
+    zero_l, zero_r = (
+        (zero.right_count, zero.left_count) if cfg.swap_encoder_columns
+        else (zero.left_count, zero.right_count)
+    )
+    last_l, last_r = sgn_l * zero_l, sgn_r * zero_r
     out = []
     for i, row in enumerate(rows):
-        cur_l = sgn_l * row.left_count
-        cur_r = sgn_r * row.right_count
+        raw_l, raw_r = (
+            (row.right_count, row.left_count) if cfg.swap_encoder_columns
+            else (row.left_count, row.right_count)
+        )
+        cur_l = sgn_l * raw_l
+        cur_r = sgn_r * raw_r
         dt_s = (row.timestamp_ms - last_t_ms) / 1000.0 if i else 0.0
         if i and dt_s <= 0:
             raise ValueError("Timestamps não crescentes dentro da mesma sessão")
@@ -126,8 +137,8 @@ def convert_session(session: Iterable[RawPcntRow], cfg: Robot2026Profile) -> lis
         out.append({
             "timestamp_ms": row.timestamp_ms - zero.timestamp_ms,
             "timestamp_s": (row.timestamp_ms - zero.timestamp_ms) / 1000.0,
-            "left_ticks": cur_l - sgn_l * zero.left_count,
-            "right_ticks": cur_r - sgn_r * zero.right_count,
+            "left_ticks": cur_l - sgn_l * zero_l,
+            "right_ticks": cur_r - sgn_r * zero_r,
             "delta_left_ticks": delta_l,
             "delta_right_ticks": delta_r,
             "left_distance_m": dl,
