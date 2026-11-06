@@ -1,0 +1,144 @@
+"""Importação do log ESP32 PCNT+UWB 2026 para uma tag.
+
+Bruto sem cabeçalho, 20 colunas: timestamp, L, R, volta, status,
+cinco triplas (média cm, variância cm², desvio cm).
+O timestamp é do registro do ESP32, não do instante físico do ranging.
+Nenhum range é interpolado; slots SPI exigem mapeamento explícito.
+"""
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from pathlib import Path
+import numpy as np
+
+from src.odometry.pcntlog_adapter import load_pcnt_sessions, convert_uwb_session
+from src.ui.algo_modes.dataset_odometry_pipeline import (
+    Odometry2026Data, ROBOT2026_PROFILE, load_robot2026_odometry,
+)
+
+
+@dataclass(frozen=True)
+class SingleTagUwb2026:
+    odometry: Odometry2026Data
+    distances: np.ndarray
+    deviations: np.ndarray
+    sample_indices: np.ndarray
+    timestamps_s: np.ndarray
+    valid_readings: int
+    repeated_readings: int
+    invalid_readings: int
+    slot_to_anchor_index: tuple[int | None, ...]
+
+    @property
+    def sample_count(self) -> int:
+        return len(self.sample_indices)
+
+
+def read_pcnt_anchor_slot_mapping(anchor_json: str | Path,
+                                  number_of_anchors: int) -> tuple[int | None, ...]:
+    """Exige mapa de slot SPI 0..4 para a posição no array de âncoras."""
+    with Path(anchor_json).open("r", encoding="utf-8") as stream:
+        data = json.load(stream)
+    mapping = data.get("pcnt_slot_to_anchor_index")
+    if not isinstance(mapping, list) or len(mapping) != 5:
+        raise ValueError(
+            "JSON precisa de pcnt_slot_to_anchor_index: 5 índices inteiros "
+            "(ou null) para os slots SPI 0..4"
+        )
+    used: set[int] = set()
+    output = []
+    for slot, idx in enumerate(mapping):
+        if idx is None:
+            output.append(None)
+            continue
+        if isinstance(idx, bool) or not isinstance(idx, int):
+            raise ValueError(f"Slot {slot}: índice deve ser inteiro ou null")
+        if not 0 <= idx < number_of_anchors:
+            raise ValueError(f"Slot {slot}: índice fora do layout")
+        if idx in used:
+            raise ValueError(f"Índice {idx} atribuído a mais de um slot")
+        output.append(idx)
+        used.add(idx)
+    if len(used) < 3:
+        raise ValueError("São necessárias três âncoras mapeadas para localização 2D")
+    return tuple(output)
+
+
+def load_robot2026_single_tag_uwb(
+    pcnt_path: str | Path,
+    *,
+    session_id: int,
+    anchor_count: int,
+    slot_to_anchor_index: tuple[int | None, ...],
+    min_valid_anchors: int = 3,
+    min_sigma_m: float = 0.02,
+) -> SingleTagUwb2026:
+    """Preserva PCNT integral, usa no batch só frames com 3+ ranges novos.
+
+    Triplas UWB idênticas às anteriores do mesmo slot são tratadas como
+    potencialmente reutilizadas; não se pressupõe independência.
+    """
+    if min_valid_anchors < 3 or min_sigma_m <= 0:
+        raise ValueError("Min. 3 âncoras e sigma mínimo positivo necessários")
+    if anchor_count < 3 or len(slot_to_anchor_index) != 5:
+        raise ValueError("Layout/slots inválidos")
+    assigned = [v for v in slot_to_anchor_index if v is not None]
+    if any(not isinstance(v, int) or not 0 <= v < anchor_count for v in assigned):
+        raise ValueError("Índice de slot fora do layout")
+    if len(set(assigned)) != len(assigned):
+        raise ValueError("Âncora mapeada repetidamente")
+
+    path = Path(pcnt_path)
+    sessions = load_pcnt_sessions(path)
+    if not 1 <= session_id <= len(sessions):
+        raise ValueError(f"Sessão {session_id} inexistente")
+    raw = sessions[session_id - 1]
+    if not raw or not raw[0].uwb:
+        raise ValueError(
+            "Arquivo PCNT possui somente 5 colunas (sem UWB). "
+            "Para esta fonte, selecione um log bruto com 20 colunas."
+        )
+    odo = load_robot2026_odometry(path, session_id=session_id, profile=ROBOT2026_PROFILE)
+    n = len(raw)
+    R = np.full((n, anchor_count), np.nan, dtype=float)
+    S = np.full_like(R, np.nan)
+    stamps = {row.timestamp_ms - raw[0].timestamp_ms: i for i, row in enumerate(raw)}
+    rows = convert_uwb_session(raw)
+    repeated, valid = 0, 0
+    for item in rows:
+        slot = int(item["anchor_id"])
+        anchor = slot_to_anchor_index[slot]
+        if anchor is None:
+            continue
+        if item["possibly_reused"]:
+            repeated += 1
+            continue
+        distance = float(item["range"])
+        sigma = float(item["sigma"])
+        if not np.isfinite(distance) or not 0 < distance <= 100:
+            continue
+        i = stamps[int(item["timestamp"])]
+        R[i, anchor] = distance
+        S[i, anchor] = max(min_sigma_m, sigma)
+        valid += 1
+
+    invalid = n * len(assigned) - valid - repeated
+    indices = np.flatnonzero(np.sum(np.isfinite(R), axis=1) >= min_valid_anchors)
+    if indices.size == 0:
+        raise ValueError(
+            "Nenhuma linha possui 3 ranges UWB NOVOS e válidos. "
+            "Confira atualização dos slots SPI e sincronização; "
+            "não combinar leituras antigas como se fossem simultâneas."
+        )
+    return SingleTagUwb2026(
+        odometry=odo,
+        distances=R[indices],
+        deviations=S[indices],
+        sample_indices=indices,
+        timestamps_s=odo.timestamps_s[indices],
+        valid_readings=valid,
+        repeated_readings=repeated,
+        invalid_readings=invalid,
+        slot_to_anchor_index=slot_to_anchor_index,
+    )
