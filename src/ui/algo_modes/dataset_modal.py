@@ -513,6 +513,8 @@ class DatasetConfigModal:
                     # Evita reutilizar a rota dos experimentos simulados
                     # como se fosse referência física do robô 2026.
                     if self.is_odometry() or self.is_odom_uwb():
+                        if self.is_odom_uwb():
+                            self._set_dropdown_value(self.dd_odom_session, "1")
                         self._set_dropdown_value(self.dd_route, "(Nenhuma)")
                         self._set_dropdown_value(self.dd_map, "(Nenhum)")
 
