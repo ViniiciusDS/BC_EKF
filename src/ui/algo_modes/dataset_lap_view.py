@@ -58,6 +58,39 @@ def split_laps(counter: np.ndarray) -> tuple[LapSlice, ...]:
     return tuple(result)
 
 
+
+def split_time_windows(
+    timestamps_s: np.ndarray, duration_s: float = 80.0
+) -> tuple[LapSlice, ...]:
+    """Cria JANELAS temporais, não voltas físicas.
+
+    Útil para logs em que 'lap_count' marca eventos de sensor e não
+    fechamentos da trajetória. Não descarta amostras originais.
+    """
+    t = np.asarray(timestamps_s, dtype=float)
+    if t.ndim != 1 or not np.all(np.isfinite(t)):
+        raise ValueError("timestamps_s precisa ser vetor finito")
+    if duration_s <= 0 or not np.isfinite(duration_s):
+        raise ValueError("duration_s deve ser positivo")
+    if not len(t):
+        return ()
+    if np.any(np.diff(t) <= 0):
+        raise ValueError("Timestamps não crescentes")
+    ids = np.floor((t - t[0]) / duration_s).astype(int)
+    changes = np.r_[0, np.flatnonzero(np.diff(ids)) + 1, len(t)]
+    parts = []
+    for i in range(len(changes) - 1):
+        start, stop = int(changes[i]), int(changes[i + 1])
+        if stop <= start:
+            continue
+        # Sobrepõe um ponto para preservar continuidade visual nas janelas.
+        parts.append(LapSlice(
+            number=i+1, start=max(0, start - (1 if i else 0)),
+            stop=stop, firmware_count=-1, complete=(i < len(changes)-2),
+        ))
+    return tuple(parts)
+
+
 def select_laps(
     lap_slices: tuple[LapSlice, ...], mode: str,
     start: int = 1, window: int = 5,
