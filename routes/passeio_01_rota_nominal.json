@@ -1,0 +1,44 @@
+{
+  "name": "Passeio 01 - percurso nominal do laboratório",
+  "reference_kind": "percurso nominal XY (não ground truth sincronizado)",
+  "source": "Linhas MATLAB fornecidas em 06/11/2026, convertidas cm para m",
+  "units": "m",
+  "waypoints": [
+    [
+      -0.56,
+      0.76
+    ],
+    [
+      -2.14,
+      0.76
+    ],
+    [
+      -2.35,
+      0.96
+    ],
+    [
+      -2.35,
+      1.66
+    ],
+    [
+      -2.14,
+      1.95
+    ],
+    [
+      -0.56,
+      2.05
+    ],
+    [
+      -0.26,
+      1.78
+    ],
+    [
+      -0.26,
+      1.08
+    ],
+    [
+      -0.56,
+      0.76
+    ]
+  ]
+}
