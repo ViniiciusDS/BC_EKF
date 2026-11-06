@@ -66,6 +66,7 @@ from src.ui.algo_modes.dataset_uwb2026_pipeline import (
     load_robot2026_single_tag_uwb, read_pcnt_anchor_slot_mapping,
     read_robot2026_profile_from_anchor_json,
     validate_robot2026_anchor_geometry,
+    read_uwb2026_processing_settings,
 )
 from src.ui.algo_modes.shared import load_anchors_from_json
 from src.ui.algo_modes.dataset_sim_pipeline import (
@@ -610,9 +611,10 @@ class DatasetMode:
             validate_robot2026_anchor_geometry(anchors)
             slots = read_pcnt_anchor_slot_mapping(anchor_path, len(anchors))
             profile = read_robot2026_profile_from_anchor_json(anchor_path)
+            settings = read_uwb2026_processing_settings(anchor_path)
             combined = load_robot2026_single_tag_uwb(
                 path, session_id=int(session or "1"), anchor_count=len(anchors),
-                slot_to_anchor_index=slots, profile=profile,
+                slot_to_anchor_index=slots, profile=profile, **settings,
             )
             if not self._apply_robot2026_odometry_config(
                 selection, session, route_file, map_file, profile=profile
@@ -643,7 +645,8 @@ class DatasetMode:
             self.host._dataset_label = self._dataset_label
             self.host._set_msg(
                 f"PCNT: {combined.odometry.sample_count} linhas, "
-                f"UWB: {combined.sample_count} snapshots; "
+                f"UWB: {combined.sample_count} snapshots "
+                f"({settings['min_valid_anchors']} âncoras); "
                 f"repetidas ignoradas: {combined.repeated_readings}"
             )
             return True
