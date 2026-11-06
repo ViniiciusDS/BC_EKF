@@ -63,8 +63,13 @@ def load_pcnt_sessions(path: str | Path) -> list[list[RawPcntRow]]:
         for line_no, cols in enumerate(csv.reader(f, skipinitialspace=True), 1):
             if not cols or not any(col.strip() for col in cols):
                 continue
-            if len(cols) not in (5, 20):
-                raise ValueError(f"Linha {line_no}: esperado 5 ou 20 colunas, recebeu {len(cols)}")
+            # Cinco colunas PCNT fixas + 3 campos para cada slot UWB.
+            # Compatível com logs antigos de 5/20 e futuros 23/26/29...
+            if len(cols) != 5 and (len(cols) < 8 or (len(cols)-5) % 3 != 0):
+                raise ValueError(
+                    f"Linha {line_no}: esperado 5 + 3*N colunas (N slots UWB), "
+                    f"recebeu {len(cols)}"
+                )
             if expected_cols is None:
                 expected_cols = len(cols)
             elif len(cols) != expected_cols:
@@ -73,8 +78,8 @@ def load_pcnt_sessions(path: str | Path) -> list[list[RawPcntRow]]:
                 t, left, right, laps, status = (int(float(s)) for s in cols[:5])
                 triples = tuple(
                     tuple(float(s) for s in cols[5 + 3 * i : 8 + 3 * i])
-                    for i in range(5)
-                ) if len(cols) == 20 else ()
+                    for i in range((len(cols) - 5) // 3)
+                ) if len(cols) > 5 else ()
             except ValueError as exc:
                 raise ValueError(f"Linha {line_no}: dados não numéricos") from exc
             sample = RawPcntRow(t, left, right, laps, status, triples)
@@ -159,7 +164,7 @@ def convert_session(session: Iterable[RawPcntRow], cfg: Robot2026Profile) -> lis
 
 
 def convert_uwb_session(session: Iterable[RawPcntRow]) -> list[dict]:
-    """Extrai ranges dos 5 slots UWB, convertendo cm e cm² em SI.
+    """Extrai ranges de N slots UWB, convertendo cm e cm² em SI.
 
     Repetição é sinalizada, não descartada. Um timestamp de registro no SD
     não equivale necessariamente ao instante físico da medição UWB.
