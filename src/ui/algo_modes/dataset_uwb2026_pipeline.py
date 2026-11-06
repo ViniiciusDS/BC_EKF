@@ -326,6 +326,23 @@ def inspect_robot2026_capture(
         out["warnings"].append(str(exc))
         return out
 
+    # Timestamps no log ESP32 de mudanças nas triplas, não timestamps TWR.
+    # Permite diagnosticar a cadência OBSERVADA sem afirmar instante físico.
+    acquisition = []
+    for slot in range(5):
+        valid_new = [
+            int(item["timestamp"])
+            for item in convert_uwb_session(rows)
+            if int(item["anchor_id"]) == slot and not item["possibly_reused"]
+        ]
+        deltas = np.diff(valid_new)
+        acquisition.append({
+            "slot": slot,
+            "anchor_index": mapping[slot],
+            "valid_new_readings": len(valid_new),
+            "median_log_update_ms": float(np.median(deltas)) if deltas.size else None,
+            "p95_log_update_ms": float(np.percentile(deltas, 95)) if deltas.size else None,
+        })
     out.update({
         "status": "ready_for_static_batch",
         "anchor_count": int(len(pos)),
@@ -336,6 +353,8 @@ def inspect_robot2026_capture(
         "start_pose_xytheta": [
             profile.initial_x_m, profile.initial_y_m, profile.initial_theta_rad
         ],
+        "uwb_slot_record_update_stats": acquisition,
+        "uwb_timing_note": "Diferenças entre timestamps de gravação no ESP32; NÃO são tempos de TWR físicos",
         "uwb_snapshots": data.sample_count,
         "uwb_valid_readings": data.valid_readings,
         "uwb_repeated_readings_excluded": data.repeated_readings,
