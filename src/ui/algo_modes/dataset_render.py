@@ -171,6 +171,17 @@ def _draw_estimated_track(mode, algo, result):
     if pts.ndim != 2 or pts.shape[0] < 2 or pts.shape[1] < 2:
         return
 
+    if getattr(mode, "dataset_source_type", "") == "real_odom_uwb_2026":
+        sample_indices = getattr(mode, "_robot2026_uwb_indices", np.array([]))
+        if len(sample_indices) == len(pts):
+            selected = mode._selected_odom_laps()
+            visible = np.zeros(len(sample_indices), dtype=bool)
+            for lap in selected:
+                visible |= (sample_indices >= lap.start) & (sample_indices < lap.stop)
+            pts = pts[visible]
+            if len(pts) < 2:
+                return
+
     # Pygame precisa de pares x,y.
     pts = pts[:, :2]
 
@@ -287,13 +298,13 @@ def draw_reference_routes(mode):
     # Rota odométrica/reconstruída. Evita duplicar se for igual à referência.
     odom = (
         getattr(mode, "_dataset_route", None)
-        if getattr(mode, "dataset_source_type", "") in ("real_encoder_uwb", "real_odometry_2026")
+        if getattr(mode, "dataset_source_type", "") in ("real_encoder_uwb", "real_odometry_2026", "real_odom_uwb_2026")
         else None
     )
 
     # O modo 2026 desenha as voltas independentemente, sem ligar o fim
     # de uma volta ao início da seguinte com um segmento artificial.
-    if getattr(mode, "dataset_source_type", "") == "real_odometry_2026":
+    if getattr(mode, "dataset_source_type", "") in ("real_odometry_2026", "real_odom_uwb_2026"):
         data = getattr(mode, "_robot2026_data", None)
         if data is not None:
             # Referência aproximada extraída da primeira volta odométrica.
@@ -409,13 +420,15 @@ def draw_dataset_sidebar_controls(mode):
 
     # Controles de voltas ocupam o espaço entre o status e os botões inferiores.
     if (
-        getattr(mode, "dataset_source_type", "") == "real_odometry_2026"
+        getattr(mode, "dataset_source_type", "") in ("real_odometry_2026", "real_odom_uwb_2026")
         and getattr(mode, "_robot2026_data", None) is not None
     ):
         font = mode.host.font
-        y = metric_y - 118
+        # Reservar intervalo entre "Rodar batch" e os controles inferiores.
+        # Antes y-72 sobrepunha o botão Rodar batch.
+        y = metric_y - 112
         if getattr(mode, "_odom_track_template", None) is not None:
-            mode.btn_odom_track.rect.topleft = (sidebar_x, y - 72)
+            mode.btn_odom_track.rect.topleft = (sidebar_x, y - 55)
             mode.btn_odom_track.text = (
                 "Pista aprox.: ON" if mode.show_odom_track_template
                 else "Pista aprox.: OFF"
@@ -424,7 +437,7 @@ def draw_dataset_sidebar_controls(mode):
         label = font.render(
             f"Visualizar: {mode._odometry_view_label()}", True, (65, 65, 72)
         )
-        screen.blit(label, (sidebar_x, y - 22))
+        screen.blit(label, (sidebar_x, y - 17))
 
         mode.btn_lap_mode.rect.topleft = (sidebar_x, y)
         mode.btn_lap_mode.text = {
@@ -456,7 +469,7 @@ def draw_dataset_status(mode):
 
     # O painel sobre o mapa já mostra fonte e número de amostras.
     # Evita colisão com os controles de voltas e de pista aproximada.
-    if getattr(mode, "dataset_source_type", "") == "real_odometry_2026":
+    if getattr(mode, "dataset_source_type", "") in ("real_odometry_2026", "real_odom_uwb_2026"):
         return
 
     sidebar_x = mode.host.cam.viewport[0] + 16
@@ -510,7 +523,7 @@ def draw_dataset_analyzer(mode):
 
 def draw_robot2026_odometry_info(mode):
     """Resumo da odometria isolada, sem apresentar RMSE como ground truth."""
-    if getattr(mode, "dataset_source_type", "") != "real_odometry_2026":
+    if getattr(mode, "dataset_source_type", "") not in ("real_odometry_2026", "real_odom_uwb_2026"):
         return
     odom = getattr(mode, "_robot2026_data", None)
     if odom is None or odom.sample_count == 0:
@@ -526,8 +539,10 @@ def draw_robot2026_odometry_info(mode):
     end_idx = selected[-1].stop - 1 if selected else odom.sample_count - 1
     visible_count = sum(lap.sample_count for lap in selected)
     xf, yf, heading = odom.poses_xytheta[end_idx]
+    combined = getattr(mode, "_robot2026_uwb_data", None)
     lines = [
-        "Odometria real - sem UWB / sem ground truth",
+        ("PCNT + UWB tag unica (sem ground truth)" if combined is not None
+         else "Odometria real - sem UWB / sem ground truth"),
         f"Sessao {odom.session_id} | dataset completo: {odom.sample_count} amostras | {odom.duration_s:.1f} s",
         f"Exibindo {mode._odometry_view_label()} | {visible_count} pontos desenhados",
         (
@@ -540,6 +555,11 @@ def draw_robot2026_odometry_info(mode):
         f"Raio {odom.profile.wheel_radius_m:.5f} m | Base {odom.profile.wheel_base_m:.3f} m | CPR {odom.profile.ticks_per_wheel_rev:.0f}",
         f"Fim exibido: x={xf:.3f} m, y={yf:.3f} m, heading={np.degrees(heading) % 360:.1f} graus",
     ]
+    if combined is not None:
+        lines[2] = (
+            f"PCNT: {odom.sample_count} | UWB batch: {combined.sample_count} "
+            f"| repetidas: {combined.repeated_readings}"
+        )
     for i, line in enumerate(lines):
         text_surface = font.render(line, True, (30, 30, 40))
         screen.blit(text_surface, (x + 8, y + 7 + 23 * i))

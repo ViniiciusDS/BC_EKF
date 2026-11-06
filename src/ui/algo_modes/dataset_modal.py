@@ -28,7 +28,7 @@ class DatasetConfigModal:
         self.dd_source = TextBoxDropdown(
             pg.Rect(0, 0, 440, 30),
             font,
-            options=["Simulado", "Real (encoder + UWB)", "Real (odometria 2026)"],
+            options=["Simulado", "Real (encoder + UWB)", "Real (odometria 2026)", "Real (PCNT + UWB 2026)"],
         )
 
         self.dd_sim_kind = TextBoxDropdown(
@@ -68,6 +68,15 @@ class DatasetConfigModal:
             FormDropdownRow("Mapa:", self.dd_map),
         ]
 
+        self.rows_odom_uwb = [
+            FormDropdownRow("Fonte:", self.dd_source),
+            FormDropdownRow("Arquivo PCNT:", self.dd_odom),
+            FormDropdownRow("Sessão (bruto):", self.dd_odom_session),
+            FormDropdownRow("Âncoras:", self.dd_anchors),
+            FormDropdownRow("Rota ref.:", self.dd_route),
+            FormDropdownRow("Mapa:", self.dd_map),
+        ]
+
         self.rows_odometry = [
             FormDropdownRow("Fonte:", self.dd_source),
             FormDropdownRow("Arquivo PCNT:", self.dd_odom),
@@ -92,6 +101,8 @@ class DatasetConfigModal:
             self._set_dropdown_value(self.dd_source, "Real (encoder + UWB)")
         elif source == "real_odometry_2026":
             self._set_dropdown_value(self.dd_source, "Real (odometria 2026)")
+        elif source == "real_odom_uwb_2026":
+            self._set_dropdown_value(self.dd_source, "Real (PCNT + UWB 2026)")
         else:
             self._set_dropdown_value(self.dd_source, "Simulado")
 
@@ -163,7 +174,7 @@ class DatasetConfigModal:
 
         self._set_dropdown_options(
             self.dd_source,
-            ["Simulado", "Real (encoder + UWB)", "Real (odometria 2026)"],
+            ["Simulado", "Real (encoder + UWB)", "Real (odometria 2026)", "Real (PCNT + UWB 2026)"],
         )
 
         self._set_dropdown_options(
@@ -314,7 +325,12 @@ class DatasetConfigModal:
     def is_odometry(self):
         return self._get_dropdown_value(self.dd_source) == "Real (odometria 2026)"
 
+    def is_odom_uwb(self):
+        return self._get_dropdown_value(self.dd_source) == "Real (PCNT + UWB 2026)"
+
     def active_rows(self):
+        if self.is_odom_uwb():
+            return self.rows_odom_uwb
         if self.is_odometry():
             return self.rows_odometry
         return self.rows_real if self.is_real() else self.rows_sim
@@ -496,7 +512,9 @@ class DatasetConfigModal:
                     self.refresh_options()
                     # Evita reutilizar a rota dos experimentos simulados
                     # como se fosse referência física do robô 2026.
-                    if self.is_odometry():
+                    if self.is_odometry() or self.is_odom_uwb():
+                        if self.is_odom_uwb():
+                            self._set_dropdown_value(self.dd_odom_session, "1")
                         self._set_dropdown_value(self.dd_route, "(Nenhuma)")
                         self._set_dropdown_value(self.dd_map, "(Nenhum)")
 
@@ -526,12 +544,14 @@ class DatasetConfigModal:
 
         is_real = self.is_real()
         is_odometry = self.is_odometry()
+        is_odom_uwb = self.is_odom_uwb()
         m.dataset_source_type = (
+            "real_odom_uwb_2026" if is_odom_uwb else
             "real_odometry_2026" if is_odometry else
             "real_encoder_uwb" if is_real else "simulated"
         )
 
-        if is_odometry:
+        if is_odometry or is_odom_uwb:
             m._modal_odom_file = self._get_dropdown_value(self.dd_odom)
             m._modal_odom_session = self._get_dropdown_value(self.dd_odom_session) or "1"
             m._modal_dataset_file = ""
@@ -555,11 +575,6 @@ class DatasetConfigModal:
         map_value = self._get_dropdown_value(self.dd_map)
         m._modal_route_file = "" if route_value == "(Nenhuma)" else route_value
         m._modal_map_file = "" if map_value == "(Nenhum)" else map_value
-
-        print("[DATASET_MODAL_APPLY] dataset =", repr(m._modal_dataset_file))
-        print("[DATASET_MODAL_APPLY] anchors =", repr(m._modal_anchor_file))
-        print("[DATASET_MODAL_APPLY] route   =", repr(m._modal_route_file))
-        print("[DATASET_MODAL_APPLY] map     =", repr(m._modal_map_file))
 
         ok = m._apply_dataset_config_from_modal_values()
 

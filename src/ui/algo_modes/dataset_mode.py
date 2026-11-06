@@ -62,6 +62,10 @@ from src.ui.algo_modes.dataset_lap_view import (
     selection_label,
 )
 from src.ui.algo_modes.dataset_track_reference import build_track_from_first_complete_lap
+from src.ui.algo_modes.dataset_uwb2026_pipeline import (
+    load_robot2026_single_tag_uwb, read_pcnt_anchor_slot_mapping,
+)
+from src.ui.algo_modes.shared import load_anchors_from_json
 from src.ui.algo_modes.dataset_sim_pipeline import (
     SimPipelineResult,
     load_simulated_dataset_file,
@@ -168,6 +172,7 @@ class DatasetMode:
             "Simulado",
             "Real (encoder + UWB)",
             "Real (odometria 2026)",
+            "Real (PCNT + UWB 2026)",
         ]
 
 
@@ -176,6 +181,8 @@ class DatasetMode:
         self.robot2026_raw_dir = os.path.join("dados_reais", "robot2026")
         self.robot2026_processed_dir = os.path.join("resultados", "robot2026")
         self._robot2026_data = None
+        self._robot2026_uwb_data = None
+        self._robot2026_uwb_indices = np.array([], dtype=int)
         # Seleção de voltas altera somente o desenho; preserva todas as amostras.
         self._robot2026_laps = ()
         self._odom_track_template = None
@@ -322,6 +329,10 @@ class DatasetMode:
         if self.dataset_source_type == "real_odometry_2026":
             return self._apply_robot2026_odometry_config(
                 odom_file, odom_session, route_file, map_file
+            )
+        if self.dataset_source_type == "real_odom_uwb_2026":
+            return self._apply_robot2026_single_tag_config(
+                odom_file, odom_session, anchor_file, route_file, map_file
             )
 
         # Para os modos legados, mantém a detecção de arquivos existente.
@@ -534,6 +545,8 @@ class DatasetMode:
             self._map_label = ""
 
             self._robot2026_data = data
+            self._robot2026_uwb_data = None
+            self._robot2026_uwb_indices = np.array([], dtype=int)
             self._robot2026_laps = split_laps(data.laps)
             self._odom_track_template = build_track_from_first_complete_lap(
                 data.poses_xytheta, self._robot2026_laps
@@ -569,6 +582,66 @@ class DatasetMode:
             return True
         except (OSError, ValueError) as exc:
             self.host._set_msg(f"Erro ao carregar odometria 2026: {exc}")
+            return False
+
+
+    def _apply_robot2026_single_tag_config(
+        self, selection: str, session: str,
+        anchor_file: str, route_file: str, map_file: str,
+    ) -> bool:
+        """Adiciona ranges do ESP32 a uma sessão PCNT, sem ground truth fictício."""
+        try:
+            if not selection.startswith("Bruto: "):
+                raise ValueError("Selecione o PCNT bruto de 20 colunas (Bruto: ...)")
+            if not anchor_file:
+                raise ValueError("Selecione JSON com posições e mapa dos slots SPI")
+            path = resolve_robot2026_source(
+                selection, self.robot2026_raw_dir, self.robot2026_processed_dir
+            )
+            anchor_path = resolve_file_with_extensions(
+                self.anchors_dir, anchor_file, (".json",)
+            )
+            anchors, _ = load_anchors_from_json(anchor_path)
+            slots = read_pcnt_anchor_slot_mapping(anchor_path, len(anchors))
+            combined = load_robot2026_single_tag_uwb(
+                path, session_id=int(session or "1"), anchor_count=len(anchors),
+                slot_to_anchor_index=slots,
+            )
+            if not self._apply_robot2026_odometry_config(
+                selection, session, route_file, map_file
+            ):
+                return False
+            self._robot2026_uwb_data = combined
+            self._robot2026_uwb_indices = combined.sample_indices.copy()
+            self._dataset_anchors = anchors
+            self._anchors_path = str(anchor_path)
+            self._anchors_uwb_ids = None  # slots SPI foram mapeados explicitamente
+            self._batch_dists = combined.distances.copy()
+            self._batch_devs = combined.deviations.copy()
+            self._real_range_matrix = combined.distances.copy()
+            self._real_sigma_matrix = combined.deviations.copy()
+            self._real_timestamps = combined.timestamps_s.tolist()
+            self._real_anchor_ids = list(range(len(anchors)))
+            self._dataset_label = (
+                f"PCNT+UWB 2026 | sessao={combined.odometry.session_id} "
+                f"| {combined.sample_count} amostras UWB"
+            )
+            self._dataset_stats = None
+            self._batch_results = None
+            self._bc_ekf_data = None
+            self.host._dataset_anchors = self._dataset_anchors
+            self.host._batch_dists = self._batch_dists
+            self.host._batch_devs = self._batch_devs
+            self.host._batch_results = None
+            self.host._dataset_label = self._dataset_label
+            self.host._set_msg(
+                f"PCNT: {combined.odometry.sample_count} linhas, "
+                f"UWB: {combined.sample_count} snapshots; "
+                f"repetidas ignoradas: {combined.repeated_readings}"
+            )
+            return True
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            self.host._set_msg(f"Erro PCNT+UWB 2026: {exc}")
             return False
 
 
@@ -1059,8 +1132,12 @@ class DatasetMode:
                     algos_to_run = [a for a in algos_to_run if a != "bc_ekf"]
                     self.host._set_msg("BC-EKF ignorado: dados BC não foram preparados corretamente")
 
+        if self.dataset_source_type == "real_odom_uwb_2026" and "bc_ekf" in algos_to_run:
+            algos_to_run = [a for a in algos_to_run if a != "bc_ekf"]
+            self.host._set_msg("BC-EKF ignorado: uma tag, sem baseline")
+
         if not algos_to_run:
-            self.host._set_msg("Selecione pelo menos um algoritmo")
+            self.host._set_msg("Selecione pelo menos um algoritmo compatível")
             return
 
         try:
@@ -1100,7 +1177,10 @@ class DatasetMode:
                 self.host._set_msg("Batch executado, mas vazio")
                 return
 
-            self._dataset_stats = self._compute_dataset_stats(self._batch_results)
+            self._dataset_stats = (
+                None if self.dataset_source_type == "real_odom_uwb_2026"
+                else self._compute_dataset_stats(self._batch_results)
+            )
 
             ranking = self._dataset_ranking()
             for algo in self._batch_results:
@@ -1109,7 +1189,11 @@ class DatasetMode:
                     None
                 )
 
-            self.host._set_msg("Batch executado")
+            self.host._set_msg(
+                "Batch executado (sem ground truth; trajetórias apenas)"
+                if self.dataset_source_type == "real_odom_uwb_2026"
+                else "Batch executado"
+            )
 
         except Exception as e:
             print(f"[DATASET] erro no batch: {e}")
@@ -2058,6 +2142,9 @@ class DatasetMode:
         - encoder_route: comparação com odometria reconstruída;
         - cluster: dispersão relativa.
         """
+        if self.dataset_source_type == "real_odom_uwb_2026":
+            return None  # Sem ground truth independente
+
         if self.dataset_source_type == "real_encoder_uwb":
             reference_route = (
                 self._reference_route_display
