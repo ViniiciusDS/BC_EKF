@@ -61,6 +61,7 @@ from src.ui.algo_modes.dataset_lap_view import (
     select_laps,
     selection_label,
 )
+from src.ui.algo_modes.dataset_track_reference import build_track_from_first_complete_lap
 from src.ui.algo_modes.dataset_sim_pipeline import (
     SimPipelineResult,
     load_simulated_dataset_file,
@@ -177,10 +178,13 @@ class DatasetMode:
         self._robot2026_data = None
         # Seleção de voltas altera somente o desenho; preserva todas as amostras.
         self._robot2026_laps = ()
+        self._odom_track_template = None
+        self.show_odom_track_template = False
         self.odom_view_mode = "single"  # single -> range -> all
         self.odom_lap_start = 1
         self.odom_lap_window = 5
         font = self.host.font if self.host else None
+        self.btn_odom_track = Button((0, 0, 190, 32), "Pista aprox.: ON", font)
         self.btn_lap_mode = Button((0, 0, 190, 32), "Voltas: Uma", font)
         self.btn_lap_prev = Button((0, 0, 92, 30), "Anterior", font)
         self.btn_lap_next = Button((0, 0, 92, 30), "Proxima", font)
@@ -531,6 +535,10 @@ class DatasetMode:
 
             self._robot2026_data = data
             self._robot2026_laps = split_laps(data.laps)
+            self._odom_track_template = build_track_from_first_complete_lap(
+                data.poses_xytheta, self._robot2026_laps
+            )
+            self.show_odom_track_template = self._odom_track_template is not None
             self.odom_view_mode = "single"
             self.odom_lap_start = 1
             self.odom_lap_window = 5
@@ -563,6 +571,15 @@ class DatasetMode:
             self.host._set_msg(f"Erro ao carregar odometria 2026: {exc}")
             return False
 
+
+    def _toggle_odom_track_template(self):
+        """Liga/desliga o contorno derivado da odometria, apenas no desenho."""
+        if self._odom_track_template is None:
+            self.host._set_msg("Sem volta completa para estimar a geometria da pista")
+            return
+        self.show_odom_track_template = not self.show_odom_track_template
+        state = "ligada" if self.show_odom_track_template else "desligada"
+        self.host._set_msg(f"Pista aproximada (odometria): {state}")
 
     def _selected_odom_laps(self):
         """Obtém fatias de visualização; não modifica a odometria original."""
@@ -869,6 +886,14 @@ class DatasetMode:
                             self.host._export_csv()
                         continue
                     
+                    elif (
+                        self.dataset_source_type == "real_odometry_2026"
+                        and self._robot2026_data is not None
+                        and self.btn_odom_track.hit(pos)
+                    ):
+                        self._toggle_odom_track_template()
+                        continue
+
                     elif (
                         self.dataset_source_type == "real_odometry_2026"
                         and self._robot2026_data is not None

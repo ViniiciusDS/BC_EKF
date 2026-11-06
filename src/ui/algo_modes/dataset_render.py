@@ -296,6 +296,15 @@ def draw_reference_routes(mode):
     if getattr(mode, "dataset_source_type", "") == "real_odometry_2026":
         data = getattr(mode, "_robot2026_data", None)
         if data is not None:
+            # Referência aproximada extraída da primeira volta odométrica.
+            # Não é ground truth nem altera _reference_route_display ou métricas.
+            approx = getattr(mode, "_odom_track_template", None)
+            if approx is not None and mode.show_odom_track_template:
+                _draw_polyline_world(
+                    screen, cam, approx.xy,
+                    color=(35, 122, 180), width=2, dashed=True,
+                    dash_px=9, gap_px=6,
+                )
             selected = mode._selected_odom_laps()
             for lap in selected:
                 pts = data.poses_xytheta[lap.start:lap.stop, :2]
@@ -405,6 +414,13 @@ def draw_dataset_sidebar_controls(mode):
     ):
         font = mode.host.font
         y = metric_y - 118
+        if getattr(mode, "_odom_track_template", None) is not None:
+            mode.btn_odom_track.rect.topleft = (sidebar_x, y - 72)
+            mode.btn_odom_track.text = (
+                "Pista aprox.: ON" if mode.show_odom_track_template
+                else "Pista aprox.: OFF"
+            )
+            mode.btn_odom_track.draw(screen)
         label = font.render(
             f"Visualizar: {mode._odometry_view_label()}", True, (65, 65, 72)
         )
@@ -437,6 +453,11 @@ def draw_dataset_status(mode):
     """
     screen = mode.host.screen
     font = mode.host.font
+
+    # O painel sobre o mapa já mostra fonte e número de amostras.
+    # Evita colisão com os controles de voltas e de pista aproximada.
+    if getattr(mode, "dataset_source_type", "") == "real_odometry_2026":
+        return
 
     sidebar_x = mode.host.cam.viewport[0] + 16
     y = 470
@@ -496,7 +517,7 @@ def draw_robot2026_odometry_info(mode):
         return
     screen = mode.host.screen
     font = mode.host.font
-    x, y, w, h = 10, 40, 485, 125
+    x, y, w, h = 10, 40, 485, 150
     panel = pg.Surface((w, h), pg.SRCALPHA)
     panel.fill((250, 250, 252, 224))
     screen.blit(panel, (x, y))
@@ -509,6 +530,13 @@ def draw_robot2026_odometry_info(mode):
         "Odometria real - sem UWB / sem ground truth",
         f"Sessao {odom.session_id} | dataset completo: {odom.sample_count} amostras | {odom.duration_s:.1f} s",
         f"Exibindo {mode._odometry_view_label()} | {visible_count} pontos desenhados",
+        (
+            f"Pista aprox. da volta {mode._odom_track_template.source_lap}: "
+            f"{mode._odom_track_template.span_x_m:.2f} x "
+            f"{mode._odom_track_template.span_y_m:.2f} m (NAO e ground truth)"
+            if getattr(mode, "_odom_track_template", None) is not None
+            else "Pista aprox.: indisponivel (sem volta completa valida)"
+        ),
         f"Raio {odom.profile.wheel_radius_m:.5f} m | Base {odom.profile.wheel_base_m:.3f} m | CPR {odom.profile.ticks_per_wheel_rev:.0f}",
         f"Fim exibido: x={xf:.3f} m, y={yf:.3f} m, heading={np.degrees(heading) % 360:.1f} graus",
     ]
