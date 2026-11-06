@@ -61,8 +61,9 @@ def list_robot2026_sources(raw_dir: str | Path, processed_dir: str | Path) -> li
         result.extend(
             RAW_PREFIX + path.name
             for path in sorted(raw.iterdir(), key=lambda p: p.name.lower())
+            # Em campo o firmware pode gerar nomes arbitrários (ex.: TESTE_07.CSV).
+            # O parser valida o conteúdo ao carregar; não filtrar por nome.
             if path.is_file() and path.suffix.lower() in {".csv", ".txt"}
-            and "pcnt" in path.name.lower()
         )
     if processed.is_dir():
         result.extend(
