@@ -15,15 +15,17 @@ comparar odometria e ranges no mesmo referencial).
    `anchor_sets/ensaio_S01.json`.
 2. Meça a posição (x, y, z) em **metros** de cada âncora, usando
    origem e orientação únicas. Edite `anchors_xy`.
-3. Confirme com o laboratório qual slot SPI do log (0..4) pertence a
+3. Após editar as coordenadas, defina `meta.example_only` como `false`.
+   A configuração ilustrativa é bloqueada enquanto esse campo for `true`.
+4. Confirme com o laboratório qual slot SPI do log (0..4) pertence a
    cada posição, e edite `pcnt_slot_to_anchor_index`. **Não** presuma
    que a ordem 0..4 é igual à ordem das posições.
-4. Em `robot_2026`, mantenha CPR=4560, raio=0,03425 m e base=0,229 m,
+5. Em `robot_2026`, mantenha CPR=4560, raio=0,03425 m e base=0,229 m,
    caso a calibração e o hardware não tenham mudado. Ajuste
    `initial_x_m`, `initial_y_m` e `initial_theta_deg` para a pose
    inicial **no mesmo referencial das âncoras**. Se desconhecida,
    a visualização fica relativa e não serve para medir erro absoluto.
-5. Mudou a montagem? Crie **outro JSON**, por exemplo
+6. Mudou a montagem? Crie **outro JSON**, por exemplo
    `anchor_sets/ensaio_S02.json`, preservando o anterior.
 
 **Não copie as coordenadas do arquivo EXEMPLO como se fossem medidas.**

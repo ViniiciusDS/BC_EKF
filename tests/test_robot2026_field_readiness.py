@@ -106,6 +106,21 @@ class TestRobot2026FieldReadiness(unittest.TestCase):
             np.array([[0, 0], [1, 0], [0, 1]])
         )
 
+    def test_example_anchor_layout_is_blocked(self):
+        self.anchors.write_text(json.dumps({
+            "meta": {"example_only": True},
+            "anchors_xy": [[0, 0], [1, 0], [0, 1]],
+            "pcnt_slot_to_anchor_index": [0, 1, 2, None, None],
+        }))
+        path = self.write("capture.csv", [
+            self.line(100, 0, 0), self.line(350, 5, -5, 110),
+        ])
+        report = inspect_robot2026_capture(
+            path, session_id=1, anchor_path=self.anchors
+        )
+        self.assertEqual(report["status"], "blocked")
+        self.assertIn("EXEMPLO", report["warnings"][0])
+
     def test_preflight_reports_only_odometry_for_five_columns(self):
         path = self.write("old_log.csv", ["100,0,0,0,0", "350,100,-100,0,0"])
         report = inspect_robot2026_capture(path)

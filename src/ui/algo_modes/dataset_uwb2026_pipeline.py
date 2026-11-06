@@ -93,6 +93,11 @@ def read_pcnt_anchor_slot_mapping(anchor_json: str | Path,
     """Exige mapa de slot SPI 0..4 para a posição no array de âncoras."""
     with Path(anchor_json).open("r", encoding="utf-8") as stream:
         data = json.load(stream)
+    if data.get("meta", {}).get("example_only") is True:
+        raise ValueError(
+            "Configuração é apenas EXEMPLO: substitua as coordenadas medidas "
+            "e altere meta.example_only para false antes do ensaio"
+        )
     mapping = data.get("pcnt_slot_to_anchor_index")
     if not isinstance(mapping, list) or len(mapping) != 5:
         raise ValueError(
