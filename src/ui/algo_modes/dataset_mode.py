@@ -64,6 +64,8 @@ from src.ui.algo_modes.dataset_lap_view import (
 from src.ui.algo_modes.dataset_track_reference import build_track_from_first_complete_lap
 from src.ui.algo_modes.dataset_uwb2026_pipeline import (
     load_robot2026_single_tag_uwb, read_pcnt_anchor_slot_mapping,
+    read_robot2026_profile_from_anchor_json,
+    validate_robot2026_anchor_geometry,
 )
 from src.ui.algo_modes.shared import load_anchors_from_json
 from src.ui.algo_modes.dataset_sim_pipeline import (
@@ -494,7 +496,8 @@ class DatasetMode:
 
 
     def _apply_robot2026_odometry_config(
-        self, selection: str, session: str, route_file: str, map_file: str
+        self, selection: str, session: str, route_file: str, map_file: str,
+        *, profile=None,
     ) -> bool:
         """Reconstrói a odometria PCNT sem UWB nem alterações no simulador.
 
@@ -508,7 +511,7 @@ class DatasetMode:
                 selection, self.robot2026_raw_dir, self.robot2026_processed_dir
             )
             data = load_robot2026_odometry(
-                path, session_id=int(session or "1"), profile=ROBOT2026_PROFILE
+                path, session_id=int(session or "1"), profile=profile or ROBOT2026_PROFILE
             )
             # Valida arquivos opcionais antes de substituir o dataset em memória.
             route_path = (
@@ -557,7 +560,8 @@ class DatasetMode:
             self.odom_lap_window = 5
             self._dataset_path = str(data.path)
             self._dataset_label = (
-                f"ODOM2026 | sessao={data.session_id} | CPR=4560"
+                f"ODOM2026 | sessao={data.session_id} | "
+                f"CPR={data.profile.ticks_per_wheel_rev:.0f}"
             )
             self._dataset_route = data.poses_xytheta.copy()
             self._real_odom_path = data.poses_xytheta.tolist()
@@ -577,7 +581,8 @@ class DatasetMode:
             self.host._dataset_anchors = None
             self.host._set_msg(
                 f"Odometria: {data.sample_count} amostras, "
-                f"{data.duration_s:.1f}s, CPR 4560, sem UWB"
+                f"{data.duration_s:.1f}s, "
+                f"CPR {data.profile.ticks_per_wheel_rev:.0f}, sem UWB"
             )
             return True
         except (OSError, ValueError) as exc:
@@ -602,13 +607,15 @@ class DatasetMode:
                 self.anchors_dir, anchor_file, (".json",)
             )
             anchors, _ = load_anchors_from_json(anchor_path)
+            validate_robot2026_anchor_geometry(anchors)
             slots = read_pcnt_anchor_slot_mapping(anchor_path, len(anchors))
+            profile = read_robot2026_profile_from_anchor_json(anchor_path)
             combined = load_robot2026_single_tag_uwb(
                 path, session_id=int(session or "1"), anchor_count=len(anchors),
-                slot_to_anchor_index=slots,
+                slot_to_anchor_index=slots, profile=profile,
             )
             if not self._apply_robot2026_odometry_config(
-                selection, session, route_file, map_file
+                selection, session, route_file, map_file, profile=profile
             ):
                 return False
             self._robot2026_uwb_data = combined
@@ -907,7 +914,7 @@ class DatasetMode:
                     return _actions_menu()
                 
                 elif event.key == pg.K_F10:
-                    if self.dataset_source_type == "real_odometry_2026":
+                    if self.dataset_source_type in ("real_odometry_2026", "real_odom_uwb_2026"):
                         self.host._set_msg("Odometria carregada: falta UWB para rodar algoritmos")
                         continue
                     try:
@@ -960,7 +967,7 @@ class DatasetMode:
                         continue
                     
                     elif (
-                        self.dataset_source_type == "real_odometry_2026"
+                        self.dataset_source_type in ("real_odometry_2026", "real_odom_uwb_2026")
                         and self._robot2026_data is not None
                         and self.btn_odom_track.hit(pos)
                     ):
@@ -968,7 +975,7 @@ class DatasetMode:
                         continue
 
                     elif (
-                        self.dataset_source_type == "real_odometry_2026"
+                        self.dataset_source_type in ("real_odometry_2026", "real_odom_uwb_2026")
                         and self._robot2026_data is not None
                         and self.btn_lap_mode.hit(pos)
                     ):
@@ -976,7 +983,7 @@ class DatasetMode:
                         continue
 
                     elif (
-                        self.dataset_source_type == "real_odometry_2026"
+                        self.dataset_source_type in ("real_odometry_2026", "real_odom_uwb_2026")
                         and self._robot2026_data is not None
                         and self.btn_lap_prev.hit(pos)
                     ):
@@ -984,7 +991,7 @@ class DatasetMode:
                         continue
 
                     elif (
-                        self.dataset_source_type == "real_odometry_2026"
+                        self.dataset_source_type in ("real_odometry_2026", "real_odom_uwb_2026")
                         and self._robot2026_data is not None
                         and self.btn_lap_next.hit(pos)
                     ):
@@ -992,7 +999,7 @@ class DatasetMode:
                         continue
 
                     elif (
-                        self.dataset_source_type == "real_odometry_2026"
+                        self.dataset_source_type in ("real_odometry_2026", "real_odom_uwb_2026")
                         and self._robot2026_data is not None
                         and self.btn_lap_less.hit(pos)
                     ):
@@ -1000,7 +1007,7 @@ class DatasetMode:
                         continue
 
                     elif (
-                        self.dataset_source_type == "real_odometry_2026"
+                        self.dataset_source_type in ("real_odometry_2026", "real_odom_uwb_2026")
                         and self._robot2026_data is not None
                         and self.btn_lap_more.hit(pos)
                     ):
