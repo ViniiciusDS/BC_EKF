@@ -119,6 +119,46 @@ class TestFieldFourAnchors2026(unittest.TestCase):
         self.assertEqual(stats[1]["anchor_index"],0)
         self.assertEqual(stats[1]["median_log_update_ms"],375.)
 
+    def test_future_seven_anchor_log_with_eight_slots(self):
+        """Suporta até 8 slots no CSV, inclusive o slot 0 desconectado.
+
+        N=8 -> 5+3*8=29 colunas; 7 âncoras reais mapeadas.
+        """
+        from src.odometry.pcntlog_adapter import load_pcnt_sessions
+        slots = [None, 0, 1, 2, 3, 4, 5, 6]
+        points = 7
+        rows = []
+        for j in range(3):
+            first = [100 + 250*j, 200*j, -190*j, j, 0]
+            for slot in range(8):
+                if slot == 0:
+                    first.extend([0, 0, -255])
+                else:
+                    first.extend([200 + 10*slot + j*7, 4, 2])
+            rows.append(",".join(map(str, first)))
+        self.save(rows)
+        parsed = load_pcnt_sessions(self.csv)
+        self.assertEqual(len(parsed), 1)
+        self.assertEqual(len(parsed[0][0].uwb), 8)
+        data = load_robot2026_single_tag_uwb(
+            self.csv, session_id=1, anchor_count=points,
+            slot_to_anchor_index=tuple(slots), min_valid_anchors=7,
+        )
+        self.assertEqual(data.sample_count,3)
+        self.assertEqual(data.distances.shape,(3,7))
+
+    def test_future_firmware_mismatch_blocks_wrong_anchor_map(self):
+        """Um mapa de 5 slots não pode etiquetar silenciosamente um log 8-slot."""
+        fields = [100, 0, 0, 0, 0]
+        for slot in range(8):
+            fields.extend([200 + slot, 4, 2])
+        self.save([",".join(map(str, fields))])
+        with self.assertRaisesRegex(ValueError,"Log tem 8 slots"):
+            load_robot2026_single_tag_uwb(
+                self.csv, session_id=1, anchor_count=4,
+                slot_to_anchor_index=(None,0,1,2,3)
+            )
+
     def test_time_windows_not_fake_physical_laps(self):
         v=read_robot2026_view_settings(self.layout)
         self.assertEqual(v["segmentation"],"time_windows")
