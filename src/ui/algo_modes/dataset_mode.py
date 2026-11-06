@@ -65,6 +65,7 @@ from src.ui.algo_modes.dataset_track_reference import build_track_from_first_com
 from src.ui.algo_modes.dataset_uwb2026_pipeline import (
     load_robot2026_single_tag_uwb, read_pcnt_anchor_slot_mapping,
     read_robot2026_profile_from_anchor_json,
+    validate_robot2026_anchor_geometry,
 )
 from src.ui.algo_modes.shared import load_anchors_from_json
 from src.ui.algo_modes.dataset_sim_pipeline import (
@@ -606,6 +607,7 @@ class DatasetMode:
                 self.anchors_dir, anchor_file, (".json",)
             )
             anchors, _ = load_anchors_from_json(anchor_path)
+            validate_robot2026_anchor_geometry(anchors)
             slots = read_pcnt_anchor_slot_mapping(anchor_path, len(anchors))
             profile = read_robot2026_profile_from_anchor_json(anchor_path)
             combined = load_robot2026_single_tag_uwb(
