@@ -198,3 +198,97 @@ def load_robot2026_single_tag_uwb(
         invalid_readings=invalid,
         slot_to_anchor_index=slot_to_anchor_index,
     )
+
+
+def validate_robot2026_anchor_geometry(positions: np.ndarray) -> None:
+    """Confere âncoras no referencial XY antes de iniciar os solvers."""
+    positions = np.asarray(positions, dtype=float)
+    if positions.ndim != 2 or positions.shape[1] not in (2, 3):
+        raise ValueError("anchors_xy deve ser uma matriz Nx2 ou Nx3")
+    if len(positions) < 3 or not np.isfinite(positions).all():
+        raise ValueError("São necessárias 3+ âncoras com coordenadas finitas")
+    xy = positions[:, :2]
+    if np.linalg.matrix_rank(xy - xy.mean(axis=0), tol=1e-8) < 2:
+        raise ValueError("Âncoras colineares: distribuição XY inválida para 2D")
+
+
+def inspect_robot2026_capture(
+    pcnt_path: str | Path,
+    *,
+    session_id: int = 1,
+    anchor_path: str | Path | None = None,
+) -> dict:
+    """Diagnóstico não destrutivo para a bateria de testes.
+
+    Resultados 'blocked' não descartam amostras nem criam dados faltantes.
+    """
+    path = Path(pcnt_path)
+    sessions = load_pcnt_sessions(path)
+    if not 1 <= int(session_id) <= len(sessions):
+        raise ValueError(f"Sessão {session_id} inexistente (1..{len(sessions)})")
+    rows = sessions[int(session_id) - 1]
+    dt = np.diff([r.timestamp_ms for r in rows])
+    out = {
+        "file": str(path),
+        "session": int(session_id),
+        "sessions_detected": len(sessions),
+        "pcnt_samples": len(rows),
+        "duration_s": round((rows[-1].timestamp_ms - rows[0].timestamp_ms) / 1000, 3),
+        "median_log_period_ms": float(np.median(dt)) if dt.size else None,
+        "laps_reported": int(rows[-1].lap_count - rows[0].lap_count),
+        "columns": 20 if rows[0].uwb else 5,
+        "status": "odometry_only" if not rows[0].uwb else "blocked",
+        "warnings": [],
+    }
+    if not rows[0].uwb:
+        out["warnings"].append(
+            "Registro PCNT de 5 colunas: não contém dados UWB; odometria disponível"
+        )
+        return out
+    if anchor_path is None:
+        out["warnings"].append(
+            "É necessário selecionar o JSON com posições medidas e mapeamento SPI"
+        )
+        return out
+
+    try:
+        with Path(anchor_path).open("r", encoding="utf-8") as stream:
+            setup = json.load(stream)
+        pos = np.asarray(setup.get("anchors_xy", setup.get("anchors", [])), dtype=float)
+        validate_robot2026_anchor_geometry(pos)
+        mapping = read_pcnt_anchor_slot_mapping(anchor_path, len(pos))
+        profile = read_robot2026_profile_from_anchor_json(anchor_path)
+        data = load_robot2026_single_tag_uwb(
+            path, session_id=int(session_id),
+            anchor_count=len(pos), slot_to_anchor_index=mapping,
+            profile=profile,
+        )
+    except (ValueError, TypeError, KeyError, OSError) as exc:
+        out["warnings"].append(str(exc))
+        return out
+
+    out.update({
+        "status": "ready_for_static_batch",
+        "anchor_count": int(len(pos)),
+        "spi_slot_to_anchor_index": list(mapping),
+        "effective_cpr": profile.ticks_per_wheel_rev,
+        "start_pose_xytheta": [
+            profile.initial_x_m, profile.initial_y_m, profile.initial_theta_rad
+        ],
+        "uwb_snapshots": data.sample_count,
+        "uwb_valid_readings": data.valid_readings,
+        "uwb_repeated_readings_excluded": data.repeated_readings,
+        "uwb_invalid_readings": data.invalid_readings,
+        "uwb_missing_fraction": round(
+            1.0 - data.sample_count / max(1, data.odometry.sample_count), 4
+        ),
+    })
+    if data.sample_count < 10:
+        out["warnings"].append(
+            "Menos de 10 snapshots UWB completos: apenas verificação inicial"
+        )
+    if data.repeated_readings:
+        out["warnings"].append(
+            "Triplas UWB idênticas foram excluídas; timestamps indicam gravação, não ranging"
+        )
+    return out
