@@ -907,7 +907,7 @@ class DatasetMode:
                     return _actions_menu()
                 
                 elif event.key == pg.K_F10:
-                    if self.dataset_source_type == "real_odometry_2026":
+                    if self.dataset_source_type in ("real_odometry_2026", "real_odom_uwb_2026"):
                         self.host._set_msg("Odometria carregada: falta UWB para rodar algoritmos")
                         continue
                     try:
@@ -960,7 +960,7 @@ class DatasetMode:
                         continue
                     
                     elif (
-                        self.dataset_source_type == "real_odometry_2026"
+                        self.dataset_source_type in ("real_odometry_2026", "real_odom_uwb_2026")
                         and self._robot2026_data is not None
                         and self.btn_odom_track.hit(pos)
                     ):
@@ -968,7 +968,7 @@ class DatasetMode:
                         continue
 
                     elif (
-                        self.dataset_source_type == "real_odometry_2026"
+                        self.dataset_source_type in ("real_odometry_2026", "real_odom_uwb_2026")
                         and self._robot2026_data is not None
                         and self.btn_lap_mode.hit(pos)
                     ):
@@ -976,7 +976,7 @@ class DatasetMode:
                         continue
 
                     elif (
-                        self.dataset_source_type == "real_odometry_2026"
+                        self.dataset_source_type in ("real_odometry_2026", "real_odom_uwb_2026")
                         and self._robot2026_data is not None
                         and self.btn_lap_prev.hit(pos)
                     ):
@@ -984,7 +984,7 @@ class DatasetMode:
                         continue
 
                     elif (
-                        self.dataset_source_type == "real_odometry_2026"
+                        self.dataset_source_type in ("real_odometry_2026", "real_odom_uwb_2026")
                         and self._robot2026_data is not None
                         and self.btn_lap_next.hit(pos)
                     ):
@@ -992,7 +992,7 @@ class DatasetMode:
                         continue
 
                     elif (
-                        self.dataset_source_type == "real_odometry_2026"
+                        self.dataset_source_type in ("real_odometry_2026", "real_odom_uwb_2026")
                         and self._robot2026_data is not None
                         and self.btn_lap_less.hit(pos)
                     ):
@@ -1000,7 +1000,7 @@ class DatasetMode:
                         continue
 
                     elif (
-                        self.dataset_source_type == "real_odometry_2026"
+                        self.dataset_source_type in ("real_odometry_2026", "real_odom_uwb_2026")
                         and self._robot2026_data is not None
                         and self.btn_lap_more.hit(pos)
                     ):
