@@ -16,7 +16,8 @@ def main():
     parser.add_argument("--out", type=Path, default=Path("resultados/robot2026"))
     parser.add_argument("--wheel-radius", type=float, default=0.03425)
     parser.add_argument("--wheel-base", type=float, default=0.229)
-    parser.add_argument("--cpr", type=float, default=2280.0)
+    # CPR experimental validado por reconstrução de trajetória; configurável.
+    parser.add_argument("--cpr", type=float, default=4560.0)
     parser.add_argument("--left-scale", type=float, default=1.0)
     parser.add_argument("--right-scale", type=float, default=1.0)
     parser.add_argument("--initial-theta-deg", type=float, default=0.0)
