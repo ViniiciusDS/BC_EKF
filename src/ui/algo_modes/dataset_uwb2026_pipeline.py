@@ -209,6 +209,29 @@ def load_robot2026_single_tag_uwb(
 
 
 
+
+def read_robot2026_view_settings(anchor_json: str | Path) -> dict:
+    """Define segmentação APENAS para interface; não altera batch/odometria.
+
+    Use 'time_windows' quando o contador da coluna 4 não representar voltas
+    reais. A janela é declarada em segundos, nunca chamada de volta.
+    """
+    with Path(anchor_json).open("r", encoding="utf-8") as stream:
+        data = json.load(stream)
+    cfg = data.get("view_2026", {})
+    if not isinstance(cfg, dict):
+        raise ValueError("view_2026 deve ser um objeto")
+    if set(cfg) - {"segmentation", "window_duration_s"}:
+        raise ValueError("Campos não reconhecidos em view_2026")
+    kind = cfg.get("segmentation", "lap_counter")
+    if kind not in ("lap_counter", "time_windows"):
+        raise ValueError("view_2026.segmentation deve ser lap_counter ou time_windows")
+    duration = cfg.get("window_duration_s", 80.0)
+    if isinstance(duration, bool) or not np.isfinite(float(duration)) or float(duration) <= 0:
+        raise ValueError("view_2026.window_duration_s deve ser positivo")
+    return {"segmentation":kind, "window_duration_s":float(duration)}
+
+
 def read_uwb2026_processing_settings(anchor_json: str | Path) -> dict:
     """Configuração reproduzível de filtros sem modificar os dados brutos.
 
