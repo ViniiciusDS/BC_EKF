@@ -100,10 +100,10 @@ def read_pcnt_anchor_slot_mapping(anchor_json: str | Path,
             "e altere meta.example_only para false antes do ensaio"
         )
     mapping = data.get("pcnt_slot_to_anchor_index")
-    if not isinstance(mapping, list) or len(mapping) != 5:
+    if not isinstance(mapping, list) or len(mapping) < 3:
         raise ValueError(
-            "JSON precisa de pcnt_slot_to_anchor_index: 5 índices inteiros "
-            "(ou null) para os slots SPI 0..4"
+            "JSON precisa de pcnt_slot_to_anchor_index: índices inteiros "
+            "(ou null), um por slot SPI; ao menos 3 slots"
         )
     used: set[int] = set()
     output = []
@@ -141,7 +141,7 @@ def load_robot2026_single_tag_uwb(
     """
     if min_valid_anchors < 3 or min_sigma_m <= 0:
         raise ValueError("Min. 3 âncoras e sigma mínimo positivo necessários")
-    if anchor_count < 3 or len(slot_to_anchor_index) != 5:
+    if anchor_count < 3 or len(slot_to_anchor_index) < 3:
         raise ValueError("Layout/slots inválidos")
     assigned = [v for v in slot_to_anchor_index if v is not None]
     if any(not isinstance(v, int) or not 0 <= v < anchor_count for v in assigned):
@@ -159,7 +159,12 @@ def load_robot2026_single_tag_uwb(
     if not raw or not raw[0].uwb:
         raise ValueError(
             "Arquivo PCNT possui somente 5 colunas (sem UWB). "
-            "Para esta fonte, selecione um log bruto com 20 colunas."
+            "Para esta fonte, selecione um log bruto com 5+3*N colunas."
+        )
+    if len(raw[0].uwb) != len(slot_to_anchor_index):
+        raise ValueError(
+            f"Log tem {len(raw[0].uwb)} slots UWB, mas JSON mapeia "
+            f"{len(slot_to_anchor_index)}. Ajuste pcnt_slot_to_anchor_index."
         )
     odo = load_robot2026_odometry(
         path, session_id=session_id, profile=profile or ROBOT2026_PROFILE
@@ -251,8 +256,8 @@ def read_uwb2026_processing_settings(anchor_json: str | Path) -> dict:
         )
     n = config.get("min_valid_anchors", 3)
     sigma = config.get("min_sigma_m", .02)
-    if type(n) is not int or not 3 <= n <= 5:
-        raise ValueError("uwb_2026.min_valid_anchors deve ser inteiro entre 3 e 5")
+    if type(n) is not int or not 3 <= n <= 32:
+        raise ValueError("uwb_2026.min_valid_anchors deve ser inteiro entre 3 e 32")
     if isinstance(sigma, bool) or not np.isfinite(float(sigma)) or float(sigma) <= 0:
         raise ValueError("uwb_2026.min_sigma_m deve ser positivo")
     return {"min_valid_anchors": n, "min_sigma_m": float(sigma)}
@@ -294,7 +299,8 @@ def inspect_robot2026_capture(
         "duration_s": round((rows[-1].timestamp_ms - rows[0].timestamp_ms) / 1000, 3),
         "median_log_period_ms": float(np.median(dt)) if dt.size else None,
         "laps_reported": int(rows[-1].lap_count - rows[0].lap_count),
-        "columns": 20 if rows[0].uwb else 5,
+        "columns": 5 + 3 * len(rows[0].uwb),
+        "uwb_slot_count": len(rows[0].uwb),
         "status": "odometry_only" if not rows[0].uwb else "blocked",
         "warnings": [],
     }
@@ -329,7 +335,7 @@ def inspect_robot2026_capture(
     # Timestamps no log ESP32 de mudanças nas triplas, não timestamps TWR.
     # Permite diagnosticar a cadência OBSERVADA sem afirmar instante físico.
     acquisition = []
-    for slot in range(5):
+    for slot in range(len(mapping)):
         valid_new = [
             int(item["timestamp"])
             for item in convert_uwb_session(rows)
