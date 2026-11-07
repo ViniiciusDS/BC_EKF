@@ -27,6 +27,7 @@ from src.analysis.algo_metrics import (
     compute_track_vs_polyline_stats,
     compute_track_vs_synced_reference_stats,
     compute_track_vs_sampled_reference_stats,
+    compute_matched_track_difference_stats,
     resample_polyline,
 )
 from src.odometry import (
@@ -635,6 +636,12 @@ class DatasetMode:
                 # Não criar uma falsa "pista aproximada" a partir da janela.
                 self._odom_track_template = None
                 self.show_odom_track_template = False
+            # A rota é nominal; só usar distância geométrica, jamais RMSE
+            # temporal. Sem rota, inicia pela comparação com os encoders.
+            self.metric_mode = (
+                "reference_route" if self._reference_route_display is not None
+                else "encoder_route"
+            )
             self._dataset_anchors = anchors
             self._anchors_path = str(anchor_path)
             self._anchors_uwb_ids = None  # slots SPI foram mapeados explicitamente
@@ -832,6 +839,13 @@ class DatasetMode:
     def _metric_mode_label(self, mode=None):
         mode = mode or self.metric_mode
 
+        if self.dataset_source_type == "real_odom_uwb_2026":
+            return {
+                "reference_route": "Rota nominal",
+                "encoder_route": "UWB x odometria",
+                "cluster": "Dispersao",
+            }.get(mode, str(mode))
+
         labels = {
             "reference_route": "Rota próxima",
             "reference_synced": "Rota sinc.",
@@ -851,14 +865,19 @@ class DatasetMode:
                 "cluster",
             ]
 
+        modes = self.available_metric_modes
+        if self.dataset_source_type == "real_odom_uwb_2026":
+            # Nunca oferecer pseudo-sincronismo com rota MATLAB nominal:
+            # geometria não contém posições verdadeiras por timestamp.
+            modes = ["encoder_route", "cluster"]
+            if self._reference_route_display is not None:
+                modes.insert(0, "reference_route")
         try:
-            idx = self.available_metric_modes.index(self.metric_mode)
+            idx = modes.index(self.metric_mode)
         except ValueError:
-            idx = 0
+            idx = -1
 
-        self.metric_mode = self.available_metric_modes[
-            (idx + 1) % len(self.available_metric_modes)
-        ]
+        self.metric_mode = modes[(idx + 1) % len(modes)]
 
         # Recalcula o analyzer se já houver resultado
         if self._batch_results is not None:
@@ -936,7 +955,7 @@ class DatasetMode:
                     return _actions_menu()
                 
                 elif event.key == pg.K_F10:
-                    if self.dataset_source_type in ("real_odometry_2026", "real_odom_uwb_2026"):
+                    if self.dataset_source_type == "real_odometry_2026":
                         self.host._set_msg("Odometria carregada: falta UWB para rodar algoritmos")
                         continue
                     try:
@@ -1206,10 +1225,7 @@ class DatasetMode:
                 self.host._set_msg("Batch executado, mas vazio")
                 return
 
-            self._dataset_stats = (
-                None if self.dataset_source_type == "real_odom_uwb_2026"
-                else self._compute_dataset_stats(self._batch_results)
-            )
+            self._dataset_stats = self._compute_dataset_stats(self._batch_results)
 
             ranking = self._dataset_ranking()
             for algo in self._batch_results:
@@ -1219,7 +1235,7 @@ class DatasetMode:
                 )
 
             self.host._set_msg(
-                "Batch executado (sem ground truth; trajetórias apenas)"
+                "Batch executado; Analyzer: comparacoes geometrica/odometrica (sem ground truth)"
                 if self.dataset_source_type == "real_odom_uwb_2026"
                 else "Batch executado"
             )
@@ -2172,7 +2188,34 @@ class DatasetMode:
         - cluster: dispersão relativa.
         """
         if self.dataset_source_type == "real_odom_uwb_2026":
-            return None  # Sem ground truth independente
+            # Rota MATLAB nominal é geometria sem timestamps verdadeiros.
+            # Essas estatísticas representam DISTÂNCIAS, não erro de posição.
+            reference_route = (
+                self._reference_route_display
+                if self._reference_route_display is not None
+                else self._route_waypoints
+            )
+            if self.metric_mode == "reference_route" and reference_route is not None:
+                return compute_track_vs_polyline_stats(
+                    results, reference_route, algo_order=ALGO_ORDER
+                )
+            if self.metric_mode == "encoder_route":
+                data = self._robot2026_data
+                indices = np.asarray(self._robot2026_uwb_indices, dtype=int)
+                if (data is None or not len(indices)
+                        or indices.min() < 0
+                        or indices.max() >= data.sample_count):
+                    return None
+                return compute_matched_track_difference_stats(
+                    results,
+                    data.poses_xytheta[indices, :2],
+                    algo_order=ALGO_ORDER,
+                )
+            if self.metric_mode == "cluster":
+                return compute_dataset_cluster_stats(
+                    results, algo_order=ALGO_ORDER
+                )
+            return None
 
         if self.dataset_source_type == "real_encoder_uwb":
             reference_route = (
