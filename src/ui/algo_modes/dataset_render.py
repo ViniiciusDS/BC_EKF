@@ -625,6 +625,55 @@ def draw_dataset_legend(mode):
         mode._legend_close_rect = None
 
 
+def draw_field_quality_panel(mode):
+    """F8: sobreposição informativa, sem alterar o mundo nem o Analyzer."""
+    if not getattr(mode, "show_field_quality_panel", False):
+        return
+    report = getattr(mode, "_field_quality_report", None)
+    if not report:
+        return
+    screen = mode.host.screen
+    font = mode.host.font
+    viewport = int(mode.host.cam.viewport[0])
+    x, y = 12, 222
+    w = min(470, max(260, viewport - 24))
+    h = min(380, max(140, screen.get_height() - y - 14))
+    if h < 200:
+        y = 40
+        h = min(380, screen.get_height() - 54)
+    if h < 100:
+        return
+    panel = pg.Surface((w, h), pg.SRCALPHA)
+    panel.fill((248, 250, 253, 245))
+    screen.blit(panel, (x, y))
+    pg.draw.rect(screen, (85, 102, 132), (x, y, w, h), 1)
+    heading = mode.host.bigfont.render("Qualidade PCNT/UWB (F8)", True, (27, 45, 73))
+    screen.blit(heading, (x + 12, y + 9))
+    summary = report.get("summary", {})
+    enc = report.get("encoder_quality", {})
+    slots = report.get("slot_quality", [])
+    count = max(1, int(summary.get("pcnt_samples", 0)))
+    lines = [
+        f"Sessao {report.get('session_id')} | PCNT {summary.get('pcnt_samples', 0)} | {summary.get('duration_s', 0):.1f} s",
+        f"UWB: {summary.get('uwb_snapshots', 0)} snapshots novos completos",
+        f"Disponibilidade por linha: {100 * summary.get('uwb_snapshots', 0) / count:.1f}%",
+        f"Encoder: {enc.get('estimated_travel_m', 0):.2f} m percorridos (estimativa)",
+        f"Velocidade max.: {enc.get('max_abs_linear_speed_m_s', 0):.2f} m/s",
+        "Slots: novos | repetidos | invalidos",
+    ]
+    for s in slots:
+        lines.append(
+            f"  SPI {s['slot']}: {s['new_valid']} | {s['repeated_valid']} | {s['invalid']}"
+        )
+    if summary.get("warnings"):
+        lines.append(f"Avisos: {len(summary['warnings'])} (detalhes no F9)")
+    lines.append("Sem GT; sinais WR/WL exigem teste fisico")
+    max_lines = max(0, (h - 58) // 22)
+    for i, line in enumerate(lines[:max_lines]):
+        surf = font.render(line, True, (41, 47, 62))
+        screen.blit(surf, (x + 12, y + 48 + i * 22))
+
+
 def draw_dataset_mode(mode):
     """
     Função principal de renderização do DatasetMode.
