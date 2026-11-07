@@ -28,6 +28,7 @@ from src.analysis.algo_metrics import (
     compute_track_vs_synced_reference_stats,
     compute_track_vs_sampled_reference_stats,
     compute_matched_track_difference_stats,
+    compute_single_tag_field_stats,
     resample_polyline,
 )
 from src.odometry import (
@@ -2188,34 +2189,22 @@ class DatasetMode:
         - cluster: dispersão relativa.
         """
         if self.dataset_source_type == "real_odom_uwb_2026":
-            # Rota MATLAB nominal é geometria sem timestamps verdadeiros.
-            # Essas estatísticas representam DISTÂNCIAS, não erro de posição.
-            reference_route = (
+            # O leitor conserva os índices temporais: a janela exibida
+            # NÃO reduz as amostras de entrada do Analyzer.
+            ref = (
                 self._reference_route_display
                 if self._reference_route_display is not None
                 else self._route_waypoints
             )
-            if self.metric_mode == "reference_route" and reference_route is not None:
-                return compute_track_vs_polyline_stats(
-                    results, reference_route, algo_order=ALGO_ORDER
-                )
-            if self.metric_mode == "encoder_route":
-                data = self._robot2026_data
-                indices = np.asarray(self._robot2026_uwb_indices, dtype=int)
-                if (data is None or not len(indices)
-                        or indices.min() < 0
-                        or indices.max() >= data.sample_count):
-                    return None
-                return compute_matched_track_difference_stats(
-                    results,
-                    data.poses_xytheta[indices, :2],
-                    algo_order=ALGO_ORDER,
-                )
-            if self.metric_mode == "cluster":
-                return compute_dataset_cluster_stats(
-                    results, algo_order=ALGO_ORDER
-                )
-            return None
+            odom = getattr(self, "_robot2026_data", None)
+            return compute_single_tag_field_stats(
+                results,
+                self.metric_mode,
+                reference_route=ref,
+                odometry_poses=odom.poses_xytheta if odom is not None else None,
+                sample_indices=self._robot2026_uwb_indices,
+                algo_order=ALGO_ORDER,
+            )
 
         if self.dataset_source_type == "real_encoder_uwb":
             reference_route = (
