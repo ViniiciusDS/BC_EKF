@@ -1,0 +1,61 @@
+{
+  "meta": {
+    "example_only": false,
+    "test_id": "pcntLog_passeio_01",
+    "source": "Coordenadas A2-A5 em cm, informadas pelo laboratório em 06/11/2026",
+    "anchor_coordinates": "MEDIDAS reportadas pelo laboratório; metros",
+    "slot_order": "Confirmado pela identificação de colunas 9-20: A2,A3,A4,A5; slot 0 inativo",
+    "reference_route": "passeio_01_rota_nominal.json; geometria nominal do circuito, SEM sincronismo",
+    "initial_pose_status": "ESTIMATIVA para alinhamento visual, não ground truth: primeira posição UWB GN 3D ~(-1.15,0.86); heading 180 graus hipótese",
+    "wheel_order_status": "PROVISORIO: 2=WR,3=WL (sinal invertido), como informado; validar sentido com ensaio físico",
+    "lap_counter_status": "192 incrementos em 772s, incompatível com 192 voltas físicas; usar janelas temporais"
+  },
+  "anchors_xy": [
+    [
+      0.77,
+      1.77,
+      1.85
+    ],
+    [
+      0,
+      0,
+      1.63
+    ],
+    [
+      -2.66,
+      0.13,
+      1.28
+    ],
+    [
+      -3.04,
+      2.1,
+      0.86
+    ]
+  ],
+  "pcnt_slot_to_anchor_index": [
+    null,
+    0,
+    1,
+    2,
+    3
+  ],
+  "robot_2026": {
+    "wheel_radius_m": 0.03425,
+    "wheel_base_m": 0.229,
+    "ticks_per_wheel_rev": 4560,
+    "swap_encoder_columns": true,
+    "invert_left": true,
+    "invert_right": false,
+    "initial_x_m": -1.15,
+    "initial_y_m": 0.86,
+    "initial_theta_deg": 180
+  },
+  "uwb_2026": {
+    "min_valid_anchors": 4,
+    "min_sigma_m": 0.02
+  },
+  "view_2026": {
+    "segmentation": "time_windows",
+    "window_duration_s": 80
+  }
+}

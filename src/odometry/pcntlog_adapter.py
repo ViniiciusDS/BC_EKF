@@ -25,6 +25,8 @@ class Robot2026Profile:
     ticks_per_wheel_rev: float = 2280.0
     invert_left: bool = False
     invert_right: bool = True
+    # Logs novos podem trazer WR,WL em vez de WL,WR.
+    swap_encoder_columns: bool = False
     left_scale: float = 1.0
     right_scale: float = 1.0
     initial_x_m: float = 0.0
@@ -61,8 +63,13 @@ def load_pcnt_sessions(path: str | Path) -> list[list[RawPcntRow]]:
         for line_no, cols in enumerate(csv.reader(f, skipinitialspace=True), 1):
             if not cols or not any(col.strip() for col in cols):
                 continue
-            if len(cols) not in (5, 20):
-                raise ValueError(f"Linha {line_no}: esperado 5 ou 20 colunas, recebeu {len(cols)}")
+            # Cinco colunas PCNT fixas + 3 campos para cada slot UWB.
+            # Compatível com logs antigos de 5/20 e futuros 23/26/29...
+            if len(cols) != 5 and (len(cols) < 8 or (len(cols)-5) % 3 != 0):
+                raise ValueError(
+                    f"Linha {line_no}: esperado 5 + 3*N colunas (N slots UWB), "
+                    f"recebeu {len(cols)}"
+                )
             if expected_cols is None:
                 expected_cols = len(cols)
             elif len(cols) != expected_cols:
@@ -71,8 +78,8 @@ def load_pcnt_sessions(path: str | Path) -> list[list[RawPcntRow]]:
                 t, left, right, laps, status = (int(float(s)) for s in cols[:5])
                 triples = tuple(
                     tuple(float(s) for s in cols[5 + 3 * i : 8 + 3 * i])
-                    for i in range(5)
-                ) if len(cols) == 20 else ()
+                    for i in range((len(cols) - 5) // 3)
+                ) if len(cols) > 5 else ()
             except ValueError as exc:
                 raise ValueError(f"Linha {line_no}: dados não numéricos") from exc
             sample = RawPcntRow(t, left, right, laps, status, triples)
@@ -105,11 +112,20 @@ def convert_session(session: Iterable[RawPcntRow], cfg: Robot2026Profile) -> lis
     zero = rows[0]
     x, y, theta = cfg.initial_x_m, cfg.initial_y_m, cfg.initial_theta_rad
     last_t_ms = zero.timestamp_ms
-    last_l, last_r = sgn_l * zero.left_count, sgn_r * zero.right_count
+    # Configurável por ensaio: não muda a convenção dos logs antigos.
+    zero_l, zero_r = (
+        (zero.right_count, zero.left_count) if cfg.swap_encoder_columns
+        else (zero.left_count, zero.right_count)
+    )
+    last_l, last_r = sgn_l * zero_l, sgn_r * zero_r
     out = []
     for i, row in enumerate(rows):
-        cur_l = sgn_l * row.left_count
-        cur_r = sgn_r * row.right_count
+        raw_l, raw_r = (
+            (row.right_count, row.left_count) if cfg.swap_encoder_columns
+            else (row.left_count, row.right_count)
+        )
+        cur_l = sgn_l * raw_l
+        cur_r = sgn_r * raw_r
         dt_s = (row.timestamp_ms - last_t_ms) / 1000.0 if i else 0.0
         if i and dt_s <= 0:
             raise ValueError("Timestamps não crescentes dentro da mesma sessão")
@@ -126,8 +142,8 @@ def convert_session(session: Iterable[RawPcntRow], cfg: Robot2026Profile) -> lis
         out.append({
             "timestamp_ms": row.timestamp_ms - zero.timestamp_ms,
             "timestamp_s": (row.timestamp_ms - zero.timestamp_ms) / 1000.0,
-            "left_ticks": cur_l - sgn_l * zero.left_count,
-            "right_ticks": cur_r - sgn_r * zero.right_count,
+            "left_ticks": cur_l - sgn_l * zero_l,
+            "right_ticks": cur_r - sgn_r * zero_r,
             "delta_left_ticks": delta_l,
             "delta_right_ticks": delta_r,
             "left_distance_m": dl,
@@ -148,7 +164,7 @@ def convert_session(session: Iterable[RawPcntRow], cfg: Robot2026Profile) -> lis
 
 
 def convert_uwb_session(session: Iterable[RawPcntRow]) -> list[dict]:
-    """Extrai ranges dos 5 slots UWB, convertendo cm e cm² em SI.
+    """Extrai ranges de N slots UWB, convertendo cm e cm² em SI.
 
     Repetição é sinalizada, não descartada. Um timestamp de registro no SD
     não equivale necessariamente ao instante físico da medição UWB.

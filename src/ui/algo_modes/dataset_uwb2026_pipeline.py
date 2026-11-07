@@ -53,7 +53,8 @@ def read_robot2026_profile_from_anchor_json(
         raise ValueError("robot_2026 deve ser um objeto JSON")
     allowed = {
         "wheel_radius_m", "wheel_base_m", "ticks_per_wheel_rev",
-        "invert_left", "invert_right", "left_scale", "right_scale",
+        "invert_left", "invert_right", "swap_encoder_columns",
+        "left_scale", "right_scale",
         "initial_x_m", "initial_y_m", "initial_theta_deg", "initial_theta_rad",
     }
     unknown = sorted(set(values) - allowed)
@@ -71,7 +72,7 @@ def read_robot2026_profile_from_anchor_json(
             if not math.isfinite(number):
                 raise ValueError("initial_theta_deg deve ser finito")
             params["initial_theta_rad"] = math.radians(number)
-        elif key in ("invert_left", "invert_right"):
+        elif key in ("invert_left", "invert_right", "swap_encoder_columns"):
             if type(value) is not bool:
                 raise ValueError(f"{key} deve ser booleano")
             params[key] = value
@@ -99,10 +100,10 @@ def read_pcnt_anchor_slot_mapping(anchor_json: str | Path,
             "e altere meta.example_only para false antes do ensaio"
         )
     mapping = data.get("pcnt_slot_to_anchor_index")
-    if not isinstance(mapping, list) or len(mapping) != 5:
+    if not isinstance(mapping, list) or len(mapping) < 3:
         raise ValueError(
-            "JSON precisa de pcnt_slot_to_anchor_index: 5 índices inteiros "
-            "(ou null) para os slots SPI 0..4"
+            "JSON precisa de pcnt_slot_to_anchor_index: índices inteiros "
+            "(ou null), um por slot SPI; ao menos 3 slots"
         )
     used: set[int] = set()
     output = []
@@ -140,13 +141,15 @@ def load_robot2026_single_tag_uwb(
     """
     if min_valid_anchors < 3 or min_sigma_m <= 0:
         raise ValueError("Min. 3 âncoras e sigma mínimo positivo necessários")
-    if anchor_count < 3 or len(slot_to_anchor_index) != 5:
+    if anchor_count < 3 or len(slot_to_anchor_index) < 3:
         raise ValueError("Layout/slots inválidos")
     assigned = [v for v in slot_to_anchor_index if v is not None]
     if any(not isinstance(v, int) or not 0 <= v < anchor_count for v in assigned):
         raise ValueError("Índice de slot fora do layout")
     if len(set(assigned)) != len(assigned):
         raise ValueError("Âncora mapeada repetidamente")
+    if min_valid_anchors > len(assigned):
+        raise ValueError("Mínimo de ranges supera número de âncoras mapeadas")
 
     path = Path(pcnt_path)
     sessions = load_pcnt_sessions(path)
@@ -156,7 +159,12 @@ def load_robot2026_single_tag_uwb(
     if not raw or not raw[0].uwb:
         raise ValueError(
             "Arquivo PCNT possui somente 5 colunas (sem UWB). "
-            "Para esta fonte, selecione um log bruto com 20 colunas."
+            "Para esta fonte, selecione um log bruto com 5+3*N colunas."
+        )
+    if len(raw[0].uwb) != len(slot_to_anchor_index):
+        raise ValueError(
+            f"Log tem {len(raw[0].uwb)} slots UWB, mas JSON mapeia "
+            f"{len(slot_to_anchor_index)}. Ajuste pcnt_slot_to_anchor_index."
         )
     odo = load_robot2026_odometry(
         path, session_id=session_id, profile=profile or ROBOT2026_PROFILE
@@ -205,6 +213,56 @@ def load_robot2026_single_tag_uwb(
     )
 
 
+
+
+def read_robot2026_view_settings(anchor_json: str | Path) -> dict:
+    """Define segmentação APENAS para interface; não altera batch/odometria.
+
+    Use 'time_windows' quando o contador da coluna 4 não representar voltas
+    reais. A janela é declarada em segundos, nunca chamada de volta.
+    """
+    with Path(anchor_json).open("r", encoding="utf-8") as stream:
+        data = json.load(stream)
+    cfg = data.get("view_2026", {})
+    if not isinstance(cfg, dict):
+        raise ValueError("view_2026 deve ser um objeto")
+    if set(cfg) - {"segmentation", "window_duration_s"}:
+        raise ValueError("Campos não reconhecidos em view_2026")
+    kind = cfg.get("segmentation", "lap_counter")
+    if kind not in ("lap_counter", "time_windows"):
+        raise ValueError("view_2026.segmentation deve ser lap_counter ou time_windows")
+    duration = cfg.get("window_duration_s", 80.0)
+    if isinstance(duration, bool) or not np.isfinite(float(duration)) or float(duration) <= 0:
+        raise ValueError("view_2026.window_duration_s deve ser positivo")
+    return {"segmentation":kind, "window_duration_s":float(duration)}
+
+
+def read_uwb2026_processing_settings(anchor_json: str | Path) -> dict:
+    """Configuração reproduzível de filtros sem modificar os dados brutos.
+
+    O padrão preserva as regras PR4/PR5. Para quatro âncoras e
+    trilateração 3D, pode-se exigir quatro medições novas.
+    """
+    with Path(anchor_json).open("r", encoding="utf-8") as file:
+        root = json.load(file)
+    config = root.get("uwb_2026", {})
+    if not isinstance(config, dict):
+        raise ValueError("uwb_2026 deve ser um objeto")
+    allowed = {"min_valid_anchors", "min_sigma_m"}
+    if set(config) - allowed:
+        raise ValueError(
+            "Campos inválidos em uwb_2026: " +
+            ", ".join(sorted(set(config) - allowed))
+        )
+    n = config.get("min_valid_anchors", 3)
+    sigma = config.get("min_sigma_m", .02)
+    if type(n) is not int or not 3 <= n <= 32:
+        raise ValueError("uwb_2026.min_valid_anchors deve ser inteiro entre 3 e 32")
+    if isinstance(sigma, bool) or not np.isfinite(float(sigma)) or float(sigma) <= 0:
+        raise ValueError("uwb_2026.min_sigma_m deve ser positivo")
+    return {"min_valid_anchors": n, "min_sigma_m": float(sigma)}
+
+
 def validate_robot2026_anchor_geometry(positions: np.ndarray) -> None:
     """Confere âncoras no referencial XY antes de iniciar os solvers."""
     positions = np.asarray(positions, dtype=float)
@@ -241,7 +299,8 @@ def inspect_robot2026_capture(
         "duration_s": round((rows[-1].timestamp_ms - rows[0].timestamp_ms) / 1000, 3),
         "median_log_period_ms": float(np.median(dt)) if dt.size else None,
         "laps_reported": int(rows[-1].lap_count - rows[0].lap_count),
-        "columns": 20 if rows[0].uwb else 5,
+        "columns": 5 + 3 * len(rows[0].uwb),
+        "uwb_slot_count": len(rows[0].uwb),
         "status": "odometry_only" if not rows[0].uwb else "blocked",
         "warnings": [],
     }
@@ -263,23 +322,45 @@ def inspect_robot2026_capture(
         validate_robot2026_anchor_geometry(pos)
         mapping = read_pcnt_anchor_slot_mapping(anchor_path, len(pos))
         profile = read_robot2026_profile_from_anchor_json(anchor_path)
+        settings = read_uwb2026_processing_settings(anchor_path)
         data = load_robot2026_single_tag_uwb(
             path, session_id=int(session_id),
             anchor_count=len(pos), slot_to_anchor_index=mapping,
-            profile=profile,
+            profile=profile, **settings,
         )
     except (ValueError, TypeError, KeyError, OSError) as exc:
         out["warnings"].append(str(exc))
         return out
 
+    # Timestamps no log ESP32 de mudanças nas triplas, não timestamps TWR.
+    # Permite diagnosticar a cadência OBSERVADA sem afirmar instante físico.
+    acquisition = []
+    for slot in range(len(mapping)):
+        valid_new = [
+            int(item["timestamp"])
+            for item in convert_uwb_session(rows)
+            if int(item["anchor_id"]) == slot and not item["possibly_reused"]
+        ]
+        deltas = np.diff(valid_new)
+        acquisition.append({
+            "slot": slot,
+            "anchor_index": mapping[slot],
+            "valid_new_readings": len(valid_new),
+            "median_log_update_ms": float(np.median(deltas)) if deltas.size else None,
+            "p95_log_update_ms": float(np.percentile(deltas, 95)) if deltas.size else None,
+        })
     out.update({
         "status": "ready_for_static_batch",
         "anchor_count": int(len(pos)),
         "spi_slot_to_anchor_index": list(mapping),
         "effective_cpr": profile.ticks_per_wheel_rev,
+        "raw_encoder_order_swapped": profile.swap_encoder_columns,
+        "new_ranges_required": settings["min_valid_anchors"],
         "start_pose_xytheta": [
             profile.initial_x_m, profile.initial_y_m, profile.initial_theta_rad
         ],
+        "uwb_slot_record_update_stats": acquisition,
+        "uwb_timing_note": "Diferenças entre timestamps de gravação no ESP32; NÃO são tempos de TWR físicos",
         "uwb_snapshots": data.sample_count,
         "uwb_valid_readings": data.valid_readings,
         "uwb_repeated_readings_excluded": data.repeated_readings,

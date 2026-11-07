@@ -440,11 +440,14 @@ def draw_dataset_sidebar_controls(mode):
         screen.blit(label, (sidebar_x, y - 17))
 
         mode.btn_lap_mode.rect.topleft = (sidebar_x, y)
-        mode.btn_lap_mode.text = {
-            "single": "Modo: Uma volta",
-            "range": "Modo: Intervalo",
-            "all": "Modo: Todas",
-        }.get(mode.odom_view_mode, "Modo: Uma volta")
+        is_time = getattr(mode, "_odom_is_time_window", False)
+        mode.btn_lap_mode.text = (
+            {"single": "Modo: Uma janela", "range": "Modo: Intervalo",
+             "all": "Modo: Todas"}.get(mode.odom_view_mode, "Modo: Uma janela")
+            if is_time else
+            {"single": "Modo: Uma volta", "range": "Modo: Intervalo",
+             "all": "Modo: Todas"}.get(mode.odom_view_mode, "Modo: Uma volta")
+        )
         mode.btn_lap_mode.draw(screen)
 
         if mode.odom_view_mode != "all":
