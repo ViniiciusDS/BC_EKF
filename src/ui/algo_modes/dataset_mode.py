@@ -189,6 +189,8 @@ class DatasetMode:
         self.robot2026_raw_dir = os.path.join("dados_reais", "robot2026")
         self.robot2026_processed_dir = os.path.join("resultados", "robot2026")
         self._robot2026_data = None
+        self.show_field_quality_panel = False
+        self._field_quality_report = None
         self._robot2026_uwb_data = None
         self._robot2026_uwb_indices = np.array([], dtype=int)
         # Seleção de voltas altera somente o desenho; preserva todas as amostras.
@@ -555,6 +557,8 @@ class DatasetMode:
             self._map_label = ""
 
             self._robot2026_data = data
+            self._field_quality_report = None
+            self.show_field_quality_panel = False
             self._robot2026_uwb_data = None
             self._robot2026_uwb_indices = np.array([], dtype=int)
             self._odom_is_time_window = False
@@ -695,7 +699,7 @@ class DatasetMode:
                 else None
             )
             report = build_field_diagnostic(
-                data.path, anchors, session_id=data.session_id
+                data.path, anchors, session_id=data.session_id, profile=data.profile
             )
             name = f"{data.path.stem}_sessao_{data.session_id:02d}_diagnostico.json"
             output = Path("resultados") / "robot2026" / name
@@ -708,6 +712,32 @@ class DatasetMode:
             )
         except (OSError, ValueError, TypeError, KeyError) as exc:
             self.host._set_msg(f"Falha no diagnóstico F9: {exc}")
+
+    def _toggle_field_quality_panel(self):
+        """F8 alterna painel descritivo para a sessão PCNT carregada."""
+        if self.dataset_source_type not in (
+            "real_odometry_2026", "real_odom_uwb_2026"
+        ) or self._robot2026_data is None:
+            self.host._set_msg("F8: carregue uma sessão PCNT 2026")
+            return
+        if self.show_field_quality_panel:
+            self.show_field_quality_panel = False
+            return
+        try:
+            data = self._robot2026_data
+            anchors = (
+                getattr(self, "_anchors_path", None)
+                if self.dataset_source_type == "real_odom_uwb_2026"
+                else None
+            )
+            # Recalcular apenas quando o usuário abrir, não a cada frame.
+            self._field_quality_report = build_field_diagnostic(
+                data.path, anchors, session_id=data.session_id,
+                profile=data.profile,
+            )
+            self.show_field_quality_panel = True
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            self.host._set_msg(f"Diagnóstico F8 indisponível: {exc}")
 
     def _toggle_odom_track_template(self):
         """Liga/desliga o contorno derivado da odometria, apenas no desenho."""
@@ -983,11 +1013,18 @@ class DatasetMode:
 
             elif event.type == pg.KEYDOWN:
                 if event.key == pg.K_ESCAPE:
+                    if self.show_field_quality_panel:
+                        self.show_field_quality_panel = False
+                        continue
                     if self.show_legend_overlay:
                         self.show_legend_overlay = False
                         continue
                     return _actions_menu()
                 
+                elif event.key == pg.K_F8:
+                    self._toggle_field_quality_panel()
+                    continue
+
                 elif event.key == pg.K_F9:
                     self._export_field_preflight()
                     continue
