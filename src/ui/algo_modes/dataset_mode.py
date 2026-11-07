@@ -53,6 +53,7 @@ from src.ui.algo_modes.dataset_render import (
     draw_dataset_analyzer,
 )
 from src.ui.algo_modes.dataset_modal import DatasetConfigModal
+from src.analysis.field_diagnostic import build_field_diagnostic, save_field_diagnostic
 from src.ui.algo_modes.dataset_odometry_pipeline import (
     ROBOT2026_PROFILE,
     load_robot2026_odometry,
@@ -676,6 +677,38 @@ class DatasetMode:
             return False
 
 
+    def _export_field_preflight(self):
+        """Salva relatório de aquisição para a sessão PCNT atualmente carregada.
+
+        Atalho F9: não modifica dados, poses, algoritmos ou configurações.
+        """
+        if self.dataset_source_type not in (
+            "real_odometry_2026", "real_odom_uwb_2026"
+        ) or self._robot2026_data is None:
+            self.host._set_msg("F9: carregue primeiro um log PCNT 2026")
+            return
+        try:
+            data = self._robot2026_data
+            anchors = (
+                getattr(self, "_anchors_path", None)
+                if self.dataset_source_type == "real_odom_uwb_2026"
+                else None
+            )
+            report = build_field_diagnostic(
+                data.path, anchors, session_id=data.session_id
+            )
+            name = f"{data.path.stem}_sessao_{data.session_id:02d}_diagnostico.json"
+            output = Path("resultados") / "robot2026" / name
+            save_field_diagnostic(report, output)
+            info = report["summary"]
+            self.host._set_msg(
+                f"Diagnóstico F9 salvo: {output} | {info['status']} "
+                f"| {len(report['slot_quality'])} slots | "
+                f"{len(info.get('warnings', []))} avisos"
+            )
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            self.host._set_msg(f"Falha no diagnóstico F9: {exc}")
+
     def _toggle_odom_track_template(self):
         """Liga/desliga o contorno derivado da odometria, apenas no desenho."""
         if self._odom_track_template is None:
@@ -955,6 +988,10 @@ class DatasetMode:
                         continue
                     return _actions_menu()
                 
+                elif event.key == pg.K_F9:
+                    self._export_field_preflight()
+                    continue
+
                 elif event.key == pg.K_F10:
                     if self.dataset_source_type == "real_odometry_2026":
                         self.host._set_msg("Odometria carregada: falta UWB para rodar algoritmos")
