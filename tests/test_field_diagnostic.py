@@ -1,4 +1,5 @@
 """Regressões do pré-diagnóstico de campo: nenhuma amostra é reescrita."""
+import ast
 import json
 import tempfile
 import unittest
@@ -39,6 +40,27 @@ class TestFieldDiagnostic(unittest.TestCase):
         for slot in range(4):
             cols.extend([base + slot * 10, 4, 2])
         return ",".join(str(x) for x in cols)
+
+    def test_f8_panel_is_called_by_dataset_renderer(self):
+        """Previne painel implementado mas nunca desenhado no PyGame."""
+        root = Path(__file__).resolve().parents[1]
+        render_source = (root / "src/ui/algo_modes/dataset_render.py").read_text(
+            encoding="utf-8"
+        )
+        tree = ast.parse(render_source)
+        renderer = next(
+            n for n in tree.body
+            if isinstance(n, ast.FunctionDef) and n.name == "draw_dataset_mode"
+        )
+        calls = [
+            n.func.id for n in ast.walk(renderer)
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+        ]
+        self.assertIn("draw_field_quality_panel", calls)
+        self.assertLess(
+            calls.index("draw_dataset_legend"),
+            calls.index("draw_field_quality_panel"),
+        )
 
     def test_counts_reused_and_new_without_modifying_log(self):
         file = self.root / "pcnt_test.csv"
