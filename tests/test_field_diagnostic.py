@@ -58,6 +58,31 @@ class TestFieldDiagnostic(unittest.TestCase):
         out = save_field_diagnostic(report, self.root / "reports" / "check.json")
         self.assertEqual(json.loads(out.read_text(encoding="utf-8"))["session_id"], 1)
 
+    def test_encoder_summary_uses_configured_profile(self):
+        file = self.root / "encoders.csv"
+        file.write_text("\\n".join([
+            self._row(0, 0, 180), self._row(250, 1, 181),
+            self._row(500, 2, 182),
+        ]) + "\\n", encoding="utf-8")
+        report = build_field_diagnostic(file, self.anchor)
+        encoder = report["encoder_quality"]
+        self.assertEqual(encoder["sample_count"], 3)
+        self.assertEqual(encoder["median_period_s"], 0.25)
+        self.assertEqual(encoder["profile"]["ticks_per_wheel_rev"], 4560)
+        self.assertTrue(encoder["profile"]["swap_encoder_columns"])
+        self.assertGreater(encoder["estimated_travel_m"], 0)
+        self.assertGreaterEqual(encoder["max_abs_linear_speed_m_s"], 0)
+
+    def test_zero_motion_does_not_invent_speed(self):
+        file = self.root / "stopped.csv"
+        file.write_text("\\n".join([
+            self._row(0, 0, 180), self._row(250, 0, 180),
+        ]) + "\\n", encoding="utf-8")
+        encoder = build_field_diagnostic(file, self.anchor)["encoder_quality"]
+        self.assertEqual(encoder["estimated_travel_m"], 0)
+        self.assertEqual(encoder["max_abs_linear_speed_m_s"], 0)
+        self.assertEqual(encoder["max_abs_angular_speed_rad_s"], 0)
+
     def test_separates_reset_sessions(self):
         file = self.root / "multi.csv"
         file.write_text("\n".join([
