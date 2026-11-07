@@ -21,8 +21,9 @@ class TestSingleTagFieldAnalyzer(unittest.TestCase):
             estimates, "reference_route", reference_route=route,
         )
         self.assertEqual(stats["lms"]["n"], 3)
-        self.assertAlmostEqual(stats["lms"]["mae"], 1 / 3)
-        self.assertAlmostEqual(stats["lms"]["rmse"], np.sqrt(1/3))
+        # O ponto [1.5,1] está a 0.5 m do segmento vertical x=2.
+        self.assertAlmostEqual(stats["lms"]["mae"], 0.5 / 3)
+        self.assertAlmostEqual(stats["lms"]["rmse"], np.sqrt(0.25 / 3))
 
     def test_encoder_comparison_aligns_at_original_sample_indices(self):
         odom = np.column_stack((
