@@ -1,4 +1,5 @@
 """Regressões do pré-diagnóstico de campo: nenhuma amostra é reescrita."""
+import ast
 import json
 import tempfile
 import unittest
@@ -40,6 +41,27 @@ class TestFieldDiagnostic(unittest.TestCase):
             cols.extend([base + slot * 10, 4, 2])
         return ",".join(str(x) for x in cols)
 
+    def test_f8_panel_is_called_by_dataset_renderer(self):
+        """Previne painel implementado mas nunca desenhado no PyGame."""
+        root = Path(__file__).resolve().parents[1]
+        render_source = (root / "src/ui/algo_modes/dataset_render.py").read_text(
+            encoding="utf-8"
+        )
+        tree = ast.parse(render_source)
+        renderer = next(
+            n for n in tree.body
+            if isinstance(n, ast.FunctionDef) and n.name == "draw_dataset_mode"
+        )
+        calls = [
+            n.func.id for n in ast.walk(renderer)
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+        ]
+        self.assertIn("draw_field_quality_panel", calls)
+        self.assertLess(
+            calls.index("draw_dataset_legend"),
+            calls.index("draw_field_quality_panel"),
+        )
+
     def test_counts_reused_and_new_without_modifying_log(self):
         file = self.root / "pcnt_test.csv"
         file.write_text("\n".join([
@@ -57,6 +79,31 @@ class TestFieldDiagnostic(unittest.TestCase):
         self.assertEqual(report["slot_quality"][1]["repeated_valid"], 1)
         out = save_field_diagnostic(report, self.root / "reports" / "check.json")
         self.assertEqual(json.loads(out.read_text(encoding="utf-8"))["session_id"], 1)
+
+    def test_encoder_summary_uses_configured_profile(self):
+        file = self.root / "encoders.csv"
+        file.write_text("\n".join([
+            self._row(0, 0, 180), self._row(250, 1, 181),
+            self._row(500, 2, 182),
+        ]) + "\n", encoding="utf-8")
+        report = build_field_diagnostic(file, self.anchor)
+        encoder = report["encoder_quality"]
+        self.assertEqual(encoder["sample_count"], 3)
+        self.assertEqual(encoder["median_period_s"], 0.25)
+        self.assertEqual(encoder["profile"]["ticks_per_wheel_rev"], 4560)
+        self.assertTrue(encoder["profile"]["swap_encoder_columns"])
+        self.assertGreater(encoder["estimated_travel_m"], 0)
+        self.assertGreaterEqual(encoder["max_abs_linear_speed_m_s"], 0)
+
+    def test_zero_motion_does_not_invent_speed(self):
+        file = self.root / "stopped.csv"
+        file.write_text("\n".join([
+            self._row(0, 0, 180), self._row(250, 0, 180),
+        ]) + "\n", encoding="utf-8")
+        encoder = build_field_diagnostic(file, self.anchor)["encoder_quality"]
+        self.assertEqual(encoder["estimated_travel_m"], 0)
+        self.assertEqual(encoder["max_abs_linear_speed_m_s"], 0)
+        self.assertEqual(encoder["max_abs_angular_speed_rad_s"], 0)
 
     def test_separates_reset_sessions(self):
         file = self.root / "multi.csv"
