@@ -688,3 +688,5 @@ def draw_dataset_mode(mode):
         draw_dataset_analyzer(mode)
 
     draw_dataset_legend(mode)
+    # Renderizacao do painel F8 depois do Analyzer e da legenda.
+    draw_field_quality_panel(mode)
