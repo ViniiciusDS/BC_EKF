@@ -174,6 +174,8 @@ def draw_analyzer_panel(
     y: int = 10,
     w: int = 500,
     h: int = 380,
+    column_titles=("RMSE", "MAE", "Max"),
+    boxplot_title="Boxplot de erro",
     panel_fill=(250, 250, 252, 238),
     box_fill=(242, 242, 245),
     border=(120, 120, 130),
@@ -199,9 +201,9 @@ def draw_analyzer_panel(
     y0 = y + 48
 
     screen.blit(font.render("Algoritmo", True, header), (col_algo, y0))
-    screen.blit(font.render("RMSE", True, header), (col_rmse, y0))
-    screen.blit(font.render("MAE", True, header), (col_mae, y0))
-    screen.blit(font.render("Max", True, header), (col_max, y0))
+    screen.blit(font.render(column_titles[0], True, header), (col_rmse, y0))
+    screen.blit(font.render(column_titles[1], True, header), (col_mae, y0))
+    screen.blit(font.render(column_titles[2], True, header), (col_max, y0))
 
     ordered = ordered_active_algos(stats, selected)
     row_y = y0 + 28
@@ -218,9 +220,9 @@ def draw_analyzer_panel(
         pg.draw.rect(screen, border, (x, y, w, h), 1)
         screen.blit(bigfont.render(title, True, (20, 20, 20)), (x + 12, y + 10))
         screen.blit(font.render("Algoritmo", True, header), (col_algo, y0))
-        screen.blit(font.render("RMSE", True, header), (col_rmse, y0))
-        screen.blit(font.render("MAE", True, header), (col_mae, y0))
-        screen.blit(font.render("Max", True, header), (col_max, y0))
+        screen.blit(font.render(column_titles[0], True, header), (col_rmse, y0))
+        screen.blit(font.render(column_titles[1], True, header), (col_mae, y0))
+        screen.blit(font.render(column_titles[2], True, header), (col_max, y0))
 
     for algo in ordered:
         st = stats[algo]
@@ -265,6 +267,7 @@ def draw_analyzer_panel(
             box_h,
             selected=selected,
             box_fill=box_fill,
+            plot_title=boxplot_title,
         )
 
 def draw_boxplot_panel(
@@ -279,6 +282,7 @@ def draw_boxplot_panel(
     *,
     selected=None,
     box_fill=(242, 242, 245),
+    plot_title="Boxplot de erro",
 ):
     '''Desenha um boxplot horizontal para os algoritmos listados, usando as estatísticas fornecidas.'''
     if not ordered_algos:
@@ -286,7 +290,7 @@ def draw_boxplot_panel(
 
     pg.draw.rect(screen, box_fill, (x, y, w, h))
     pg.draw.rect(screen, (150, 150, 150), (x, y, w, h), 1)
-    screen.blit(font.render("Boxplot de erro", True, (50, 50, 50)), (x + 6, y + 4))
+    screen.blit(font.render(plot_title, True, (50, 50, 50)), (x + 6, y + 4))
 
     rank_pos = ranking_positions(stats, selected=selected)
 

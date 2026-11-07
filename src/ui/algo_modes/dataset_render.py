@@ -496,27 +496,50 @@ def draw_dataset_status(mode):
 
 
 def draw_dataset_analyzer(mode):
+    """Mostra métricas adequadas à referência; nunca rotula a pista como GT."""
     if not getattr(mode, "show_analyzer", True):
         return
 
-    if getattr(mode, "_dataset_stats", None) is None:
+    is_single_tag = getattr(mode, "dataset_source_type", "") == "real_odom_uwb_2026"
+    stats = getattr(mode, "_dataset_stats", None)
+    if not stats:
+        # Ao clicar em "Mostrar", exibir informação em vez de botão inerte.
+        if is_single_tag and getattr(mode, "_batch_results", None) is not None:
+            screen = mode.host.screen
+            panel = pg.Surface((500, 90), pg.SRCALPHA)
+            panel.fill((250, 250, 252, 240))
+            screen.blit(panel, (10, 40))
+            font = mode.host.font
+            screen.blit(font.render("Analyzer - Sem comparacao disponivel", True, (30, 30, 30)), (20, 52))
+            screen.blit(font.render("Confira a rota nominal ou a serie UWB do batch.", True, (60, 60, 70)), (20, 82))
         return
 
-    title = "Dataset Analyzer"
+    title = f"Dataset Analyzer - {mode._metric_mode_label()}"
+    column_titles = ("RMSE", "MAE", "Max")
+    boxplot_title = "Boxplot de erro"
 
-    if hasattr(mode, "_metric_mode_label"):
-        try:
-            title = f"Dataset Analyzer - {mode._metric_mode_label()}"
-        except Exception:
-            title = "Dataset Analyzer"
+    if is_single_tag:
+        # São distâncias geométricas / diferenças odométricas, NÃO
+        # estimativas do erro de posição verdadeiro.
+        captions = {
+            "reference_route": ("Analyzer - Rota nominal (nao GT)", "Distancia a pista nominal (m)"),
+            "encoder_route": ("Analyzer - UWB x odometria (nao GT)", "Distancia entre trajetorias (m)"),
+            "cluster": ("Analyzer - Dispersao (nao erro)", "Distancia ao centroide (m)"),
+        }
+        title, boxplot_title = captions.get(
+            mode.metric_mode, ("Analyzer - Sem ground truth", "Distancia (m)")
+        )
+        column_titles = ("RMS", "Media", "Max")
 
     draw_analyzer_panel(
         screen=mode.host.screen,
         font=mode.host.font,
         bigfont=mode.host.bigfont,
         title=title,
-        stats=mode._dataset_stats,
+        stats=stats,
         selected=mode.selected,
+        column_titles=column_titles,
+        boxplot_title=boxplot_title,
         x=10,
         y=40,
         w=500,
@@ -533,7 +556,20 @@ def draw_robot2026_odometry_info(mode):
         return
     screen = mode.host.screen
     font = mode.host.font
+    # Quando o Analyzer está visível, o painel PCNT vai para a direita.
+    # Evita sobrepor duas superfícies em (10,40), preservando o status.
+    show_summary_compact = (
+        getattr(mode, "dataset_source_type", "") == "real_odom_uwb_2026"
+        and getattr(mode, "show_analyzer", False)
+        and bool(getattr(mode, "_dataset_stats", None))
+    )
+    world_width = int(getattr(mode.host.cam, "viewport", (screen.get_width(),))[0])
     x, y, w, h = 10, 40, 485, 150
+    if show_summary_compact:
+        if world_width <= 935:
+            return  # largura insuficiente: prioriza Analyzer
+        w = min(405, world_width - 530)
+        x = world_width - w - 8
     panel = pg.Surface((w, h), pg.SRCALPHA)
     panel.fill((250, 250, 252, 224))
     screen.blit(panel, (x, y))
@@ -563,6 +599,15 @@ def draw_robot2026_odometry_info(mode):
             f"PCNT: {odom.sample_count} | UWB batch: {combined.sample_count} "
             f"| repetidas: {combined.repeated_readings}"
         )
+    if show_summary_compact:
+        lines = [
+            f"PCNT + UWB | Sessao {odom.session_id}",
+            f"PCNT: {odom.sample_count} | UWB: {combined.sample_count}",
+            f"Repetidas: {combined.repeated_readings}",
+            f"Exibindo: {mode._odometry_view_label()}",
+            f"CPR: {odom.profile.ticks_per_wheel_rev:.0f} | Base: {odom.profile.wheel_base_m:.3f}m",
+            "Sem ground truth sincronizado",
+        ]
     for i, line in enumerate(lines):
         text_surface = font.render(line, True, (30, 30, 40))
         screen.blit(text_surface, (x + 8, y + 7 + 23 * i))

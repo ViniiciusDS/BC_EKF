@@ -286,6 +286,78 @@ def build_error_stats_with_p95(errs):
     return st
 
 
+def compute_matched_track_difference_stats(results, reference_xy, algo_order=None):
+    """Diferença ponto a ponto de duas séries já sincronizadas por amostra.
+
+    A referência pode ser ODOMETRIA (não ground truth). Exige comprimentos
+    idênticos: truncar silenciosamente corromperia o alinhamento temporal.
+    Ignora apenas pares com coordenadas não finitas, preservando os índices.
+    """
+    ref = np.asarray(reference_xy, dtype=float)
+    if ref.ndim != 2 or ref.shape[1] < 2 or not len(ref):
+        return None
+    ordered = list(algo_order) if algo_order is not None else list(results)
+    stats = {}
+    for algo in ordered:
+        res = results.get(algo)
+        if not isinstance(res, dict):
+            continue
+        positions = res.get("posicoes")
+        if positions is None:
+            continue
+        pos = np.asarray(positions, dtype=float)
+        if pos.ndim != 2 or pos.shape[1] < 2 or len(pos) != len(ref):
+            continue
+        valid = np.isfinite(pos[:, :2]).all(axis=1) & np.isfinite(ref[:, :2]).all(axis=1)
+        if not np.any(valid):
+            continue
+        distance = np.linalg.norm(pos[valid, :2] - ref[valid, :2], axis=1)
+        st = build_error_stats_with_p95(distance)
+        if st is not None:
+            st["algo"] = algo
+            st["comparison_type"] = "difference_to_odometry_not_ground_truth"
+            stats[algo] = st
+    return stats or None
+
+
+def compute_single_tag_field_stats(
+    results,
+    metric_mode,
+    *,
+    reference_route=None,
+    odometry_poses=None,
+    sample_indices=None,
+    algo_order=None,
+):
+    """Comparações descritivas de uma tag real SEM ground truth sincronizado.
+
+    reference_route: distância ortogonal à polilinha espacial nominal.
+    encoder_route: diferença aos encoders nos índices reais do PCNT.
+    cluster: dispersão em torno do centróide (não representa precisão).
+    Não implementa reference_synced, pois a rota MATLAB não tem timestamps.
+    """
+    if metric_mode == "reference_route":
+        return compute_track_vs_polyline_stats(
+            results, reference_route, algo_order=algo_order
+        )
+    if metric_mode == "encoder_route":
+        if odometry_poses is None or sample_indices is None:
+            return None
+        full = np.asarray(odometry_poses, dtype=float)
+        indices = np.asarray(sample_indices)
+        if (full.ndim != 2 or full.shape[1] < 2
+                or indices.ndim != 1 or not len(indices)
+                or not np.issubdtype(indices.dtype, np.integer)
+                or indices.min() < 0 or indices.max() >= len(full)):
+            return None
+        return compute_matched_track_difference_stats(
+            results, full[indices, :2], algo_order=algo_order
+        )
+    if metric_mode == "cluster":
+        return compute_dataset_cluster_stats(results, algo_order=algo_order)
+    return None
+
+
 def compute_track_vs_polyline_stats(results, reference_polyline, algo_order=None):
     stats = {}
     ordered = list(algo_order) if algo_order is not None else list(results.keys())
