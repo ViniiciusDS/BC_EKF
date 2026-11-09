@@ -1,0 +1,76 @@
+{
+  "meta": {
+    "example_only": false,
+    "test_id": "SYNTHETIC_7ANC",
+    "synthetic": true,
+    "warning": "DADOS 100% SINTETICOS; nao usar como calibracao do campo",
+    "tag_height_assumed_m": 0.5,
+    "anchors_5_7": "POSICOES INVENTADAS APENAS PARA TESTE"
+  },
+  "anchors_xy": [
+    [
+      0.77,
+      1.77,
+      1.85
+    ],
+    [
+      0.0,
+      0.0,
+      1.63
+    ],
+    [
+      -2.66,
+      0.13,
+      1.28
+    ],
+    [
+      -3.04,
+      2.1,
+      0.86
+    ],
+    [
+      -1.42,
+      2.85,
+      1.5
+    ],
+    [
+      0.55,
+      -0.65,
+      1.5
+    ],
+    [
+      -3.42,
+      1.14,
+      1.6
+    ]
+  ],
+  "pcnt_slot_to_anchor_index": [
+    null,
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+  ],
+  "robot_2026": {
+    "wheel_radius_m": 0.03425,
+    "wheel_base_m": 0.229,
+    "ticks_per_wheel_rev": 4560,
+    "swap_encoder_columns": true,
+    "invert_left": true,
+    "invert_right": false,
+    "initial_x_m": -0.56,
+    "initial_y_m": 0.76,
+    "initial_theta_deg": -138.506328845
+  },
+  "uwb_2026": {
+    "min_valid_anchors": 4,
+    "min_sigma_m": 0.02
+  },
+  "view_2026": {
+    "segmentation": "time_windows",
+    "window_duration_s": 80
+  }
+}

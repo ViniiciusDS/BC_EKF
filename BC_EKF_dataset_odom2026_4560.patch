@@ -1,0 +1,634 @@
+diff --git a/src/ui/algo_modes/dataset_mode.py b/src/ui/algo_modes/dataset_mode.py
+--- a/src/ui/algo_modes/dataset_mode.py
++++ b/src/ui/algo_modes/dataset_mode.py
+@@ -56,6 +56,11 @@
+     normalize_simulated_dataset_by_kind,
+     normalize_simulated_kind,
+ )
++from src.ui.algo_modes.dataset_odometry_pipeline import (
++    ROBOT2026_PROFILE,
++    load_robot2026_odometry,
++    resolve_robot2026_source,
++)
+ from src.ui.algo_modes.dataset_io import (
+     apply_anchors_to_dataset_mode,
+     apply_route_to_dataset_mode,
+@@ -155,10 +160,14 @@
+         self.available_dataset_sources = [
+             "Simulado",
+             "Real (encoder + UWB)",
++            "Real (odometria 2026)",
+         ]
+ 
+ 
+         self.real_data_dir = os.path.join("resultados", "datasets")
++        self.robot2026_raw_dir = os.path.join("dados_reais", "robot2026")
++        self.robot2026_processed_dir = os.path.join("resultados", "robot2026")
++        self._robot2026_data = None
+ 
+         self.show_analyzer = True
+         self.btn_toggle_analyzer = Button(
+@@ -252,6 +261,8 @@
+         anchor_file = getattr(self, "_modal_anchor_file", "")
+         route_file = getattr(self, "_modal_route_file", "")
+         map_file = getattr(self, "_modal_map_file", "")
++        odom_file = getattr(self, "_modal_odom_file", "")
++        odom_session = getattr(self, "_modal_odom_session", "1")
+         simulated_kind = getattr(
+             self,
+             "_modal_simulated_kind",
+@@ -267,6 +278,8 @@
+             route_file=route_file,
+             map_file=map_file,
+             simulated_kind=simulated_kind,
++            odom_file=odom_file,
++            odom_session=odom_session,
+         )
+ 
+     def _apply_dataset_config_values(
+@@ -279,13 +292,21 @@
+             route_file="",
+             map_file="",
+             simulated_kind="Front",
++            odom_file="",
++            odom_session="1",
+         ):
+         """
+         Núcleo do fluxo de carregamento de dataset extraído de _apply_dataset_config().
+         Recebe os nomes de arquivo/paths a partir do modal novo e reaplica a lógica
+         existente sem depender diretamente dos `dataset_inputs`.
+         """
+-        # decide tipo a partir dos arquivos passados: prioridade para real se houver arquivos reais
++        # O modo de odometria isolada é explícito: não exige UWB nem âncoras.
++        if self.dataset_source_type == "real_odometry_2026":
++            return self._apply_robot2026_odometry_config(
++                odom_file, odom_session, route_file, map_file
++            )
++
++        # Outros modos mantêm comportamento anterior.
+         is_real = bool(real_encoder_file or real_uwb_file)
+         self._bc_ekf_data = None
+ 
+@@ -414,6 +435,69 @@
+         else:
+             self.host._set_msg("Dataset configurado")
+ 
++    def _apply_robot2026_odometry_config(self, selection, session, route_file, map_file):
++        """Carrega trajetória real calculada dos ticks, usando CPR experimental 4560.
++
++        Nunca interpreta a odometria como ground truth. Não altera os pipelines
++        simulados nem o modo real encoder + UWB existente.
++        """
++        try:
++            if not selection:
++                raise ValueError("Selecione um arquivo PCNT ou encoder convertido")
++            path = resolve_robot2026_source(
++                selection, self.robot2026_raw_dir, self.robot2026_processed_dir
++            )
++            session_id = int(session or 1)
++            result = load_robot2026_odometry(
++                path, session_id=session_id, profile=ROBOT2026_PROFILE
++            )
++            # Primeiro valida a entrada; só então altera estado da interface.
++            self._batch_dists = None
++            self._batch_devs = None
++            self._batch_results = None
++            self._dataset_stats = None
++            self._bc_ekf_data = None
++            self._dataset_truth = None
++            self._dataset_anchors = None
++            self._anchors_uwb_ids = None
++            self._real_dataset = None
++            self._real_uwb_rows = None
++            self._reference_route_display = None
++            self._reference_route_dense = None
++            self._route_waypoints = None
++            self._map_env = None
++
++            self._robot2026_data = result
++            self._dataset_path = str(result.path)
++            self._dataset_route = result.poses_xytheta.copy()
++            self._real_odom_path = result.poses_xytheta.tolist()
++            self._real_timestamps = result.timestamps_s.tolist()
++            self._dataset_label = f"ODOM2026 sess={result.session_id} CPR=4560"
++            # Preserva o estado ao alternar entre Dataset, Step e Monte Carlo.
++            self.host._dataset_path = self._dataset_path
++            self.host._dataset_label = self._dataset_label
++            self.host._batch_dists = None
++            self.host._batch_results = None
++            self.host._dataset_anchors = None
++            if route_file and not self._try_load_route(
++                os.path.join(self.routes_dir, route_file)
++            ):
++                return False
++            if map_file and not self._try_load_map(
++                os.path.join(self.maps_dir, map_file)
++            ):
++                return False
++            self.dataset_modal.close()
++            self.host._set_msg(
++                f"Odometria: {result.sample_count} amostras, "
++                f"{result.duration_s:.1f}s, CPR 4560. Sem UWB."
++            )
++            return True
++        except Exception as exc:
++            print(f"[DATASET_ODOM_2026] {type(exc).__name__}: {exc}")
++            self.host._set_msg(f"Erro odometria 2026: {exc}")
++            return False
++
+     def _refresh_dataset_algo_buttons(self):
+         """
+         Atualiza texto dos botões laterais considerando variantes.
+@@ -628,6 +712,9 @@
+                     return _actions_menu()
+                 
+                 elif event.key == pg.K_F10:
++                    if self.dataset_source_type == "real_odometry_2026":
++                        self.host._set_msg("Odometria carregada; sem UWB para rodar algoritmos")
++                        continue
+                     try:
+                         if self._batch_dists is None:
+                             raise ValueError("Nenhum dataset batch carregado")
+@@ -776,6 +863,9 @@
+     def _run_batch(self):
+         '''Executa os algoritmos selecionados no batch atual.
+         Verifica pré-requisitos (dataset, âncoras, tipo) e prepara dados'''
++        if self.dataset_source_type == "real_odometry_2026":
++            self.host._set_msg("Odometria carregada. Para o batch, adicione ranges UWB.")
++            return
+         if self._batch_dists is None:
+             self.host._set_msg("Carregue um dataset primeiro")
+             return
+diff --git a/src/ui/algo_modes/dataset_modal.py b/src/ui/algo_modes/dataset_modal.py
+--- a/src/ui/algo_modes/dataset_modal.py
++++ b/src/ui/algo_modes/dataset_modal.py
+@@ -11,6 +11,7 @@
+     ModalButtonBar,
+ )
+ from src.ui.algo_modes.shared import list_files_by_extension
++from src.ui.algo_modes.dataset_odometry_pipeline import list_robot2026_sources
+ 
+ class DatasetConfigModal:
+     """
+@@ -29,7 +30,7 @@
+         self.dd_source = TextBoxDropdown(
+             pg.Rect(0, 0, 440, 30),
+             font,
+-            options=["Simulado", "Real (encoder + UWB)"],
++            options=["Simulado", "Real (encoder + UWB)", "Real (odometria 2026)"],
+         )
+ 
+         self.dd_sim_kind = TextBoxDropdown(
+@@ -41,6 +42,11 @@
+         self.dd_dataset = TextBoxDropdown(pg.Rect(0, 0, 440, 30), font, options=[])
+         self.dd_encoder = TextBoxDropdown(pg.Rect(0, 0, 440, 30), font, options=[])
+         self.dd_uwb = TextBoxDropdown(pg.Rect(0, 0, 440, 30), font, options=[])
++        # Novo perfil: usa o arquivo bruto do PCNT ou uma sessão convertida.
++        self.dd_odom = TextBoxDropdown(pg.Rect(0, 0, 440, 30), font, options=[], max_len=255)
++        self.dd_odom_session = TextBoxDropdown(
++            pg.Rect(0, 0, 440, 30), font, options=["1", "2"], max_len=8
++        )
+         self.dd_anchors = TextBoxDropdown(pg.Rect(0, 0, 440, 30), font, options=[])
+         self.dd_route = TextBoxDropdown(pg.Rect(0, 0, 440, 30), font, options=[])
+         self.dd_map = TextBoxDropdown(pg.Rect(0, 0, 440, 30), font, options=[])
+@@ -65,6 +71,14 @@
+             FormDropdownRow("Mapa:", self.dd_map),
+         ]
+ 
++        self.rows_odometry = [
++            FormDropdownRow("Fonte:", self.dd_source),
++            FormDropdownRow("Arquivo PCNT:", self.dd_odom),
++            FormDropdownRow("Sessão (bruto):", self.dd_odom_session),
++            FormDropdownRow("Rota ref.:", self.dd_route),
++            FormDropdownRow("Mapa:", self.dd_map),
++        ]
++
+         self.open_dropdown = None
+         self.max_dropdown_items = 7
+         
+@@ -77,8 +91,13 @@
+         source = getattr(self.mode, "dataset_source_type", "simulated")
+         if source == "real_encoder_uwb":
+             self.dd_source.set_text("Real (encoder + UWB)")
++        elif source == "real_odometry_2026":
++            self.dd_source.set_text("Real (odometria 2026)")
+         else:
+             self.dd_source.set_text("Simulado")
++
++        if not self.dd_odom_session.text:
++            self.dd_odom_session.set_text("2")  # sessão longa do ensaio anterior
+ 
+         kind = getattr(self.mode, "simulated_dataset_kind", "Front")
+ 
+@@ -142,7 +161,7 @@
+ 
+         self._set_dropdown_options(
+             self.dd_source,
+-            ["Simulado", "Real (encoder + UWB)"],
++            ["Simulado", "Real (encoder + UWB)", "Real (odometria 2026)"],
+         )
+ 
+         self._set_dropdown_options(
+@@ -171,6 +190,16 @@
+             self.dd_uwb,
+             uwb_filtered if uwb_filtered else uwb_files,
+         )
++
++        # Mostra somente arquivos brutos PCNT ou sessões do novo conversor.
++        self._set_dropdown_options(
++            self.dd_odom,
++            list_robot2026_sources(
++                getattr(m, "robot2026_raw_dir", "dados_reais/robot2026"),
++                getattr(m, "robot2026_processed_dir", "resultados/robot2026"),
++            ),
++        )
++        self._set_dropdown_options(self.dd_odom_session, ["1", "2", "3", "4", "5"])
+ 
+         self._set_dropdown_options(
+             self.dd_anchors,
+@@ -243,9 +272,14 @@
+             screen.blit(txt, (item_rect.x + 6, item_rect.y + 5))
+ 
+     def is_real(self):
+-        return (self.dd_source.text or "").strip().lower().startswith("real")
++        return (self.dd_source.text or "").strip() == "Real (encoder + UWB)"
++
++    def is_odometry(self):
++        return (self.dd_source.text or "").strip() == "Real (odometria 2026)"
+ 
+     def active_rows(self):
++        if self.is_odometry():
++            return self.rows_odometry
+         return self.rows_real if self.is_real() else self.rows_sim
+ 
+     def draw(self):
+@@ -431,9 +465,19 @@
+         m = self.mode
+ 
+         is_real = self.is_real()
+-        m.dataset_source_type = "real_encoder_uwb" if is_real else "simulated"
+-
+-        if is_real:
++        is_odometry = self.is_odometry()
++        m.dataset_source_type = (
++            "real_odometry_2026" if is_odometry else
++            "real_encoder_uwb" if is_real else "simulated"
++        )
++
++        if is_odometry:
++            m._modal_odom_file = self.dd_odom.text.strip()
++            m._modal_odom_session = self.dd_odom_session.text.strip() or "1"
++            m._modal_dataset_file = ""
++            m._modal_real_encoder_file = ""
++            m._modal_real_uwb_file = ""
++        elif is_real:
+             m._modal_real_encoder_file = self.dd_encoder.text.strip()
+             m._modal_real_uwb_file = self.dd_uwb.text.strip()
+             m._modal_dataset_file = ""
+diff --git a/src/ui/algo_modes/dataset_render.py b/src/ui/algo_modes/dataset_render.py
+--- a/src/ui/algo_modes/dataset_render.py
++++ b/src/ui/algo_modes/dataset_render.py
+@@ -287,7 +287,7 @@
+     # Rota odométrica/reconstruída. Evita duplicar se for igual à referência.
+     odom = (
+         getattr(mode, "_dataset_route", None)
+-        if getattr(mode, "dataset_source_type", "") == "real_encoder_uwb"
++        if getattr(mode, "dataset_source_type", "") in ("real_encoder_uwb", "real_odometry_2026")
+         else None
+     )
+ 
+@@ -391,6 +391,14 @@
+         n = int(mode._batch_dists.shape[0])
+         txt = font.render(f"Amostras: {n}", True, (150, 150, 150))
+         screen.blit(txt, (sidebar_x, y))
++    elif getattr(mode, "dataset_source_type", "") == "real_odometry_2026":
++        odom = getattr(mode, "_robot2026_data", None)
++        if odom is not None:
++            txt = font.render(
++                f"Odometria: {odom.sample_count} pontos / {odom.duration_s:.1f} s",
++                True, (110, 110, 110)
++            )
++            screen.blit(txt, (sidebar_x, y))
+ 
+ 
+ def draw_dataset_analyzer(mode):
+@@ -422,6 +430,32 @@
+     )
+ 
+ 
++def draw_robot2026_odometry_info(mode):
++    """Informações da odometria isolada sem inventar métricas de ground truth."""
++    if getattr(mode, "dataset_source_type", "") != "real_odometry_2026":
++        return
++    odom = getattr(mode, "_robot2026_data", None)
++    if odom is None or odom.sample_count == 0:
++        return
++    screen = mode.host.screen
++    font = mode.host.font
++    x, y, w, h = 10, 40, 460, 100
++    panel = pg.Surface((w, h), pg.SRCALPHA)
++    panel.fill((250, 250, 252, 224))
++    screen.blit(panel, (x, y))
++    pg.draw.rect(screen, (125, 125, 135), pg.Rect(x, y, w, h), 1)
++    xf, yf, theta = odom.poses_xytheta[-1]
++    labels = [
++        "Odometria real — sem UWB / sem ground truth",
++        f"Sessão {odom.session_id} | {odom.sample_count} amostras | {odom.duration_s:.1f} s",
++        f"Roda {odom.profile.wheel_radius_m:.5f} m | Base {odom.profile.wheel_base_m:.3f} m | CPR {odom.profile.ticks_per_wheel_rev:.0f}",
++        f"Pose final: x={xf:.3f} m, y={yf:.3f} m, heading={np.degrees(theta) % 360:.1f}°",
++    ]
++    for i, line in enumerate(labels):
++        surface = font.render(line, True, (30, 30, 40))
++        screen.blit(surface, (x + 8, y + 7 + 23 * i))
++
++
+ def draw_dataset_legend(mode):
+     if getattr(mode, "show_legend_overlay", False):
+         mode._legend_close_rect = draw_legend_overlay(
+@@ -440,6 +474,7 @@
+     O modal ainda fica no dataset_mode.py por enquanto.
+     """
+     draw_dataset_world(mode)
++    draw_robot2026_odometry_info(mode)
+     draw_dataset_status(mode)
+     draw_dataset_sidebar_controls(mode)
+ 
+diff --git a/src/ui/algo_modes/dataset_odometry_pipeline.py b/src/ui/algo_modes/dataset_odometry_pipeline.py
+new file mode 100644
+--- /dev/null
++++ b/src/ui/algo_modes/dataset_odometry_pipeline.py
+@@ -0,0 +1,169 @@
++"""Importação de odometria real do carrinho 2WD 2026 para o Dataset Mode.
++
++Este módulo NÃO depende de Pygame ou UWB. Os CSVs de odometria do conversor
++antigo não são usados como verdade: recalculamos a trajetória a partir dos
++ticks, com o perfil selecionado (padrão experimental de 4560 CPR).
++"""
++from __future__ import annotations
++
++import csv
++from dataclasses import dataclass, field
++from pathlib import Path
++import re
++
++import numpy as np
++
++from src.odometry.pcntlog_adapter import (
++    RawPcntRow,
++    Robot2026Profile,
++    convert_session,
++    load_pcnt_sessions,
++)
++
++ROBOT2026_PROFILE = Robot2026Profile(
++    wheel_radius_m=0.03425,
++    wheel_base_m=0.229,
++    ticks_per_wheel_rev=4560.0,
++    invert_left=False,
++    invert_right=True,
++)
++
++RAW_PREFIX = "Bruto: "
++PROCESSED_PREFIX = "Processado: "
++
++
++@dataclass(frozen=True)
++class Odometry2026Data:
++    path: Path
++    session_id: int
++    total_sessions: int
++    timestamps_s: np.ndarray
++    poses_xytheta: np.ndarray
++    v_m_s: np.ndarray
++    omega_rad_s: np.ndarray
++    laps: np.ndarray
++    profile: Robot2026Profile = field(default_factory=lambda: ROBOT2026_PROFILE)
++
++    @property
++    def sample_count(self) -> int:
++        return len(self.timestamps_s)
++
++    @property
++    def duration_s(self) -> float:
++        return float(self.timestamps_s[-1] - self.timestamps_s[0]) if self.sample_count else 0.0
++
++
++def list_robot2026_sources(raw_dir: str | Path, processed_dir: str | Path) -> list[str]:
++    """Lista apenas formatos que o pipeline sabe converter, sem duplicatas."""
++    options: list[str] = []
++    raw = Path(raw_dir)
++    processed = Path(processed_dir)
++    if raw.is_dir():
++        options += [RAW_PREFIX + p.name for p in sorted(raw.iterdir(), key=lambda p: p.name.lower())
++                    if p.is_file() and p.suffix.lower() in {".csv", ".txt"}
++                    and "pcnt" in p.name.lower()]
++    if processed.is_dir():
++        options += [PROCESSED_PREFIX + p.name for p in sorted(processed.iterdir(), key=lambda p: p.name.lower())
++                    if p.is_file() and p.name.lower().endswith(("_encoder.csv", "_odometry.csv"))]
++    return options
++
++
++def resolve_robot2026_source(
++    selection: str, raw_dir: str | Path, processed_dir: str | Path
++) -> Path:
++    """Converte escolha do dropdown em caminho, sem aceitar traversal/nomes ambíguos."""
++    selection = str(selection).strip()
++    if selection.startswith(RAW_PREFIX):
++        directory = Path(raw_dir)
++        filename = selection[len(RAW_PREFIX):]
++    elif selection.startswith(PROCESSED_PREFIX):
++        directory = Path(processed_dir)
++        filename = selection[len(PROCESSED_PREFIX):]
++    else:
++        raise ValueError("Selecione uma opção 'Bruto:' ou 'Processado:' do dropdown")
++    if not filename or Path(filename).name != filename or filename in {".", ".."}:
++        raise ValueError("Nome de arquivo inválido")
++    path = directory / filename
++    if not path.is_file():
++        raise FileNotFoundError(f"Arquivo de odometria não encontrado: {path}")
++    return path
++
++
++def _read_converted_encoder(path: Path, invert_right: bool = True) -> list[RawPcntRow]:
++    """Reconstrói linhas RAW a partir dos ticks já orientados pelo conversor.
++
++    No CSV exportado, right_ticks JÁ foi invertido. Desfazemos a inversão
++    somente na entrada para reutilizar convert_session sem aplicá-la duas vezes.
++    """
++    rows: list[RawPcntRow] = []
++    with path.open("r", encoding="utf-8-sig", newline="") as f:
++        reader = csv.DictReader(f)
++        columns = set(reader.fieldnames or [])
++        if not {"left_ticks", "right_ticks"} <= columns:
++            raise ValueError("CSV convertido precisa conter left_ticks e right_ticks")
++        if not ({"timestamp_ms", "timestamp_s", "timestamp"} & columns):
++            raise ValueError("CSV convertido precisa conter timestamp_ms, timestamp_s ou timestamp")
++        for i, row in enumerate(reader, 2):
++            try:
++                if "timestamp_ms" in columns:
++                    time_ms = round(float(row["timestamp_ms"]))
++                elif "timestamp_s" in columns:
++                    time_ms = round(float(row["timestamp_s"]) * 1000)
++                else:
++                    # No _encoder.csv gerado pelo nosso adaptador, timestamp é ms.
++                    time_ms = round(float(row["timestamp"]))
++                l_corrected = int(float(row["left_ticks"]))
++                r_corrected = int(float(row["right_ticks"]))
++                laps = int(float(row.get("lap_count") or 0))
++            except (ValueError, TypeError) as exc:
++                raise ValueError(f"Linha {i}: dados de encoder inválidos") from exc
++            rows.append(RawPcntRow(time_ms, l_corrected, -r_corrected if invert_right else r_corrected, laps, 0))
++    if not rows:
++        raise ValueError("CSV de encoder vazio")
++    if any(b.timestamp_ms <= a.timestamp_ms for a, b in zip(rows, rows[1:])):
++        raise ValueError("Timestamp não crescente: separe sessões antes de importar")
++    return rows
++
++
++def load_robot2026_odometry(
++    path: str | Path, session_id: int = 1,
++    profile: Robot2026Profile | None = None,
++) -> Odometry2026Data:
++    """Carrega um pcntLog bruto ou uma sessão convertida, sem decimar dados.
++
++    Para o bruto, `session_id` é 1-based. Para um CSV de sessão já processada,
++    o número é extraído do nome e o seletor é ignorado.
++    """
++    path = Path(path)
++    if not path.is_file():
++        raise FileNotFoundError(path)
++    cfg = profile or ROBOT2026_PROFILE
++    cfg.validate()
++    with path.open("r", encoding="utf-8-sig", newline="") as f:
++        first = next(csv.reader(f), [])
++    numeric_start = False
++    if len(first) in (5, 20):
++        try:
++            numeric_start = all(np.isfinite(float(c.strip())) for c in first[:5])
++        except (ValueError, TypeError):
++            pass
++    if numeric_start:
++        sessions = load_pcnt_sessions(path)
++        if session_id < 1 or session_id > len(sessions):
++            raise ValueError(f"Sessão {session_id} inexistente; disponíveis 1..{len(sessions)}")
++        rows = sessions[session_id - 1]
++        n_sessions = len(sessions)
++        used_session = session_id
++    else:
++        rows = _read_converted_encoder(path, invert_right=cfg.invert_right)
++        match = re.search(r"session_(\d+)", path.stem, flags=re.I)
++        used_session = int(match.group(1)) if match else 1
++        n_sessions = 1
++
++    samples = convert_session(rows, cfg)
++    timestamps = np.array([r["timestamp_s"] for r in samples], dtype=float)
++    poses = np.array([[r["x_m"], r["y_m"], r["theta_rad"]] for r in samples], dtype=float)
++    v = np.array([r["v_m_s"] for r in samples], dtype=float)
++    omega = np.array([r["omega_rad_s"] for r in samples], dtype=float)
++    laps = np.array([r["lap_count"] for r in samples], dtype=int)
++    return Odometry2026Data(path, used_session, n_sessions, timestamps, poses, v, omega, laps, cfg)
+diff --git a/tools/convert_pcntlog_2026.py b/tools/convert_pcntlog_2026.py
+--- a/tools/convert_pcntlog_2026.py
++++ b/tools/convert_pcntlog_2026.py
+@@ -16,7 +16,7 @@
+     parser.add_argument("--out", type=Path, default=Path("resultados/robot2026"))
+     parser.add_argument("--wheel-radius", type=float, default=0.03425)
+     parser.add_argument("--wheel-base", type=float, default=0.229)
+-    parser.add_argument("--cpr", type=float, default=2280.0)
++    parser.add_argument("--cpr", type=float, default=4560.0)
+     parser.add_argument("--left-scale", type=float, default=1.0)
+     parser.add_argument("--right-scale", type=float, default=1.0)
+     parser.add_argument("--initial-theta-deg", type=float, default=0.0)
+diff --git a/tests/test_dataset_odometry_pipeline.py b/tests/test_dataset_odometry_pipeline.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_dataset_odometry_pipeline.py
+@@ -0,0 +1,88 @@
++"""Regressão do modo odometria 2WD 2026, sem dependência de Pygame."""
++from __future__ import annotations
++
++import csv
++import math
++import tempfile
++import unittest
++from pathlib import Path
++
++import numpy as np
++
++from src.odometry.pcntlog_adapter import Robot2026Profile
++from src.ui.algo_modes.dataset_odometry_pipeline import (
++    ROBOT2026_PROFILE,
++    load_robot2026_odometry,
++    list_robot2026_sources,
++    resolve_robot2026_source,
++)
++
++
++class TestDatasetOdometry2026(unittest.TestCase):
++    def setUp(self):
++        self.tmp = tempfile.TemporaryDirectory()
++        self.addCleanup(self.tmp.cleanup)
++        self.root = Path(self.tmp.name)
++        (self.root / "raw").mkdir()
++        (self.root / "processed").mkdir()
++
++    def _write(self, directory, filename, text):
++        p = self.root / directory / filename
++        p.write_text(text, encoding="utf-8")
++        return p
++
++    def test_default_4560_cpr_and_no_decimation(self):
++        # Uma volta completa em linha reta por duas rodas.
++        p = self._write("raw", "pcntLog.csv", "100,0,0,0,0\n350,2280,-2280,0,0\n600,4560,-4560,0,0\n")
++        data = load_robot2026_odometry(p)
++        self.assertEqual(ROBOT2026_PROFILE.ticks_per_wheel_rev, 4560)
++        self.assertEqual(data.sample_count, 3)
++        self.assertAlmostEqual(data.duration_s, 0.5)
++        self.assertAlmostEqual(data.poses_xytheta[-1, 0], 2 * math.pi * .03425, places=8)
++        self.assertAlmostEqual(data.poses_xytheta[-1, 1], 0., places=8)
++        self.assertAlmostEqual(data.poses_xytheta[-1, 2], 0., places=8)
++
++    def test_preserves_raw_sessions_and_selection(self):
++        p = self._write("raw", "pcntLog.csv", "100,0,0,0,0\n350,4560,-4560,1,0\n100,0,0,0,0\n350,2280,-2280,1,0\n")
++        data = load_robot2026_odometry(p, session_id=2)
++        self.assertEqual(data.total_sessions, 2)
++        self.assertEqual(data.session_id, 2)
++        self.assertEqual(data.sample_count, 2)
++        self.assertAlmostEqual(data.poses_xytheta[-1, 0], math.pi * .03425, places=8)
++        with self.assertRaisesRegex(ValueError, "Sessão 3 inexistente"):
++            load_robot2026_odometry(p, session_id=3)
++
++    def test_converted_encoder_already_sign_corrected(self):
++        # Saída do adapter: right_ticks POSITIVO; não pode inverter 2x.
++        p = self._write("processed", "robot2026_session_02_encoder.csv", "timestamp,left_ticks,right_ticks\n0,0,0\n250,4560,4560\n")
++        data = load_robot2026_odometry(p)
++        self.assertEqual(data.session_id, 2)
++        self.assertAlmostEqual(data.poses_xytheta[-1, 0], 2 * math.pi * .03425, places=8)
++        self.assertAlmostEqual(data.poses_xytheta[-1, 2], 0.0, places=8)
++
++    def test_converted_odometry_recomputed_not_stale(self):
++        # Os x_m do CSV foram gerados com outro CPR; devem ser ignorados.
++        p = self._write("processed", "robot2026_session_02_odometry.csv", "timestamp_ms,left_ticks,right_ticks,x_m,y_m,theta_rad\n0,0,0,0,0,0\n250,4560,4560,999,999,999\n")
++        data = load_robot2026_odometry(p)
++        self.assertAlmostEqual(data.poses_xytheta[-1, 0], 2 * math.pi * .03425, places=8)
++        self.assertLess(data.poses_xytheta[-1, 0], 1)
++
++    def test_sources_and_resolution(self):
++        self._write("raw", "pcntLog.csv", "0,0,0,0,0\n250,1,-1,0,0\n")
++        self._write("processed", "robot2026_session_01_encoder.csv", "timestamp,left_ticks,right_ticks\n0,0,0\n250,1,1\n")
++        self._write("processed", "other.txt", "not odometry")
++        options = list_robot2026_sources(self.root / "raw", self.root / "processed")
++        self.assertEqual(len(options), 2)
++        self.assertIn("Bruto: pcntLog.csv", options)
++        self.assertEqual(resolve_robot2026_source(options[0], self.root / 'raw', self.root / 'processed').suffix, '.csv')
++        with self.assertRaises(ValueError):
++            resolve_robot2026_source('Bruto: ../escape.csv', self.root / 'raw', self.root / 'processed')
++
++    def test_non_monotonic_converted_encoder_rejected(self):
++        p = self._write("processed", "robot2026_session_02_encoder.csv", "timestamp,left_ticks,right_ticks\n0,0,0\n0,5,5\n")
++        with self.assertRaisesRegex(ValueError, "Timestamp não crescente"):
++            load_robot2026_odometry(p)
++
++
++if __name__ == "__main__":
++    unittest.main()

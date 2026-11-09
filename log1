@@ -1,0 +1,14 @@
+warning: in the working copy of '.vscode/settings.json', LF will be replaced by CRLF the next time Git touches it
+[1mdiff --git a/.vscode/settings.json b/.vscode/settings.json[m
+[1mindex 732f777..1d42d1e 100644[m
+[1m--- a/.vscode/settings.json[m
+[1m+++ b/.vscode/settings.json[m
+[36m@@ -56,5 +56,6 @@[m
+   "C_Cpp_Runner.useLeakSanitizer": false,[m
+   "C_Cpp_Runner.showCompilationTime": false,[m
+   "C_Cpp_Runner.useLinkTimeOptimization": false,[m
+[31m-  "C_Cpp_Runner.msvcSecureNoWarnings": false[m
+[32m+[m[32m  "C_Cpp_Runner.msvcSecureNoWarnings": false,[m
+[32m+[m[32m  "cmake.ignoreCMakeListsMissing": true[m
+ }[m
+\ No newline at end of file[m

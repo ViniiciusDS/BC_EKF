@@ -1,0 +1,140 @@
+{
+  "schema": "bc_ekf.field_diagnostic.v1",
+  "synthetic_or_real": "not_inferred",
+  "ground_truth_available": false,
+  "log_filename": "pcntLog_passeio_01.csv",
+  "anchor_config_filename": "passeio_01_4_ancoras_pose_estimada.json",
+  "session_id": 1,
+  "summary": {
+    "file": "dados_reais\\robot2026\\pcntLog_passeio_01.csv",
+    "session": 1,
+    "sessions_detected": 1,
+    "pcnt_samples": 3091,
+    "duration_s": 772.454,
+    "median_log_period_ms": 250.0,
+    "laps_reported": 192,
+    "columns": 20,
+    "uwb_slot_count": 5,
+    "status": "ready_for_static_batch",
+    "warnings": [
+      "Triplas UWB idênticas foram excluídas; timestamps indicam gravação, não ranging"
+    ],
+    "anchor_count": 4,
+    "spi_slot_to_anchor_index": [
+      null,
+      0,
+      1,
+      2,
+      3
+    ],
+    "effective_cpr": 4560.0,
+    "raw_encoder_order_swapped": true,
+    "new_ranges_required": 4,
+    "start_pose_xytheta": [
+      -1.41,
+      0.83,
+      0.12217304763960307
+    ],
+    "uwb_slot_record_update_stats": [
+      {
+        "slot": 0,
+        "anchor_index": null,
+        "valid_new_readings": 0,
+        "median_log_update_ms": null,
+        "p95_log_update_ms": null
+      },
+      {
+        "slot": 1,
+        "anchor_index": 0,
+        "valid_new_readings": 1311,
+        "median_log_update_ms": 505.0,
+        "p95_log_update_ms": 750.0
+      },
+      {
+        "slot": 2,
+        "anchor_index": 1,
+        "valid_new_readings": 1311,
+        "median_log_update_ms": 505.0,
+        "p95_log_update_ms": 750.0
+      },
+      {
+        "slot": 3,
+        "anchor_index": 2,
+        "valid_new_readings": 1311,
+        "median_log_update_ms": 505.0,
+        "p95_log_update_ms": 750.0
+      },
+      {
+        "slot": 4,
+        "anchor_index": 3,
+        "valid_new_readings": 1309,
+        "median_log_update_ms": 505.0,
+        "p95_log_update_ms": 750.0
+      }
+    ],
+    "uwb_timing_note": "Diferenças entre timestamps de gravação no ESP32; NÃO são tempos de TWR físicos",
+    "uwb_snapshots": 1309,
+    "uwb_valid_readings": 5242,
+    "uwb_repeated_readings_excluded": 7113,
+    "uwb_invalid_readings": 9,
+    "uwb_missing_fraction": 0.5765
+  },
+  "slot_quality": [
+    {
+      "slot": 0,
+      "new_valid": 0,
+      "repeated_valid": 0,
+      "invalid": 3091
+    },
+    {
+      "slot": 1,
+      "new_valid": 1311,
+      "repeated_valid": 1779,
+      "invalid": 1
+    },
+    {
+      "slot": 2,
+      "new_valid": 1311,
+      "repeated_valid": 1779,
+      "invalid": 1
+    },
+    {
+      "slot": 3,
+      "new_valid": 1311,
+      "repeated_valid": 1779,
+      "invalid": 1
+    },
+    {
+      "slot": 4,
+      "new_valid": 1309,
+      "repeated_valid": 1776,
+      "invalid": 6
+    }
+  ],
+  "encoder_quality": {
+    "sample_count": 3091,
+    "duration_s": 772.454,
+    "estimated_travel_m": 58.05939,
+    "net_displacement_m": 1.75115,
+    "max_abs_linear_speed_m_s": 0.10207,
+    "max_abs_angular_speed_rad_s": 0.48249,
+    "median_period_s": 0.25,
+    "negative_delta_left_fraction": 0.0,
+    "negative_delta_right_fraction": 0.0,
+    "profile": {
+      "wheel_radius_m": 0.03425,
+      "wheel_base_m": 0.229,
+      "ticks_per_wheel_rev": 4560.0,
+      "swap_encoder_columns": true,
+      "invert_left": true,
+      "invert_right": false
+    },
+    "interpretation": "Descritivo: confirmar ordem, sinais e escalas com movimento físico reto e giro de sentido conhecido; não é calibração automática."
+  },
+  "notes": [
+    "Timestamps são de registro ESP32, não necessariamente instantes físicos TWR",
+    "Contagem de eventos não identifica necessariamente voltas reais",
+    "Pose PCNT e rota nominal não são ground truth sincronizado",
+    "Diagnóstico somente de leitura: CSV original preservado"
+  ]
+}
