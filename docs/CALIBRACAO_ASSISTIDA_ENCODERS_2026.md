@@ -40,11 +40,20 @@ raio, escalas e base). Sem ele, utiliza-se o perfil padrão, que pode
 
 - `observed.left_wheel_m` e `right_wheel_m` são deslocamentos
   com sinal, pela convenção do perfil.
-- Na **reta**, se ambas as rodas avançam, são sugeridos novos
-  `left_scale_candidate` e `right_scale_candidate`. Não são aplicados.
-- No **giro no próprio eixo**, quando as rodas giram em sentidos
-  opostos e o sinal do giro estimado concorda com a referência, é
-  sugerido `wheel_base_m_candidate`; caso contrário, apenas avisos.
+- Na **reta**, candidatos `left_scale_candidate` e
+  `right_scale_candidate` só aparecem se ambas as rodas avançam
+  **e seus deslocamentos são coerentes**. Divergência acima de
+  `max(0,02 m; 10% do deslocamento médio odométrico)` gera aviso e
+  bloqueia as sugestões. Esses limites são **heurísticos de segurança**,
+  não evidências de calibração correta.
+- No **giro no próprio eixo**, `wheel_base_m_candidate` só aparece
+  se as rodas giram em sentidos opostos, o sentido do giro concorda
+  com a referência e a soma dos deslocamentos das rodas permanece
+  próxima de zero. Curva com translação relevante gera apenas avisos.
+  A tolerância utilizada também é heurística:
+  `abs(dl + dr) <= max(0,02 m; 10%*(abs(dl)+abs(dr)))`.
+- Para calibrar a base, primeiro confirme os sinais e as escalas
+  dos encoders; erros de escala se propagam para a base sugerida.
 - Um único movimento não permite estimar independentemente raio das
   rodas, CPR, base e sinais: medições independentes são obrigatórias.
 - A distância estimada pelo integrador e o ângulo são **odometria**,
