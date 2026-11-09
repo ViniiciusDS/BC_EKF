@@ -93,14 +93,21 @@ def analyze_encoder_calibration(log_path, profile: Robot2026Profile,
         target = math.radians(reference.value)
         observed = dtheta
         unit = "rad"
-        if dl * dr >= 0:
+        opposite_wheels = dl * dr < 0
+        # Giro no próprio eixo: a soma dos deslocamentos deve ser próxima de
+        # zero. Caso contrário pode ser um arco, que não calibra a base.
+        in_place = abs(dl + dr) <= max(0.02, 0.1 * (abs(dl) + abs(dr)))
+        if not opposite_wheels:
             warnings.append("As rodas não apresentam incrementos opostos no giro; verificar sentido e tipo de manobra")
-        # Base: theta=(dr-dl)/base. Só há solução física se o sinal condiz.
+        if not in_place:
+            warnings.append("Movimento com translação odométrica relevante: não tratar curva como giro no próprio eixo")
+        # Base: theta=(dr-dl)/base. Só há candidato se sinal e
+        # geometria do movimento forem coerentes com a hipótese.
         base_candidate = (dr - dl) / target
-        if base_candidate > tol and dl * dr < 0:
+        if base_candidate > tol and opposite_wheels and in_place:
             suggestions["wheel_base_m_candidate"] = base_candidate
         else:
-            warnings.append("Giro incompatível com a convenção angular; não sugerir base positiva")
+            warnings.append("Giro incompatível com a hipótese de rotação no próprio eixo; não sugerir base")
         # Um único giro não identifica raio de roda e base simultaneamente.
     if abs(target) > tol:
         relative_error = (observed - target) / abs(target)
