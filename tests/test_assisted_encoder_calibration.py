@@ -69,6 +69,16 @@ class TestAssistedEncoderCalibration(unittest.TestCase):
         self.assertAlmostEqual(res["suggestions_not_applied"]["wheel_base_m_candidate"], .25)
         self.assertEqual(res["warnings"], [])
 
+    def test_turn_with_translation_refuses_wheelbase(self):
+        """Uma curva fechada com centro deslocando não é giro estacionário."""
+        self.rows([(-1000, 1600)])
+        result = analyze_encoder_calibration(
+            self.path, self.profile,
+            CalibrationReference("turn", 30),
+        )
+        self.assertNotIn("wheel_base_m_candidate", result["suggestions_not_applied"])
+        self.assertTrue(any("translação" in w for w in result["warnings"]))
+
     def test_turn_wrong_direction_does_not_suggest_positive_base(self):
         self.rows([(1000, -1000)])
         res = analyze_encoder_calibration(
