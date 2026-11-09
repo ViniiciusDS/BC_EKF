@@ -46,6 +46,20 @@ class TestAssistedEncoderCalibration(unittest.TestCase):
         self.assertAlmostEqual(res["observed"]["signed_relative_error"], -0.1 / 1.1)
         self.assertEqual(self.path.read_bytes(), before)
 
+    def test_straight_with_large_wheel_mismatch_only_warns(self):
+        """Uma curva não deve calibrar escalas como se fosse reta perfeita."""
+        self.rows([(1000, 1800)])
+        result = analyze_encoder_calibration(
+            self.path, self.profile,
+            CalibrationReference("straight", 0.07),
+        )
+        self.assertEqual(result["suggestions_not_applied"], {})
+        self.assertTrue(any("Diferença" in w for w in result["warnings"]))
+        self.assertNotEqual(
+            result["observed"]["left_wheel_m"],
+            result["observed"]["right_wheel_m"],
+        )
+
     def test_turn_recovers_base_candidate_from_opposite_wheels(self):
         self.rows([(-1000, 1000)])
         target_deg = math.degrees((2000 * self.mpt) / .25)
