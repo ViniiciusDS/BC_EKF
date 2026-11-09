@@ -41,6 +41,10 @@ def main(argv=None):
             inputs.add(Path(args.anchors).resolve())
         if dest in inputs:
             parser.error("Saída não pode sobrescrever arquivo de entrada")
+        # Evita perder relatórios de ensaios anteriores quando o operador
+        # reutiliza acidentalmente o mesmo nome de saída.
+        if dest.exists():
+            parser.error("Arquivo de saída já existe; escolha outro nome em --out")
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text(serialized + "\n", encoding="utf-8")
         print(f"Relatório salvo: {dest}")
