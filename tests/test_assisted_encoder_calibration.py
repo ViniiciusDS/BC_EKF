@@ -115,6 +115,22 @@ class TestAssistedEncoderCalibration(unittest.TestCase):
         self.assertEqual(res["samples"], 3)
         self.assertAlmostEqual(res["observed"]["left_wheel_m"], 500 * self.mpt)
 
+    def test_cli_never_overwrites_existing_report(self):
+        """Protege relatório anterior de ensaio sem pedir confirmação."""
+        from tools.check_encoder_calibration_2026 import main
+
+        self.rows([(100, 100)])
+        output = Path(self.tmp.name) / "existing.json"
+        output.write_text("preservar", encoding="utf-8")
+        with self.assertRaises(SystemExit) as exc:
+            main([
+                "--log", str(self.path),
+                "--straight-m", "0.1",
+                "--out", str(output),
+            ])
+        self.assertEqual(exc.exception.code, 2)
+        self.assertEqual(output.read_text(encoding="utf-8"), "preservar")
+
     def test_rejects_empty_window_and_invalid_reference(self):
         self.rows([(100, 100)])
         with self.assertRaisesRegex(ValueError, "ao menos duas"):
