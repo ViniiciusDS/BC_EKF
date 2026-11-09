@@ -1,0 +1,19 @@
+# Python: bytecode e cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Testes e ferramentas
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Ambientes virtuais
+.venv/
+venv/
+env/
+
+# Arquivos temporários
+*.tmp
