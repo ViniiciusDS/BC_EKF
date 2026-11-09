@@ -64,7 +64,8 @@ raio, escalas e base). Sem ele, utiliza-se o perfil padrão, que pode
   sentido conhecido, compare o relatório e só então ajuste o JSON
   manualmente após confirmar fisicamente as convenções.
 - CSV original e arquivo de âncoras não são reescritos. O `--out`
-  não pode apontar para nenhum desses dois arquivos.
+  não pode apontar para nenhum desses dois arquivos e **não substitui**
+  relatórios anteriores: se já existir, escolha outro nome.
 
 ## Testes de regressão
 
