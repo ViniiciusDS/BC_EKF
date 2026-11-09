@@ -74,15 +74,18 @@ def analyze_encoder_calibration(log_path, profile: Robot2026Profile,
     if reference.kind == "straight":
         # Distância reta positiva observada externamente; não resolve
         # raios individuais quando as rodas discordam.
-        if dl <= tol or dr <= tol:
+        signs_ok = dl > tol and dr > tol
+        wheel_disagreement = abs(dl - dr) > max(0.02, 0.1 * abs(ds))
+        if not signs_ok:
             warnings.append("Uma ou ambas as rodas não avançaram conforme a convenção do perfil; verificar WR/WL, swap e inversões")
-        else:
-            # Por roda: fator multiplicativo do left_scale/right_scale,
-            # válido somente se movimento realmente foi reto para frente.
+        if wheel_disagreement:
+            warnings.append("Diferença superior ao limite indicativo entre rodas em ensaio reto; investigar patinagem, sinais e geometria")
+        # Não sugerir escalas individuais se as rodas descrevem uma curva:
+        # a distância de referência, medida em linha reta, não determina
+        # quanto cada roda de fato percorreu na manobra irregular.
+        if signs_ok and not wheel_disagreement:
             suggestions["left_scale_candidate"] = profile.left_scale * reference.value / dl
             suggestions["right_scale_candidate"] = profile.right_scale * reference.value / dr
-        if abs(dl - dr) > max(0.02, 0.1 * abs(ds)):
-            warnings.append("Diferença superior ao limite indicativo entre rodas em ensaio reto; investigar patinagem, sinais e geometria")
         observed = ds
         target = reference.value
         unit = "m"
