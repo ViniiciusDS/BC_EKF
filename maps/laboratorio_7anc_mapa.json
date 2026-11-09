@@ -1,0 +1,17 @@
+{
+  "bounds": [
+    -0.6,
+    3.5,
+    -1.1,
+    3.1
+  ],
+  "obstacles": [],
+  "noise_zones": [],
+  "meta": {
+    "name": "Laboratorio 7 ancoras - area livre",
+    "note": "Pista desenhada no JSON de rota; NAO convertida em paredes para evitar falsos bloqueios UWB/LOS.",
+    "origin": "azul = (0,0) m",
+    "tag_height_m": 0.215,
+    "reference_route": "routes/laboratorio_7anc_rota.json"
+  }
+}

@@ -1,0 +1,54 @@
+{
+  "name": "Laboratorio 7 ancoras - pista octogonal aproximada",
+  "reference_kind": "percurso nominal geometrico SEM ground truth sincronizado",
+  "source": "Croqui de campo 2026-11-07; vertices nao foram cotados integralmente",
+  "units": "m",
+  "start_xy_m": [
+    0.15,
+    1.38
+  ],
+  "start_heading_deg_assumed": 0,
+  "waypoints": [
+    [
+      0.15,
+      1.38
+    ],
+    [
+      2.62,
+      1.38
+    ],
+    [
+      2.84,
+      1.16
+    ],
+    [
+      2.84,
+      -0.12
+    ],
+    [
+      2.62,
+      -0.37
+    ],
+    [
+      0.12,
+      -0.37
+    ],
+    [
+      0.0,
+      -0.15
+    ],
+    [
+      0.0,
+      1.15
+    ],
+    [
+      0.15,
+      1.38
+    ]
+  ],
+  "notes": [
+    "Topo horizontal de 2.47 m; base horizontal de 2.50 m; laterais de 1.30 m e 1.28 m conforme croqui",
+    "Posicionamento de quinas e chanfros aproximado; medir coordenadas exatas antes de calcular aderencia a pista",
+    "Trajetoria percorre contorno no sentido horario a partir do ponto verde"
+  ]
+}

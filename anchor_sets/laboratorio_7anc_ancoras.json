@@ -1,0 +1,83 @@
+{
+  "meta": {
+    "example_only": false,
+    "test_id": "laboratorio_7anc_2026_11_07",
+    "source": "Croqui de campo enviado pelo usuario; coordenadas em cm convertidas para m",
+    "coordinate_order": "x,y,z em metros; zero azul (0,0); eixo X direita, Y para cima do croqui",
+    "anchor_order": "A2,A3,A4,A5,A6,A7,A8",
+    "warning_A2": "TRANSCRICAO LITERAL: A2 = (268,0,176) cm; desenho posiciona A2 no alto esquerdo e sugere coordenadas (0,268,176). CONFIRMAR em campo.",
+    "slot_order": "HIPOTESE: slot SPI 0 inativo; slots 1..7 correspondem a A2..A8. CONFIRMAR pela ordem do firmware.",
+    "robot_tag_height_m": 0.215,
+    "robot_initial_pose": "Ponto verde x=15cm,y=138cm, orientacao estimada 0 deg segundo seta para a direita; ajustar conforme observacao",
+    "route_geometry": "Aproximada: topo 247cm, base 250cm, lados esquerdo 130cm e direito 128cm, chanfros aproximados. VERTICES NAO FORAM TODOS MEDIDOS.",
+    "do_not_treat_route_as_ground_truth": true
+  },
+  "anchors_xy": [
+    [
+      2.68,
+      0.0,
+      1.76
+    ],
+    [
+      1.38,
+      2.28,
+      0.85
+    ],
+    [
+      2.98,
+      1.98,
+      1.7
+    ],
+    [
+      2.76,
+      -0.7,
+      0.98
+    ],
+    [
+      1.38,
+      -0.7,
+      0.96
+    ],
+    [
+      0.0,
+      -0.7,
+      1.28
+    ],
+    [
+      1.38,
+      1.2,
+      1.53
+    ]
+  ],
+  "pcnt_slot_to_anchor_index": [
+    null,
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+  ],
+  "robot_2026": {
+    "wheel_radius_m": 0.03425,
+    "wheel_base_m": 0.229,
+    "ticks_per_wheel_rev": 4560,
+    "swap_encoder_columns": true,
+    "invert_left": true,
+    "invert_right": false,
+    "left_scale": 1.0,
+    "right_scale": 1.0,
+    "initial_x_m": 0.15,
+    "initial_y_m": 1.38,
+    "initial_theta_deg": 0.0
+  },
+  "uwb_2026": {
+    "min_valid_anchors": 4,
+    "min_sigma_m": 0.02
+  },
+  "view_2026": {
+    "segmentation": "time_windows",
+    "window_duration_s": 80
+  }
+}
