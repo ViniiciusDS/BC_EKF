@@ -65,6 +65,7 @@ from src.ui.algo_modes.dataset_lap_view import (
     select_laps,
     selection_label,
 )
+from src.ui.algo_modes.dataset_gate_laps import split_start_gate_laps
 from src.ui.algo_modes.dataset_track_reference import build_track_from_first_complete_lap
 from src.ui.algo_modes.dataset_uwb2026_pipeline import (
     load_robot2026_single_tag_uwb, read_pcnt_anchor_slot_mapping,
@@ -196,6 +197,9 @@ class DatasetMode:
         # Seleção de voltas altera somente o desenho; preserva todas as amostras.
         self._robot2026_laps = ()
         self._odom_is_time_window = False
+        self._robot2026_view_settings = None
+        self._odom_gate_status = ""
+        self._odom_gate_diagnostics = None
         self._odom_track_template = None
         self.show_odom_track_template = False
         self.odom_view_mode = "single"  # single -> range -> all
@@ -562,6 +566,9 @@ class DatasetMode:
             self._robot2026_uwb_data = None
             self._robot2026_uwb_indices = np.array([], dtype=int)
             self._odom_is_time_window = False
+            self._robot2026_view_settings = None
+            self._odom_gate_status = ""
+            self._odom_gate_diagnostics = None
             self._robot2026_laps = split_laps(data.laps)
             self._odom_track_template = build_track_from_first_complete_lap(
                 data.poses_xytheta, self._robot2026_laps
@@ -634,14 +641,33 @@ class DatasetMode:
                 return False
             self._robot2026_uwb_data = combined
             self._robot2026_uwb_indices = combined.sample_indices.copy()
+            self._robot2026_view_settings = view_settings
             if view_settings["segmentation"] == "time_windows":
                 self._robot2026_laps = split_time_windows(
                     combined.odometry.timestamps_s, view_settings["window_duration_s"]
                 )
                 self._odom_is_time_window = True
-                # Não criar uma falsa "pista aproximada" a partir da janela.
+                self._odom_gate_status = "Janelas por tempo (nao voltas)"
                 self._odom_track_template = None
                 self.show_odom_track_template = False
+            elif view_settings["segmentation"] == "start_gate":
+                # Portão é um recurso de visualização, sem mudar batch UWB.
+                self._odom_track_template = None
+                self.show_odom_track_template = False
+                if view_settings["gate_source"] == "odometry":
+                    self._apply_start_gate_laps(
+                        combined.odometry.poses_xytheta,
+                        combined.odometry.timestamps_s,
+                    )
+                else:
+                    # Somente após o batch do LMS existe uma trajetória UWB
+                    # estimada. Até lá, mostrar JANELAS explicitamente.
+                    self._robot2026_laps = split_time_windows(
+                        combined.odometry.timestamps_s,
+                        view_settings["window_duration_s"],
+                    )
+                    self._odom_is_time_window = True
+                    self._odom_gate_status = "Portao UWB/LMS: rode batch LMS"
             # A rota é nominal; só usar distância geométrica, jamais RMSE
             # temporal. Sem rota, inicia pela comparação com os encoders.
             self.metric_mode = (
@@ -747,6 +773,63 @@ class DatasetMode:
         self.show_odom_track_template = not self.show_odom_track_template
         state = "ligada" if self.show_odom_track_template else "desligada"
         self.host._set_msg(f"Pista aproximada (odometria): {state}")
+
+    def _apply_start_gate_laps(self, positions, timestamps, *, sample_indices=None):
+        """Calcula fatias de voltas sem alterar PCNT, UWB ou resultados."""
+        settings = self._robot2026_view_settings
+        if not settings or settings.get("segmentation") != "start_gate":
+            return
+        params = {
+            "start_xy": settings["gate_xy_m"],
+            "direction_xy": settings["gate_direction_xy"],
+            "half_width_m": settings["gate_half_width_m"],
+            "hysteresis_m": settings["gate_hysteresis_m"],
+            "min_lap_s": settings["gate_min_lap_s"],
+            "min_lap_distance_m": settings["gate_min_lap_distance_m"],
+            "departure_m": settings["gate_departure_m"],
+            "max_step_m": settings["gate_max_step_m"],
+        }
+        samples = self._robot2026_data.sample_count
+        slices, diag = split_start_gate_laps(
+            positions, timestamps, sample_indices=sample_indices,
+            total_samples=samples, **params
+        )
+        self._robot2026_laps = slices
+        self._odom_gate_diagnostics = diag
+        self._odom_is_time_window = False
+        source = "UWB/LMS" if sample_indices is not None else "odometria"
+        complete = diag["complete_laps"]
+        self._odom_gate_status = f"Portao {source}: {complete} voltas"
+        self.odom_view_mode = "single"
+        self.odom_lap_start = 1
+        self.odom_lap_window = 5
+
+    def _refresh_uwb_gate_laps_after_batch(self):
+        """Conecta batch LMS ao portão: não reexecuta localização ou odometria."""
+        settings = self._robot2026_view_settings
+        if not settings or settings.get("segmentation") != "start_gate":
+            return
+        if settings.get("gate_source") != "uwb_lms":
+            return
+        lms = (self._batch_results or {}).get("lms")
+        positions = lms.get("posicoes") if isinstance(lms, dict) else None
+        uwb = self._robot2026_uwb_data
+        if positions is None or uwb is None:
+            self._odom_gate_status = "Portao UWB/LMS: selecione LMS"
+            return
+        positions = np.asarray(positions, dtype=float)
+        if (positions.ndim != 2 or positions.shape[1] < 2
+                or len(positions) != len(self._robot2026_uwb_indices)):
+            self._odom_gate_status = "Portao UWB/LMS: dados incompat."
+            return
+        try:
+            self._apply_start_gate_laps(
+                positions[:, :2], uwb.timestamps_s,
+                sample_indices=self._robot2026_uwb_indices,
+            )
+        except ValueError as exc:
+            self._odom_gate_status = "Portao UWB/LMS indisponivel"
+            print(f"[DATASET] portao UWB/LMS: {exc}")
 
     def _selected_odom_laps(self):
         """Obtém fatias de visualização; não modifica a odometria original."""
@@ -1295,6 +1378,9 @@ class DatasetMode:
             )
 
             self._batch_results = self._remap_batch_results_to_sidebar_keys(raw_results)
+
+            if self.dataset_source_type == "real_odom_uwb_2026":
+                self._refresh_uwb_gate_laps_after_batch()
 
             if not self._batch_results:
                 self.host._set_msg("Batch executado, mas vazio")
