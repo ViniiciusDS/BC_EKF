@@ -298,7 +298,8 @@ def draw_reference_routes(mode):
     # Portão virtual da pista: desenhado explicitamente, sem confundir
     # marcação visual com obstáculo físico/oclusão de rádio.
     gate = getattr(mode, "_robot2026_view_settings", None)
-    if gate and gate.get("segmentation") == "start_gate":
+    if (getattr(mode, "dataset_source_type", "") == "real_odom_uwb_2026"
+            and gate and gate.get("segmentation") == "start_gate"):
         center = np.asarray(gate["gate_xy_m"], dtype=float)
         normal = np.asarray(gate["gate_direction_xy"], dtype=float)
         normal = normal / np.linalg.norm(normal)
