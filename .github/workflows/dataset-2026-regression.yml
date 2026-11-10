@@ -14,6 +14,7 @@ on:
       - "tests/test_field_odometry_hypotheses.py"
       - "tools/compare_field_odometry_2026.py"
       - "tools/check_encoder_calibration_2026.py"
+      - "tools/create_robot2026_field_variant.py"
       - ".github/workflows/dataset-2026-regression.yml"
   workflow_dispatch:
 
@@ -36,6 +37,7 @@ jobs:
           python -m unittest discover -s tests -p "test_pcntlog_adapter.py" -v
           python -m unittest discover -s tests -p "test_dataset_odometry_pipeline.py" -v
           python -m unittest discover -s tests -p "test_dataset_lap_view.py" -v
+          python -m unittest discover -s tests -p "test_dataset_start_gate_2026.py" -v
           python -m unittest discover -s tests -p "test_dataset_track_reference.py" -v
           python -m unittest discover -s tests -p "test_dataset_uwb2026_pipeline.py" -v
           python -m unittest discover -s tests -p "test_robot2026_field_readiness.py" -v
