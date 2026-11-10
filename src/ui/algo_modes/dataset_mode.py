@@ -801,15 +801,23 @@ class DatasetMode:
             positions, timestamps, sample_indices=sample_indices,
             total_samples=samples, **params
         )
-        self._robot2026_laps = slices
         self._odom_gate_diagnostics = diag
-        self._odom_is_time_window = False
         source = "UWB/LMS" if sample_indices is not None else "odometria"
         complete = diag["complete_laps"]
-        self._odom_gate_status = (
-            f"Portao {source}: {complete} voltas"
-            + (" (revise o portao)" if complete == 0 else "")
-        )
+        if complete:
+            self._robot2026_laps = slices
+            self._odom_is_time_window = False
+            self._odom_gate_status = f"Portao {source}: {complete} voltas"
+        else:
+            # Não travar a navegação mostrando a sessão toda quando
+            # a detecção não foi conclusiva. Janelas por tempo continuam
+            # disponíveis, explicitamente ROTULADAS como janelas.
+            self._robot2026_laps = split_time_windows(
+                self._robot2026_data.timestamps_s,
+                settings["window_duration_s"],
+            )
+            self._odom_is_time_window = True
+            self._odom_gate_status = f"Portao {source}: nao detectado"
         # Apenas contadores de diagnóstico: trajetórias continuam intactas.
         print(f"[DATASET] portao {source}: {diag}")
         self.odom_view_mode = "single"
