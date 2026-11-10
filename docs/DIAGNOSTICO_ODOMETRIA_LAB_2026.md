@@ -146,3 +146,19 @@ esquerda/direita deve ser revista antes de aplicar esses fatores.
 Para repetir a análise após atualizar a branch, use novos nomes de saída,
 pois o comando protege os relatórios já existentes. Espera-se ver um
 novo caso denominado `trocar_colunas_e_sinais` no JSON e no CSV.
+
+Com os relatórios de reta fornecidos, o script passa a produzir
+também `trocar_colunas_e_sinais_com_escalas_reta`, que atribui a
+escala originalmente vinculada ao canal direito para a nova roda
+esquerda e vice-versa. A combinação é apenas uma hipótese experimental,
+não uma aplicação automática. Isso evita a comparação inconsistente de
+canais remapeados com escalas ligadas à roda física equivocada.
+
+Na geometria nominal anteriormente gerada, a trajetória do LAB7A
+`trocar_colunas_e_sinais` corresponde à reflexão da original sobre
+a linha de heading inicial (início em +X), e deu RMS geométrica
+exploratória próxima de 0,409 m, contra 1,260 m do original. Nos
+primeiros 120 s, aproximadamente 0,105 m contra 1,166 m. A trajetória
+com escalas sozinhas deu 1,186 m. **Esses números dependem da rota
+nominal aproximada** e não validam fisicamente os sinais: confrontar
+com a direção da primeira curva, e não escolher apenas por RMS.
