@@ -161,6 +161,7 @@ def candidate_profiles(base: Robot2026Profile, *, measured_pose=None, scales=Non
 def compare_odometry_hypotheses(
     log_path, profile: Robot2026Profile, *, session_id=1,
     nominal_route=None, measured_pose=None, scale_candidates=None,
+    observed_turn=None,
 ):
     """Produz relatório e linhas CSV; todo cenário usa a mesma sessão bruta."""
     profile.validate()
@@ -170,6 +171,19 @@ def compare_odometry_hypotheses(
     rows = sessions[int(session_id) - 1]
     if len(rows) < 2:
         raise ValueError("Sessão precisa de pelo menos duas amostras")
+    if observed_turn is not None:
+        if (not isinstance(observed_turn, (tuple, list))
+                or len(observed_turn) != 3):
+            raise ValueError("Giro observado exige (início_s, fim_s, cw/ccw)")
+        t_start, t_end, expected = observed_turn
+        if (type(t_start) not in (int, float) or type(t_end) not in (int, float)
+                or not math.isfinite(t_start) or not math.isfinite(t_end)
+                or not 0 <= t_start < t_end
+                or expected not in ("cw", "ccw")):
+            raise ValueError("Intervalo do giro ou direção observada inválidos")
+        session_duration = (rows[-1].timestamp_ms - rows[0].timestamp_ms) / 1000.0
+        if t_end > session_duration + 1e-9:
+            raise ValueError("Fim do giro observado excede duração da sessão")
     variants = candidate_profiles(profile, measured_pose=measured_pose, scales=scale_candidates)
     cases, trace = [], []
     for label, variant in variants:
@@ -178,6 +192,31 @@ def compare_odometry_hypotheses(
         dx, dy = end["x_m"]-begin["x_m"], end["y_m"]-begin["y_m"]
         theta0 = begin["theta_rad"]
         c, s = math.cos(theta0), math.sin(theta0)
+        # Observação física independente: compara o sentido de uma curva
+        # delimitada pelo operador. Nunca modifica/calibra parâmetros.
+        # Faixa pequena (<=5 graus) é indeterminada, não um acerto.
+        turn_check = None
+        if observed_turn is not None:
+            t_start, t_end, expected = observed_turn
+            subset = [p for p in poses if t_start <= p["timestamp_s"] <= t_end]
+            if len(subset) < 2:
+                raise ValueError("Janela do giro deve conter ao menos duas amostras")
+            delta_deg = math.degrees(
+                subset[-1]["theta_rad"] - subset[0]["theta_rad"]
+            )
+            predicted = (
+                "ccw" if delta_deg > 5.0
+                else "cw" if delta_deg < -5.0 else "indeterminate"
+            )
+            turn_check = {
+                "expected_direction": expected,
+                "estimated_direction": predicted,
+                "direction_consistent": predicted == expected,
+                "heading_change_deg": delta_deg,
+                "selected_samples": len(subset),
+                "selected_start_s": subset[0]["timestamp_s"],
+                "selected_end_s": subset[-1]["timestamp_s"],
+            }
         cases.append({
             "hypothesis": label,
             "profile": {
@@ -198,6 +237,7 @@ def compare_odometry_hypotheses(
             "end_xy_m": [end["x_m"], end["y_m"]],
             "end_heading_deg_unwrapped": math.degrees(end["theta_rad"]),
             "heading_change_deg": math.degrees(end["theta_rad"] - theta0),
+            "observed_turn_check": turn_check,
             "relative_end_robot_frame_m": [c*dx+s*dy, -s*dx+c*dy],
             "nominal_route_rms_distance_m": (
                 route_distance_rms(
@@ -219,6 +259,11 @@ def compare_odometry_hypotheses(
         "session_id": int(session_id),
         "session_count": len(sessions),
         "nominal_route_supplied": nominal_route is not None,
+        "external_turn_observation": (
+            {"start_s": observed_turn[0], "end_s": observed_turn[1],
+             "direction": observed_turn[2]}
+            if observed_turn is not None else None
+        ),
         "cases": cases,
         "best_case": None,
         "calibration_applied": False,
@@ -229,6 +274,7 @@ def compare_odometry_hypotheses(
             "Rota nominal pode conter aproximações ou erros de medição",
             "Escalas de reta são candidatas sujeitas a confirmação física",
             "Sinais WR/WL precisam ser validados em movimento conhecido",
+            "Checagem de giro observado só compara sentido, não acurácia angular nem identidade elétrica de encoder",
         ],
     }
     return report, trace
