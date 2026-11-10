@@ -11,12 +11,6 @@ import json
 import math
 from pathlib import Path
 
-from src.ui.algo_modes.dataset_uwb2026_pipeline import (
-    read_robot2026_profile_from_anchor_json,
-    read_robot2026_view_settings,
-)
-
-
 def build_variant(source_json, *, start_xy, direction_deg=0.0, gate_source="uwb_lms"):
     """Retorna novo dicionário de cenário; input nunca é mutado."""
     root = json.loads(Path(source_json).read_text(encoding="utf-8"))
@@ -100,9 +94,9 @@ def main(argv=None):
             direction_deg=args.direction_deg,
             gate_source=args.gate_source,
         )
-        # A validação dos campos de execução ocorre com o mesmo código
-        # usado pelo Dataset Mode. Faça-a em arquivo temporário seguro.
-        # O arquivo só é criado após a validação de entrada por valores.
+        # Verifica parâmetros cinemáticos antes de criar o arquivo.
+        # O leitor do Dataset Mode também valida o JSON de portão
+        # integralmente quando o operador selecionar esse perfil.
         cfg = variant["robot_2026"]
         if not all(isinstance(cfg[k], bool) for k in (
             "swap_encoder_columns", "invert_left", "invert_right"
