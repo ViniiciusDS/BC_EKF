@@ -143,6 +143,18 @@ def candidate_profiles(base: Robot2026Profile, *, measured_pose=None, scales=Non
         cases.append(("escalas_reta", replace(
             base, left_scale=float(scales[0]), right_scale=float(scales[1]),
         )))
+        # Relatórios PR10 identificam escalas pelos canais do perfil
+        # ORIGINAL. Ao testar a hipótese de canais fisicamente trocados,
+        # as escalas precisam acompanhar esses canais, não ficar presas
+        # aos rótulos esquerda/direita possivelmente incorretos.
+        cases.append(("trocar_colunas_e_sinais_com_escalas_reta", replace(
+            base,
+            swap_encoder_columns=not base.swap_encoder_columns,
+            invert_left=base.invert_right,
+            invert_right=base.invert_left,
+            left_scale=float(scales[1]),
+            right_scale=float(scales[0]),
+        )))
     return cases
 
 
