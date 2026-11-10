@@ -179,6 +179,51 @@ class TestFieldOdometryHypotheses(unittest.TestCase):
         self.assertIsNone(report["best_case"])
         self.assertFalse(report["calibration_applied"])
 
+    def test_observed_clockwise_first_turn_is_independent_of_nominal_rms(self):
+        """Confirma sinal CW observado, sem escolher o menor RMS da pista."""
+        self.write_log([(600, 600), (300, 700), (300, 700)])
+        report, _ = compare_odometry_hypotheses(
+            self.log, self.profile, observed_turn=(.25, .75, "cw")
+        )
+        cases = {case["hypothesis"]: case for case in report["cases"]}
+        original = cases["original"]["observed_turn_check"]
+        remap = cases["trocar_colunas_e_sinais"]["observed_turn_check"]
+        self.assertEqual(report["external_turn_observation"]["direction"], "cw")
+        self.assertEqual(original["estimated_direction"], "ccw")
+        self.assertFalse(original["direction_consistent"])
+        self.assertEqual(remap["estimated_direction"], "cw")
+        self.assertTrue(remap["direction_consistent"])
+        self.assertAlmostEqual(
+            original["heading_change_deg"], -remap["heading_change_deg"]
+        )
+        self.assertEqual(remap["selected_samples"], 3)
+        self.assertIsNone(report["best_case"])
+
+    def test_turn_window_without_significant_heading_is_inconclusive(self):
+        """Perto de zero grau não se afirma compatibilidade de sentido."""
+        self.write_log([(600, 600), (600, 600)])
+        report, _ = compare_odometry_hypotheses(
+            self.log, self.profile, observed_turn=(0, .5, "cw")
+        )
+        check = report["cases"][0]["observed_turn_check"]
+        self.assertEqual(check["estimated_direction"], "indeterminate")
+        self.assertFalse(check["direction_consistent"])
+
+    def test_observed_turn_requires_valid_window_and_direction(self):
+        self.write_log([(100, 100), (100, 100)])
+        for bad in [
+            (-.1, .5, "cw"), (0, .5, "invalid"),
+            (.5, .1, "cw"), (0, 10, "cw"), (0, 0, "cw"),
+        ]:
+            with self.assertRaises(ValueError):
+                compare_odometry_hypotheses(
+                    self.log, self.profile, observed_turn=bad
+                )
+        with self.assertRaises(ValueError):
+            compare_odometry_hypotheses(
+                self.log, self.profile, observed_turn=(.01, .02, "cw")
+            )
+
     def test_session_reset_is_not_concatenated(self):
         self.write_log([(100, 100), (100, 100)], reset=True)
         report, trace = compare_odometry_hypotheses(
@@ -264,6 +309,12 @@ class TestFieldOdometryHypotheses(unittest.TestCase):
         self.assertEqual(json.loads(output.read_text(encoding="utf-8"))["best_case"], None)
         self.assertIn("hypothesis,timestamp_s", traces.read_text(encoding="utf-8"))
         before = output.read_bytes()
+        with self.assertRaises(SystemExit):
+            main([
+                "--log", str(self.log), "--anchors", str(self.anchors),
+                "--turn-direction", "cw", "--out", str(self.root / "new.json"),
+            ])
+        self.assertFalse((self.root / "new.json").exists())
         with self.assertRaises(SystemExit):
             main([
                 "--log", str(self.log), "--anchors", str(self.anchors),
