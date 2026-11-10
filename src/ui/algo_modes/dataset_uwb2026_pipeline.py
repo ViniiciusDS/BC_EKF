@@ -233,6 +233,9 @@ def read_robot2026_view_settings(anchor_json: str | Path) -> dict:
         "gate_xy_m", "gate_direction_xy", "gate_half_width_m",
         "gate_hysteresis_m", "gate_min_lap_s", "gate_min_lap_distance_m",
         "gate_departure_m", "gate_max_step_m",
+        "gate_mode", "gate_return_direction_xy", "gate_return_radius_m",
+        "gate_smoothing_window", "gate_approach_lookback_s",
+        "gate_approach_min_m", "gate_max_gap_s",
     }
     extra = set(cfg) - allowed
     if extra:
@@ -278,8 +281,27 @@ def read_robot2026_view_settings(anchor_json: str | Path) -> dict:
         direction = vector("gate_direction_xy")
         if float(np.linalg.norm(direction)) < 1e-9:
             raise ValueError("view_2026.gate_direction_xy não pode ser zero")
+        gate_mode = cfg.get("gate_mode", "crossing")
+        if gate_mode not in ("crossing", "corner_return"):
+            raise ValueError("view_2026.gate_mode deve ser crossing ou corner_return")
+        smooth = cfg.get("gate_smoothing_window", 1)
+        if type(smooth) is not int or not (1 <= smooth <= 21) or smooth % 2 == 0:
+            raise ValueError("view_2026.gate_smoothing_window exige ímpar de 1 a 21")
+        incoming = (
+            vector("gate_return_direction_xy")
+            if gate_mode == "corner_return" else None
+        )
+        if incoming is not None and float(np.linalg.norm(incoming)) < 1e-9:
+            raise ValueError("gate_return_direction_xy não pode ser zero")
         settings.update({
             "gate_source": source,
+            "gate_mode": gate_mode,
+            "gate_return_direction_xy": incoming,
+            "gate_smoothing_window": smooth,
+            "gate_return_radius_m": positive("gate_return_radius_m", .5),
+            "gate_approach_lookback_s": positive("gate_approach_lookback_s", 2.5),
+            "gate_approach_min_m": positive("gate_approach_min_m", .06),
+            "gate_max_gap_s": positive("gate_max_gap_s", 8.),
             "gate_xy_m": xy,
             "gate_direction_xy": direction,
             "gate_half_width_m": positive("gate_half_width_m", .4),
@@ -291,6 +313,8 @@ def read_robot2026_view_settings(anchor_json: str | Path) -> dict:
         })
         if settings["gate_hysteresis_m"] >= settings["gate_departure_m"]:
             raise ValueError("gate_departure_m deve exceder gate_hysteresis_m")
+        if gate_mode == "corner_return" and settings["gate_return_radius_m"] >= settings["gate_departure_m"]:
+            raise ValueError("gate_return_radius_m deve ser menor que gate_departure_m")
     return settings
 
 
