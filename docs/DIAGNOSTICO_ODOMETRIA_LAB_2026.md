@@ -162,3 +162,58 @@ primeiros 120 s, aproximadamente 0,105 m contra 1,166 m. A trajetória
 com escalas sozinhas deu 1,186 m. **Esses números dependem da rota
 nominal aproximada** e não validam fisicamente os sinais: confrontar
 com a direção da primeira curva, e não escolher apenas por RMS.
+
+## Revisão de campo — direção física confirmada e PR #11
+
+O operador confirmou a trajetória real:
+**+X → -Y → -X → +Y → +X**, repetida no sentido horário.
+O heading inicial correto na geometria adotada é 0°, não -90°.
+No CSV comparativo, a primeira curva principal aparece por volta de
+30–45 s; esse intervalo foi identificado exploratoriamente na odometria
+e deve ser revisado se o registro físico indicar outros tempos.
+
+### Checagem explícita da primeira curva
+
+Além do RMS nominal, é possível informar um fato observado fisicamente:
+o **sentido horário da primeira curva**. Para cada hipótese o JSON
+passa a conter `observed_turn_check` com a variação angular calculada
+nesse intervalo e um indicador de compatibilidade de sentido.
+O cálculo não cria trajetória de referência nem valida acurácia angular.
+Deslocamento angular absoluto inferior ou igual a 5° é classificado
+como `indeterminate` (não confirma uma curva).
+
+Adicione ao comando anterior:
+
+```powershell
+  --turn-start-s 30 `
+  --turn-end-s 45 `
+  --turn-direction cw `
+```
+
+Use esse trecho com **nomes de saída novos** e com os dois relatórios
+de calibração informados como nos exemplos anteriores. Não execute
+no CSV completo sem especificar o intervalo. As unidades são segundos
+relativos ao início da sessão.
+
+Conferência independente com o CSV LAB7A-v2 no intervalo aproximado
+30,221–44,971 s:
+
+| Hipótese | Giro odométrico | Direção esperada |
+| --- | ---: | --- |
+| original | +88,57° | incompatível (CCW) |
+| heading_menos_90 | +88,57° | incompatível (CCW) |
+| trocar_colunas_e_sinais | -88,57° | compatível (CW) |
+| escalas_reta | +103,43° | incompatível (CCW) |
+| trocar_colunas_e_sinais_com_escalas_reta | -103,43° | compatível (CW) |
+
+Embora a hipótese combinada com escalas reproduza o sentido,
+ela aumenta o deslocamento acumulado total e parece ultrapassar
+a posição aproximada da primeira curva da pista. As escalas PR #10
+**não** devem ser adotadas como calibração definitiva somente com
+aquelas duas tentativas; os tempos do trecho reto devem ser revisados
+contra a posição real dos marcadores e o início/fim do movimento.
+
+O operador é quem fornece o sentido físico (CW/CCW). A ferramenta
+não valida a identidade elétrica real dos cabos ou do firmware e
+não altera o arquivo de configuração. Não fazer merge de uma
+correção de perfil neste PR: trata-se apenas de diagnóstico.
