@@ -16,7 +16,10 @@ UI, estimadores nem o procedimento de segmentação por janelas de 80 s.
 - Perfil original (do JSON efetivamente usado no ensaio).
 - Rotação hipotética de heading inicial +90° e -90°.
 - Inversão isolada esquerda/direita ou de ambos os sinais.
-- Troca da interpretação das duas colunas de encoder.
+- Troca isolada da interpretação das duas colunas de encoder.
+- Troca **conjunta** da interpretação esquerda/direita e das convenções
+  de sinal (com troca das escalas individuais): preserva o avanço
+  físico para frente e inverte a convenção do giro odométrico.
 - Pose inicial medida independentemente (opcional, fornecida pelo usuário).
 - Escalas candidatas provenientes dos relatórios PR #10 (opcional).
 
@@ -83,6 +86,10 @@ diferente muda o alinhamento, não a cinemática local.
    de 3 m. Os fatores do PR #10 não são calibração definitiva.
 3. As variantes de sinal/troca servem para inspecionar efeitos de
    convenção, não para decidir só pela coincidência com a pista.
+   Atenção especial a `trocar_colunas_e_sinais`: ela mantém deslocamento
+   para frente e inverte a curva, diferentemente da troca isolada de
+   colunas, que pode passar a indicar deslocamento para trás.
+   Confirme fisicamente o sentido **da primeira curva** antes de usá-la.
 4. Use o CSV de trajetórias para sobrepor as diferentes curvas numa
    ferramenta de gráficos sem alterar o Dataset Mode.
 5. Não separe voltas pelo resultado deste módulo: janelas de 80 s
@@ -110,3 +117,32 @@ Depois, executar sobre o arquivo real LAB7A, conferir os valores no
 JSON, observar o CSV num gráfico e verificar que a odometria do
 simulador original continua exatamente igual. Alterações de parâmetros
 físicos requerem um ensaio independente de reta/giro conhecido.
+
+## Revisão após retorno de campo LAB7A
+
+O operador confirmou que o robô iniciou no sentido **+X**. A configuração
+`initial_theta_deg: 0` corresponde a esse dado experimental, assumindo
+que o +X do croqui é o +X do referencial do simulador. Portanto, um
+heading inicial de -90° **não é uma correção fisicamente admissível**
+apenas porque sua distância à polilinha seja menor.
+
+No CSV de comparação de 3351 amostras, com a rota aproximada do laboratório,
+observou-se que a hipótese original inicia em +X mas acumula giro positivo,
+entrando em +Y na primeira curva. A rota nominal salva prevê +X e depois
+-Y (sentido horário). Uma hipótese adicional agora disponível,
+`trocar_colunas_e_sinais`, testa se os canais físicos foram trocados,
+**sem inverter o sentido de avanço**. Ela troca também as escalas
+esquerda/direita, mantendo os valores ligados aos canais originais.
+
+Esta hipótese é um **diagnóstico**, não prova de ordem física WR/WL. A
+orientação do percurso e a ligação real dos encoders ainda devem ser
+confirmadas. O arquivo de rota foi desenhado com vértices aproximados,
+logo a distância RMS é somente referência geométrica.
+
+Os relatórios de reta do PR #10 usam o mapeamento original. Se o
+mapeamento físico estiver invertido, a associação de cada escala à roda
+esquerda/direita deve ser revista antes de aplicar esses fatores.
+
+Para repetir a análise após atualizar a branch, use novos nomes de saída,
+pois o comando protege os relatórios já existentes. Espera-se ver um
+novo caso denominado `trocar_colunas_e_sinais` no JSON e no CSV.
