@@ -812,10 +812,16 @@ class DatasetMode:
         if settings.get("gate_source") != "uwb_lms":
             return
         lms = (self._batch_results or {}).get("lms")
-        positions = lms.get("posicoes") if isinstance(lms, dict) else None
+        # As variantes de LS também usam a chave de UI "lms".
+        # Para ter resultados reproduzíveis, este portão exige a
+        # implementação explícita LS atual, não outra variante.
+        is_current_lms = (
+            isinstance(lms, dict) and lms.get("algo_key_actual") == "lms"
+        )
+        positions = lms.get("posicoes") if is_current_lms else None
         uwb = self._robot2026_uwb_data
         if positions is None or uwb is None:
-            self._odom_gate_status = "Portao UWB/LMS: selecione LMS"
+            self._odom_gate_status = "Portao: selecione LS atual"
             return
         positions = np.asarray(positions, dtype=float)
         if (positions.ndim != 2 or positions.shape[1] < 2
