@@ -314,6 +314,23 @@ def draw_reference_routes(mode):
         tip = center + 0.25 * normal
         ptip = cam.world_to_screen(float(tip[0]), float(tip[1]))
         pg.draw.line(screen, (20, 155, 82), middle, ptip, 2)
+        # O início do LAB7A é um canto: a detecção usa reentrada no
+        # círculo verde pelo +Y, não cruzamento x<0 -> x>0.
+        if gate.get("gate_mode") == "corner_return":
+            radius = float(gate["gate_return_radius_m"])
+            radial = cam.world_to_screen(float(center[0]+radius), float(center[1]))
+            px_radius = round(float(np.hypot(
+                radial[0]-middle[0], radial[1]-middle[1]
+            )))
+            if px_radius >= 2:
+                pg.draw.circle(screen, (40, 160, 85), middle, px_radius, 1)
+            incoming = np.asarray(gate["gate_return_direction_xy"], dtype=float)
+            incoming = incoming / np.linalg.norm(incoming)
+            approach = center - .3*incoming
+            p_approach = cam.world_to_screen(
+                float(approach[0]), float(approach[1])
+            )
+            pg.draw.line(screen, (40, 160, 85), p_approach, middle, 2)
         caption = mode.host.font.render("Portao", True, (20, 120, 70))
         screen.blit(caption, (int(middle[0])+5, int(middle[1])-25))
 
