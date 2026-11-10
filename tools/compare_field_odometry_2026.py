@@ -33,12 +33,21 @@ def main(argv=None):
     parser.add_argument("--pose-x", type=float, help="X inicial medido, metros")
     parser.add_argument("--pose-y", type=float, help="Y inicial medido, metros")
     parser.add_argument("--pose-theta-deg", type=float, help="Heading inicial medido, graus")
+    parser.add_argument("--turn-start-s", type=float, help="Início da primeira curva observada, relativo à sessão")
+    parser.add_argument("--turn-end-s", type=float, help="Fim da curva observada, relativo à sessão")
+    parser.add_argument(
+        "--turn-direction", choices=("cw", "ccw"),
+        help="Sentido observado fisicamente: cw=horário, ccw=anti-horário",
+    )
     parser.add_argument("--out", help="JSON resumo; falha se já existir")
     parser.add_argument("--traces-csv", help="CSV de trajetórias por hipótese")
     args = parser.parse_args(argv)
     fields = (args.pose_x, args.pose_y, args.pose_theta_deg)
     if any(v is not None for v in fields) and not all(v is not None for v in fields):
         parser.error("Informe a pose completa: --pose-x, --pose-y e --pose-theta-deg")
+    turn_fields = (args.turn_start_s, args.turn_end_s, args.turn_direction)
+    if any(v is not None for v in turn_fields) and not all(v is not None for v in turn_fields):
+        parser.error("Informe --turn-start-s, --turn-end-s e --turn-direction juntos")
     if args.out is None and args.traces_csv is None:
         parser.error("Escolha --out e/ou --traces-csv para guardar a comparação")
 
@@ -65,6 +74,7 @@ def main(argv=None):
         nominal_route=load_nominal_route(args.route),
         measured_pose=fields if all(v is not None for v in fields) else None,
         scale_candidates=scales,
+        observed_turn=turn_fields if all(v is not None for v in turn_fields) else None,
     )
     report["anchor_config_filename"] = Path(args.anchors).name
     report["route_filename"] = Path(args.route).name if args.route else None
