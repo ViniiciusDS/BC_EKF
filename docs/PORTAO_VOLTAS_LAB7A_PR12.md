@@ -176,6 +176,12 @@ Na captura recebida, `Portao UWB/LMS: 0 voltas` não significava que o
 robô não passou pela largada. A primeira implementação exigia
 travessia de -X para +X, incompatível com a chegada do robô pelo +Y.
 O modo `corner_return` corrige essa hipótese de geometria de largada.
+Se **nenhuma volta for detectada** com confiança, o programa agora
+informa `Portao ...: nao detectado` e oferece novamente **janelas
+temporais** para navegação. Isso não significa que a tentativa foi uma
+volta real, e o operador deve revisar o raio/centro do retorno e a
+qualidade dos dados UWB. Os diagnósticos detalhados são impressos no
+terminal, sem alterar os registros.
 
 A métrica `Dispersão (não erro)` mede espalhamento dos pontos e não
 pode ser comparada aos ~0,16–0,21 m de **distância RMS à rota nominal**
