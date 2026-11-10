@@ -327,6 +327,16 @@ class TestStartGateProfile(unittest.TestCase):
             invoked = {n.func.attr for n in ast.walk(methods[name])
                        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)}
             self.assertIn(call, invoked, f"Missing integration {name} -> {call}")
+        # Fallback evita o estado sem navegação exibido nas capturas
+        # quando nenhuma volta do portão pode ser reconhecida.
+        gate_method = methods["_apply_start_gate_laps"]
+        fallback_calls = [
+            node for node in ast.walk(gate_method)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "split_time_windows"
+        ]
+        self.assertTrue(fallback_calls, "Portão sem voltas precisa manter janelas")
         rendered = {n.name for n in render_tree.body if isinstance(n, ast.FunctionDef)}
         self.assertIn("draw_reference_routes", rendered)
         draw = next(n for n in render_tree.body if isinstance(n, ast.FunctionDef) and n.name=="draw_reference_routes")
