@@ -10,6 +10,10 @@ on:
       - "src/ui/algo_modes/dataset_*"
       - "tests/test_dataset_*.py"
       - "tests/test_pcntlog_adapter.py"
+      - "tests/test_assisted_encoder_calibration.py"
+      - "tests/test_field_odometry_hypotheses.py"
+      - "tools/compare_field_odometry_2026.py"
+      - "tools/check_encoder_calibration_2026.py"
       - ".github/workflows/dataset-2026-regression.yml"
   workflow_dispatch:
 
@@ -38,4 +42,6 @@ jobs:
           python -m unittest discover -s tests -p "test_field_passeio_2026.py" -v
           python -m unittest discover -s tests -p "test_dataset_field_analyzer.py" -v
           python -m unittest discover -s tests -p "test_field_diagnostic.py" -v
+          python -m unittest discover -s tests -p "test_assisted_encoder_calibration.py" -v
+          python -m unittest discover -s tests -p "test_field_odometry_hypotheses.py" -v
           python -m compileall -q src/odometry src/ui/algo_modes src/analysis/field_diagnostic.py tools
