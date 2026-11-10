@@ -14,9 +14,10 @@ Neste PR, há duas alterações independentes:
    `swap_encoder_columns=false`, `invert_left=false`,
    `invert_right=true`, `initial_theta_deg=0`,
    `left_scale=right_scale=1.0`.
-2. Substituir as janelas fixas por **voltas marcadas por cruzamento
-   do portão inicial**, usando odometria ou a trajetória UWB do
-   **LS atual** depois de `Rodar batch`.
+2. Substituir as janelas fixas por **voltas detectadas pelo
+   retorno à região de largada no canto da pista**, usando odometria
+   ou a trajetória UWB do **LS atual** depois de `Rodar batch`.
+   O retorno físico é pelo +Y, seguido de saída em +X.
 
 A rotina não modifica CSV, firmware, rota nominal, algoritmo UWB,
 calculador de métricas nem JSON original. **A referência de rota
@@ -30,15 +31,17 @@ No PowerShell, na raiz do worktree do PR12:
 $orig = "..\BC_EKF"
 python -m tools.create_robot2026_field_variant `
   --source "$orig\anchor_sets\laboratorio_7anc_ancoras.json" `
-  --out ".\anchor_sets\laboratorio_7anc_pr12_experimental.json" `
+  --out ".\anchor_sets\laboratorio_7anc_pr12_canto_v2.json" `
   --start-x 0.15 --start-y 1.38 `
   --direction-deg 0 `
   --gate-source uwb_lms
 ```
 
-**O JSON gerado deve ser revisado**: o portão [0.15, 1.38] m e
-a direção +X vêm do croqui do laboratório; a posição exata da tag
-na passagem pode diferir. O JSON original não é sobrescrito.
+**O JSON gerado deve ser revisado**: a região de retorno [0.15, 1.38] m
+e as direções +Y de chegada / +X de saída vêm do croqui e dos relatos
+do laboratório; o ponto efetivo de passagem da tag pode diferir.
+O JSON original não é sobrescrito. **O arquivo de configuração da
+versão anterior também não é alterado**; gere um nome novo (`...canto_v2.json`).
 
 `--gate-source uwb_lms` (recomendado): usa a trajetória estimada
 pelo **LS atual** depois do batch. Até o batch, a interface
@@ -47,11 +50,11 @@ quando o batch termina, passa a mostrar as voltas detectadas.
 Se o LS estiver desligado ou outra variante estiver selecionada,
 o status avisa para usar **LS atual**.
 
-`--gate-source odometry`: detecta cruzamentos pela odometria corrigida
+`--gate-source odometry`: detecta retornos pela odometria corrigida
 assim que o CSV é carregado, sem executar algoritmos. É útil para
-diagnóstico, mas a deriva acumulada pode fazer o robô estimado não
-cruzar o portão depois de algumas voltas. **Zero cruzamentos não
-significa zero voltas físicas!**
+diagnóstico, mas a deriva acumulada pode afastar o robô estimado da
+região de largada nas voltas seguintes. **Zero retornos detectados
+não significa zero voltas físicas!**
 
 ## Executar no Pygame
 
@@ -69,14 +72,16 @@ Em `Comparar Algoritmos → Configurar Dataset`:
 - Fonte: `Real (PCNT + UWB 2026)`
 - Arquivo: `Bruto: pcntLog_LAB7A.csv`
 - Sessão: `1`
-- Âncoras: `laboratorio_7anc_pr12_experimental.json`
+- Âncoras: `laboratorio_7anc_pr12_canto_v2.json`
 - Rota: `laboratorio_7anc_rota.json`, apenas referência geométrica
 - Mapa: `laboratorio_7anc_mapa.json`, se disponível
 
 Selecione **LS atual** na coluna de algoritmos e clique
 `Rodar batch`. O painel lateral exibe a fonte do portão
-(`Portao UWB/LMS: N voltas`), e o mapa desenha uma pequena linha
-verde orientada transversalmente a +X.
+(`Portao UWB/LMS: N voltas`). O mapa desenha uma linha verde de
+referência, uma seta de chegada +Y e um círculo verde representando
+a região de retorno. A linha verde não é uma fronteira de passagem
+obrigatória nesse modo.
 
 O botão **Modo: Uma volta / Intervalo / Todas** continua funcionando,
 com **Anterior / Próxima**. As linhas UWB estimadas e odométricas
@@ -92,6 +97,13 @@ O novo campo `view_2026` aceita:
   "segmentation": "start_gate",
   "window_duration_s": 80.0,
   "gate_source": "uwb_lms",
+  "gate_mode": "corner_return",
+  "gate_return_direction_xy": [0.0, 1.0],
+  "gate_return_radius_m": 0.5,
+  "gate_smoothing_window": 5,
+  "gate_approach_lookback_s": 2.5,
+  "gate_approach_min_m": 0.06,
+  "gate_max_gap_s": 8.0,
   "gate_xy_m": [0.15, 1.38],
   "gate_direction_xy": [1.0, 0.0],
   "gate_half_width_m": 0.4,
@@ -103,23 +115,28 @@ O novo campo `view_2026` aceita:
 }
 ```
 
-A detecção só aceita cruzamento do lado negativo ao positivo do
-portão, dentro de sua largura lateral, após o robô se afastar
-da origem, e somente se passou tempo suficiente e foi percorrida
-distância incremental mínima. Saltos de posição grandes são
-ignorados e desarmam o detector. O primeiro trecho é considerado
-parcial quando a captura começa longe do portão; o último trecho
-também é sempre parcial até novo cruzamento válido.
+O modo `corner_return` aceita reentrada no círculo do ponto inicial
+vindo da direção física de retorno (+Y). Exige afastamento prévio,
+tempo e distância mínimos, e deslocamento recente compatível com +Y.
+Esse modo **não exige atravessar uma linha de x negativo para x positivo**:
+o robô faz uma curva no canto antes de sair em +X.
+
+Uma cópia dos pontos UWB/LS é suavizada por mediana local de 5 amostras
+**somente para a contagem de voltas**. Saltos isolados de posição são
+ignorados e lacunas longas invalidam evidências de percurso parcial.
+Nenhuma estimativa exibida pelo Analyzer ou solver é modificada.
+O primeiro trecho só conta como completo se a gravação iniciar perto
+da largada; o último permanece parcial até ser detectado outro retorno.
 
 Esses limiares são **experimentais**, não medidos diretamente com
-ground truth. Ajuste `gate_xy_m` e a largura com base no croqui e
-nos dados UWB antes de interpretar quantidades de voltas.
+ground truth. Ajuste `gate_xy_m` e `gate_return_radius_m` com base no
+croqui e nos dados UWB antes de interpretar quantidades de voltas.
 O `gate_source=uwb_lms` utiliza somente snapshots UWB válidos
-com índices associados ao PCNT, portanto as fatias da interface
-são coerentes com os timestamps, sem interpolar UWB.
+com índices associados ao PCNT. A mediana local serve exclusivamente
+ao detector; não se interpolam novos ranges UWB.
 
 **Atenção:** a fonte UWB/LMS usa posições estimadas com ruído;
-sem filtro temporal, cruzamentos perdidos/falsos ainda são possíveis.
+mesmo com a mediana no detector, retornos perdidos/falsos ainda são possíveis.
 A proteção por histerese, deslocamento e tempo é conservadora,
 mas não substitui uma marcação física ou câmera de referência.
 Um contador de voltas físico sincronizado continua desejável.
@@ -152,3 +169,24 @@ Validar manualmente no Windows:
 
 O PR permanece Draft até validação local com o log LAB7A e conferência
 visual do número de cruzamentos em relação aos registros do laboratório.
+
+## Como interpretar as capturas após o primeiro teste (v1)
+
+Na captura recebida, `Portao UWB/LMS: 0 voltas` não significava que o
+robô não passou pela largada. A primeira implementação exigia
+travessia de -X para +X, incompatível com a chegada do robô pelo +Y.
+O modo `corner_return` corrige essa hipótese de geometria de largada.
+
+A métrica `Dispersão (não erro)` mede espalhamento dos pontos e não
+pode ser comparada aos ~0,16–0,21 m de **distância RMS à rota nominal**
+apresentados antes. No painel lateral, pressione **Métrica** até aparecer
+`Rota nominal` para comparação com os resultados anteriores.
+Ative somente o **LS atual** temporariamente para inspecionar a trilha
+empregada na detecção, ocultando a trilateração vermelha que pode
+conter outliers longos. A mudança de perfil odométrico não altera
+as fórmulas UWB. 
+
+Mesmo após esta correção, o número de voltas reais do LAB7A não está
+validado automaticamente: comparar com a gravação física, revisar o
+centro da região inicial e conferir os contadores de diagnóstico
+impressos no terminal como `[DATASET] portao UWB/LMS: {...}`.
