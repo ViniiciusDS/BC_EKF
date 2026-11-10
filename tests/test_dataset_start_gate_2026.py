@@ -34,6 +34,24 @@ def synthetic_clockwise_laps(repeats=2):
     return xy, ts
 
 
+def synthetic_corner_return_laps(repeats=3):
+    """LAB7A simplificado: saída +X, retorno +Y, curva no canto."""
+    corners = [(0., 0.), (2., 0.), (2., -1.5), (0., -1.5), (0., 0.)]
+    single = []
+    for a, b in zip(corners, corners[1:]):
+        a, b = np.array(a), np.array(b)
+        parts = int(round(np.linalg.norm(b-a) / .1))
+        for j in range(parts):
+            alpha = j / parts
+            single.append(a*(1-alpha) + b*alpha)
+    pts = [*single] * repeats + [
+        np.array([0., 0.]), np.array([.1, 0.]),
+    ]
+    xy = np.asarray(pts, dtype=float)
+    t = np.arange(len(xy), dtype=float) * .5
+    return xy, t
+
+
 class TestStartGateLapSegmentation(unittest.TestCase):
     def options(self):
         return dict(
@@ -42,6 +60,76 @@ class TestStartGateLapSegmentation(unittest.TestCase):
             min_lap_s=15., min_lap_distance_m=4.5,
             departure_m=.8, max_step_m=.8,
         )
+
+    def corner_options(self):
+        return dict(
+            start_xy=[0., 0.],
+            direction_xy=[1., 0.],
+            gate_mode="corner_return",
+            return_direction_xy=[0., 1.],
+            return_radius_m=.5,
+            smoothing_window=1,
+            approach_lookback_s=2.5,
+            approach_min_m=.06,
+            max_gap_s=8.,
+            half_width_m=.4,
+            hysteresis_m=.12,
+            min_lap_s=20.,
+            min_lap_distance_m=4.5,
+            departure_m=.8,
+            max_step_m=.8,
+        )
+
+    def test_lab7a_corner_return_counts_laps_without_crossing_x_zero(self):
+        """Retorno pelo +Y deve contar mesmo sem atravessar de -X para +X."""
+        xy, t = synthetic_corner_return_laps(3)
+        before = xy.copy()
+        old, old_info = split_start_gate_laps(xy, t, **{
+            k:v for k,v in self.corner_options().items()
+            if k not in (
+                "gate_mode", "return_direction_xy", "return_radius_m",
+                "smoothing_window", "approach_lookback_s", "approach_min_m",
+                "max_gap_s",
+            )
+        })
+        self.assertEqual(old_info["complete_laps"], 0)
+        self.assertEqual(len(old), 1)
+
+        laps, info = split_start_gate_laps(xy, t, **self.corner_options())
+        self.assertEqual(info["gate_mode"], "corner_return")
+        self.assertEqual(info["complete_laps"], 3)
+        self.assertEqual(len(info["crossing_indices_pcnt"]), 3)
+        self.assertEqual([lap.complete for lap in laps], [True, True, True, False])
+        self.assertEqual(laps[-1].stop, len(xy))
+        np.testing.assert_array_equal(xy, before)
+
+    def test_corner_rejects_wrong_approach_side(self):
+        """Retorno pelo -Y não corresponde à última reta real do LAB7A."""
+        xy, t = synthetic_corner_return_laps(2)
+        opts = self.corner_options()
+        opts["return_direction_xy"] = [0., -1.]
+        laps, info = split_start_gate_laps(xy, t, **opts)
+        self.assertEqual(info["complete_laps"], 0)
+        self.assertEqual(len(laps), 1)
+        self.assertGreater(info["rejected_arrival_direction"], 0)
+
+    def test_corner_with_isolated_uwb_outlier_and_sparse_pcnt_mapping(self):
+        xy, t = synthetic_corner_return_laps(2)
+        original = xy.copy()
+        xy[20] = [9., 12.]
+        xy[102] = [-7., 8.]
+        ids = np.arange(0, len(xy), 2, dtype=int)
+        opts = self.corner_options()
+        opts["smoothing_window"] = 5
+        laps, info = split_start_gate_laps(
+            xy[ids], t[ids], sample_indices=ids,
+            total_samples=len(xy), **opts
+        )
+        self.assertEqual(info["complete_laps"], 2)
+        self.assertEqual(laps[-1].stop, len(xy))
+        self.assertTrue(all(p.stop <= len(xy) for p in laps))
+        self.assertEqual(xy[20, 0], 9.)
+        np.testing.assert_array_equal(original[21:], xy[21:])
 
     def test_two_clockwise_complete_laps_and_partial_are_counted(self):
         xy, t = synthetic_clockwise_laps(3)
@@ -172,6 +260,9 @@ class TestStartGateProfile(unittest.TestCase):
         view = read_robot2026_view_settings(dest)
         self.assertEqual(view["segmentation"], "start_gate")
         self.assertEqual(view["gate_source"], "uwb_lms")
+        self.assertEqual(view["gate_mode"], "corner_return")
+        self.assertEqual(view["gate_return_direction_xy"], [0., 1.])
+        self.assertEqual(view["gate_smoothing_window"], 5)
         self.assertEqual(view["gate_xy_m"], [.15, 1.38])
 
     def test_refuses_overwrite_or_example_geometry(self):
