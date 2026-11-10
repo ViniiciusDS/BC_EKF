@@ -48,8 +48,18 @@ def build_variant(source_json, *, start_xy, direction_deg=0.0, gate_source="uwb_
     view.update({
         "segmentation": "start_gate",
         "gate_source": gate_source,
+        # LAB7A: o retorno ocorre pelo lado +Y (vindo da última
+        # reta), e a nova volta parte em +X. Não é uma travessia
+        # do portão perpendicular a +X; é uma reentrada num canto.
+        "gate_mode": "corner_return",
         "gate_xy_m": [float(start_xy[0]), float(start_xy[1])],
         "gate_direction_xy": [math.cos(heading), math.sin(heading)],
+        "gate_return_direction_xy": [-math.sin(heading), math.cos(heading)],
+        "gate_return_radius_m": .5,
+        "gate_smoothing_window": 5 if gate_source == "uwb_lms" else 1,
+        "gate_approach_lookback_s": 2.5,
+        "gate_approach_min_m": .06,
+        "gate_max_gap_s": 8.0,
         "gate_half_width_m": .4,
         "gate_hysteresis_m": .12,
         "gate_min_lap_s": 30.0,
