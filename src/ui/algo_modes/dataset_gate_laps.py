@@ -107,13 +107,18 @@ def split_start_gate_laps(
     for i in range(1, len(xy)):
         p0, p1 = xy[i-1, :2], xy[i, :2]
         if not np.isfinite(p0).all() or not np.isfinite(p1).all():
+            # Um intervalo sem posição válida invalida o percurso acumulado.
             armed = False
+            departed = False
+            distance_since_gate = 0.0
             continue
         step = float(np.linalg.norm(p1 - p0))
         if step > max_step_m:
-            # Não ligar duas posições UWB desconexas como um cruzamento.
-            # Também não somar teleporte à distância percorrida.
+            # Não ligar posições UWB desconexas. Após um salto, exigir
+            # novo afastamento e distância mínima antes de contar volta.
             armed = False
+            departed = False
+            distance_since_gate = 0.0
             rejected_jumps += 1
             continue
         distance_since_gate += step
