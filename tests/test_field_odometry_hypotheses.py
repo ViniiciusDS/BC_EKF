@@ -82,8 +82,49 @@ class TestFieldOdometryHypotheses(unittest.TestCase):
             cases["escalas_reta"]["integrated_abs_forward_m"],
             cases["original"]["integrated_abs_forward_m"] * 1.2,
         )
+        mirrored = cases["trocar_colunas_e_sinais_com_escalas_reta"]
+        calibrated = cases["escalas_reta"]
+        self.assertAlmostEqual(
+            mirrored["integrated_abs_forward_m"],
+            calibrated["integrated_abs_forward_m"],
+        )
+        self.assertAlmostEqual(
+            mirrored["heading_change_deg"],
+            -calibrated["heading_change_deg"],
+        )
+        self.assertAlmostEqual(
+            mirrored["relative_end_robot_frame_m"][0],
+            calibrated["relative_end_robot_frame_m"][0],
+        )
+        self.assertAlmostEqual(
+            mirrored["relative_end_robot_frame_m"][1],
+            -calibrated["relative_end_robot_frame_m"][1],
+        )
+        self.assertAlmostEqual(
+            mirrored["profile"]["left_scale"], 1.2
+        )
         self.assertEqual(before, report["raw_log_sha256"])
         self.assertEqual(before, hashlib.sha256(self.log.read_bytes()).hexdigest())
+
+    def test_combined_remap_swaps_unequal_scale_candidates_by_channel(self):
+        """Escalas do PR10 acompanham os canais brutos quando trocados."""
+        self.write_log([(1000, 1000), (1000, 1400)])
+        report, _ = compare_odometry_hypotheses(
+            self.log, self.profile, scale_candidates=(1.22, 1.20)
+        )
+        cases = {case["hypothesis"]: case for case in report["cases"]}
+        calibrated = cases["escalas_reta"]
+        mirrored = cases["trocar_colunas_e_sinais_com_escalas_reta"]
+        self.assertAlmostEqual(mirrored["profile"]["left_scale"], 1.20)
+        self.assertAlmostEqual(mirrored["profile"]["right_scale"], 1.22)
+        self.assertAlmostEqual(
+            calibrated["integrated_abs_forward_m"],
+            mirrored["integrated_abs_forward_m"],
+        )
+        self.assertAlmostEqual(
+            calibrated["heading_change_deg"],
+            -mirrored["heading_change_deg"],
+        )
 
     def test_sign_and_swap_hypotheses_are_always_explicit(self):
         self.write_log([(600, 600)])
