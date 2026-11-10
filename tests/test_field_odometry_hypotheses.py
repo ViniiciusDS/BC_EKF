@@ -90,12 +90,53 @@ class TestFieldOdometryHypotheses(unittest.TestCase):
         report, trace = compare_odometry_hypotheses(self.log, self.profile)
         names = {c["hypothesis"] for c in report["cases"]}
         self.assertTrue({
-            "original", "trocar_colunas", "inverter_esquerda",
-            "inverter_direita", "inverter_ambas",
+            "original", "trocar_colunas", "trocar_colunas_e_sinais",
+            "inverter_esquerda", "inverter_direita", "inverter_ambas",
             "heading_mais_90", "heading_menos_90",
         } <= names)
-        self.assertEqual(len(trace), 14)
+        self.assertEqual(len(trace), 16)
         self.assertEqual(self.profile.invert_left, True)
+
+    def test_swap_and_signs_preserve_forward_direction_but_reverse_turn(self):
+        """Mapeamento alternativo preserva +X e espelha curva esquerda/direita."""
+        # O primeiro trecho avança em linha reta no sentido físico +X.
+        # Na sequência, o encoder direito avança mais: curva CCW original.
+        self.write_log([(600, 600), (300, 700), (300, 700)])
+        report, traces = compare_odometry_hypotheses(self.log, self.profile)
+        by_name = {case["hypothesis"]: case for case in report["cases"]}
+        original = by_name["original"]
+        mirror = by_name["trocar_colunas_e_sinais"]
+        self.assertAlmostEqual(
+            original["integrated_abs_forward_m"],
+            mirror["integrated_abs_forward_m"],
+        )
+        self.assertAlmostEqual(
+            original["left_wheel_total_m"], mirror["right_wheel_total_m"]
+        )
+        self.assertAlmostEqual(
+            original["right_wheel_total_m"], mirror["left_wheel_total_m"]
+        )
+        self.assertAlmostEqual(
+            original["heading_change_deg"],
+            -mirror["heading_change_deg"]
+        )
+        self.assertAlmostEqual(
+            original["relative_end_robot_frame_m"][0],
+            mirror["relative_end_robot_frame_m"][0]
+        )
+        self.assertAlmostEqual(
+            original["relative_end_robot_frame_m"][1],
+            -mirror["relative_end_robot_frame_m"][1]
+        )
+        p = {name: sorted(
+            (t for t in traces if t["hypothesis"] == name),
+            key=lambda t: t["timestamp_s"]
+        ) for name in ("original", "trocar_colunas_e_sinais")}
+        for name in p:
+            self.assertGreater(p[name][1]["x_m"], .15)
+            self.assertAlmostEqual(p[name][1]["y_m"], 1.38, places=9)
+        self.assertIsNone(report["best_case"])
+        self.assertFalse(report["calibration_applied"])
 
     def test_session_reset_is_not_concatenated(self):
         self.write_log([(100, 100), (100, 100)], reset=True)
