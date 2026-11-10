@@ -131,6 +131,7 @@ def split_start_gate_laps(
     last_good = 0 if np.isfinite(xy[0]).all() else None
     crossings, crossing_times = [], []
     rejected_jumps = 0
+    rejected_long_gaps = 0
     rejected_arrival_direction = 0
     potential_arrivals = 0
 
@@ -144,6 +145,7 @@ def split_start_gate_laps(
         elapsed_gap = float(t[i] - t[p])
         if elapsed_gap > max_gap_s:
             # Não inventar percurso durante ausência prolongada de posição.
+            rejected_long_gaps += 1
             armed = False
             departed = False
             traveled = 0.0
@@ -224,6 +226,7 @@ def split_start_gate_laps(
         "complete_laps": sum(p.complete for p in slices),
         "first_segment_near_gate": first_near,
         "rejected_large_steps": rejected_jumps,
+        "rejected_long_gaps": rejected_long_gaps,
         "potential_arrivals": potential_arrivals,
         "rejected_arrival_direction": rejected_arrival_direction,
         "gate_xy_m": origin.tolist(), "gate_forward_xy": n.tolist(),
