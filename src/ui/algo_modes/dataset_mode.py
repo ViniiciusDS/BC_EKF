@@ -788,6 +788,13 @@ class DatasetMode:
             "min_lap_distance_m": settings["gate_min_lap_distance_m"],
             "departure_m": settings["gate_departure_m"],
             "max_step_m": settings["gate_max_step_m"],
+            "gate_mode": settings["gate_mode"],
+            "return_direction_xy": settings["gate_return_direction_xy"],
+            "return_radius_m": settings["gate_return_radius_m"],
+            "smoothing_window": settings["gate_smoothing_window"],
+            "approach_lookback_s": settings["gate_approach_lookback_s"],
+            "approach_min_m": settings["gate_approach_min_m"],
+            "max_gap_s": settings["gate_max_gap_s"],
         }
         samples = self._robot2026_data.sample_count
         slices, diag = split_start_gate_laps(
@@ -799,7 +806,12 @@ class DatasetMode:
         self._odom_is_time_window = False
         source = "UWB/LMS" if sample_indices is not None else "odometria"
         complete = diag["complete_laps"]
-        self._odom_gate_status = f"Portao {source}: {complete} voltas"
+        self._odom_gate_status = (
+            f"Portao {source}: {complete} voltas"
+            + (" (revise o portao)" if complete == 0 else "")
+        )
+        # Apenas contadores de diagnóstico: trajetórias continuam intactas.
+        print(f"[DATASET] portao {source}: {diag}")
         self.odom_view_mode = "single"
         self.odom_lap_start = 1
         self.odom_lap_window = 5
