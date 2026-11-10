@@ -116,6 +116,20 @@ def candidate_profiles(base: Robot2026Profile, *, measured_pose=None, scales=Non
         ("heading_mais_90", replace(base, initial_theta_rad=base.initial_theta_rad + math.pi/2)),
         ("heading_menos_90", replace(base, initial_theta_rad=base.initial_theta_rad - math.pi/2)),
         ("trocar_colunas", replace(base, swap_encoder_columns=not base.swap_encoder_columns)),
+        # Hipótese física distinta da troca isolada: o log pode ter
+        # colunas WR/WL trocadas na identificação. Ao trocar também os
+        # sinais associados, ambas as rodas permanecem avançando,
+        # enquanto o sinal da rotação é espelhado (dr-dl -> dl-dr).
+        # NÃO implica que seja o mapeamento correto: verificar curva
+        # fisicamente observada antes de aplicar ao perfil do robô.
+        ("trocar_colunas_e_sinais", replace(
+            base,
+            swap_encoder_columns=not base.swap_encoder_columns,
+            invert_left=base.invert_right,
+            invert_right=base.invert_left,
+            left_scale=base.right_scale,
+            right_scale=base.left_scale,
+        )),
         ("inverter_esquerda", replace(base, invert_left=not base.invert_left)),
         ("inverter_direita", replace(base, invert_right=not base.invert_right)),
         ("inverter_ambas", replace(
