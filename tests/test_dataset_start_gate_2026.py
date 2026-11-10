@@ -129,7 +129,8 @@ class TestStartGateLapSegmentation(unittest.TestCase):
         self.assertEqual(laps[-1].stop, len(xy))
         self.assertTrue(all(p.stop <= len(xy) for p in laps))
         self.assertEqual(xy[20, 0], 9.)
-        np.testing.assert_array_equal(original[21:], xy[21:])
+        self.assertEqual(xy[102, 0], -7.)
+        np.testing.assert_array_equal(original[103:], xy[103:])
 
     def test_two_clockwise_complete_laps_and_partial_are_counted(self):
         xy, t = synthetic_clockwise_laps(3)
