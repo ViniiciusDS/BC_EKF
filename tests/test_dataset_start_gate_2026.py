@@ -178,7 +178,11 @@ class TestStartGateLapSegmentation(unittest.TestCase):
         t2 = np.array([0., 10., 20., 30.])
         _, diag = split_start_gate_laps(xy2, t2, **self.options())
         self.assertEqual(diag["crossing_indices_pcnt"], [])
-        self.assertGreater(diag["rejected_large_steps"], 0)
+        # O cenário tem lacunas de 10 s, logo o detector pode rejeitar
+        # pela duração (max_gap=8 s) ANTES de avaliar o salto espacial.
+        self.assertGreater(
+            diag["rejected_large_steps"] + diag["rejected_long_gaps"], 0
+        )
 
     def test_uwb_sample_indices_map_to_full_pcnt_session(self):
         xy, t = synthetic_clockwise_laps(2)
