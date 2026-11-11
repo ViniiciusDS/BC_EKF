@@ -477,6 +477,12 @@ def draw_dataset_sidebar_controls(mode):
         if status:
             stamp = font.render(status, True, (27, 117, 75))
             screen.blit(stamp, (sidebar_x, y - 39))
+        if (not getattr(mode, "_odom_is_time_window", True)
+                and any(lap.complete for lap in getattr(mode, "_robot2026_laps", ()))
+                and getattr(mode, "_batch_results", None)):
+            # Atalho apenas quando há volta física realmente confirmada.
+            hint = font.render("F7: exportar indicadores por volta", True, (55, 85, 120))
+            screen.blit(hint, (sidebar_x, y - 59))
         label = font.render(
             f"Visualizar: {mode._odometry_view_label()}", True, (65, 65, 72)
         )
