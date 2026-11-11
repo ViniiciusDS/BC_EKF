@@ -337,54 +337,32 @@ class TestStartGateProfile(unittest.TestCase):
         view = read_robot2026_view_settings(self.source)
         self.assertEqual(view, {"segmentation": "time_windows", "window_duration_s": 80.})
 
-    def test_dataset_ui_initially_selects_first_complete_lap(self):
-        """A primeira amostra UWB pode surgir após a saída da largada.
-
-        Nesse caso existem N retornos mas apenas N-1 voltas completas
-        demonstradas pelo conjunto de posições. A UI deve abrir uma
-        volta completa e continuar permitindo acessar o trecho parcial.
-        """
-        from types import SimpleNamespace
-        from src.ui.algo_modes.dataset_mode import DatasetMode
+    def test_navigation_starts_with_first_complete_lap_after_partial(self):
+        """Não depender de pygame para validar escolha da primeira volta."""
+        from src.ui.algo_modes.dataset_gate_laps import first_complete_lap_index
 
         xy, t = synthetic_corner_return_laps(3)
-        # Primeira medição aparece 0,6 m após o início do movimento.
-        # A volta que termina no primeiro retorno não pode ser declarada
-        # completa apenas pela forma da trajetória a partir daí.
-        xy, t = xy[6:], t[6:] - t[6]
-        mode = object.__new__(DatasetMode)
-        mode._robot2026_data = SimpleNamespace(
-            sample_count=len(xy), timestamps_s=t
+        # Primeira amostra aparece a 0,6 m da largada, depois de partir.
+        xy, t = xy[6:], t[6:]-t[6]
+        laps, info = split_start_gate_laps(
+            xy, t, **{
+                "start_xy": [0., 0.], "direction_xy": [1., 0.],
+                "gate_mode": "corner_return",
+                "return_direction_xy": [0., 1.],
+                "return_radius_m": .5,
+                "smoothing_window": 1,
+                "approach_lookback_s": 2.5, "approach_min_m": .06,
+                "max_gap_s": 8.,
+                "half_width_m": .4, "hysteresis_m": .12,
+                "min_lap_s": 20., "min_lap_distance_m": 4.5,
+                "departure_m": .8, "max_step_m": .8,
+            }
         )
-        mode._robot2026_view_settings = {
-            "segmentation": "start_gate",
-            "window_duration_s": 80.,
-            "gate_xy_m": [0., 0.],
-            "gate_direction_xy": [1., 0.],
-            "gate_half_width_m": .4,
-            "gate_hysteresis_m": .12,
-            "gate_min_lap_s": 20.,
-            "gate_min_lap_distance_m": 4.5,
-            "gate_departure_m": .8,
-            "gate_max_step_m": .8,
-            "gate_mode": "corner_return",
-            "gate_return_direction_xy": [0., 1.],
-            "gate_return_radius_m": .5,
-            "gate_smoothing_window": 1,
-            "gate_approach_lookback_s": 2.5,
-            "gate_approach_min_m": .06,
-            "gate_max_gap_s": 8.,
-        }
-        mode._apply_start_gate_laps(xy, t)
-        self.assertFalse(mode._robot2026_laps[0].complete)
-        self.assertEqual(
-            len(mode._odom_gate_diagnostics["crossing_times_s"]), 3
-        )
-        self.assertEqual(mode._odom_gate_diagnostics["complete_laps"], 2)
-        self.assertEqual(mode.odom_view_mode, "single")
-        self.assertEqual(mode.odom_lap_start, 2)
-        self.assertIn("2 completas / 3 retornos", mode._odom_gate_status)
-        self.assertFalse(mode._odom_is_time_window)
+        self.assertFalse(laps[0].complete)
+        self.assertEqual(len(info["crossing_times_s"]), 3)
+        self.assertEqual(info["complete_laps"], 2)
+        self.assertEqual(first_complete_lap_index(laps), 2)
+        self.assertEqual(first_complete_lap_index(tuple()), 1)
 
     def test_actual_ui_wires_config_lms_batch_and_renders_gate(self):
         # Regressão estrutural: impede repetir PR #9, quando a função
@@ -414,6 +392,15 @@ class TestStartGateProfile(unittest.TestCase):
             and node.func.id == "split_time_windows"
         ]
         self.assertTrue(fallback_calls, "Portão sem voltas precisa manter janelas")
+        # A escolha da primeira volta completa deve estar ligada
+        # ao Dataset Mode real, não apenas testada em um módulo isolado.
+        start_calls = [
+            node for node in ast.walk(gate_method)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "first_complete_lap_index"
+        ]
+        self.assertTrue(start_calls, "Dataset Mode precisa selecionar primeira volta completa")
         rendered = {n.name for n in render_tree.body if isinstance(n, ast.FunctionDef)}
         self.assertIn("draw_reference_routes", rendered)
         draw = next(n for n in render_tree.body if isinstance(n, ast.FunctionDef) and n.name=="draw_reference_routes")
