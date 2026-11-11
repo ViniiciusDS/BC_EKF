@@ -196,3 +196,63 @@ Mesmo após esta correção, o número de voltas reais do LAB7A não está
 validado automaticamente: comparar com a gravação física, revisar o
 centro da região inicial e conferir os contadores de diagnóstico
 impressos no terminal como `[DATASET] portao UWB/LMS: {...}`.
+
+## Revisão após captura de 11/11: sem reentrada na região inicial
+
+O log real contém 808 snapshots (805 posições LS válidas) e
+`potential_arrivals=0`, `first_segment_near_gate=False`,
+`rejected_large_steps=0` e `rejected_long_gaps=0`.
+O detector está sendo invocado corretamente após o batch, mas a
+trajetória UWB/LS não entra num círculo de 0,50 m no ponto físico
+de referência `(0,15; 1,38)`. Isso não é rejeição do sentido da
+curva, pois `rejected_arrival_direction=0`.
+
+Adicionamos diagnósticos **não destrutivos** ao log:
+- `first_valid_xy_m` e `first_valid_time_s`: primeira posição LS;
+- `closest_gate_distance_m`, `closest_gate_xy_m`,
+  `closest_gate_time_s`: ponto LS mais próximo da largada;
+- `samples_inside_gate_radius`: quantidade de estimativas dentro do
+  círculo (sem afirmar que houve uma volta);
+- `nearest_gate_by_80s_window`: aproximação mínima por janela,
+  para distinguir deslocamento sistemático de deriva acumulada.
+
+### Inconsistência de geometria A2 (requer conferência física)
+
+O pacote de laboratório original contém **dois JSONs**. No principal,
+A2=(**2,68**, **0**, 1,76) m, transcrição da etiqueta de coordenadas do
+croqui. No alternativo, A2=(**0**, **2,68**, 1,76) m, compatível com a
+posição da âncora desenhada no canto alto esquerdo. **Não sabemos qual
+é a coordenada física correta**. Se o primeiro JSON for incorreto,
+o problema afeta os algoritmos UWB e a contagem de voltas; nenhuma
+alteração de odometria corrige trilateração com âncora deslocada.
+Além disso, a ordem SPI 1..7=A2..A8 é hipótese do pacote, não foi
+verificada contra a identificação física de cada módulo.
+
+É essencial validar as posições físicas e a relação slot→âncora.
+Não recomendo aumentar automaticamente o raio do portão ou mudar
+o centro de forma a forçar voltas artificiais.
+
+Para comparar **apenas de forma exploratória** as duas geometrias,
+mantenha o mesmo CSV, sessão, demais parâmetros e rota, e gere
+dois perfis experimentais a partir dos dois JSONs. Use saídas
+diferentes para não sobrescrever o diagnóstico anterior:
+
+```powershell
+python -m tools.create_robot2026_field_variant `
+  --source "..\BC_EKF\anchor_sets\laboratorio_7anc_ancoras.json" `
+  --out "anchor_sets\laboratorio_7anc_pr12_A2_literal_v3.json" `
+  --gate-source uwb_lms
+
+python -m tools.create_robot2026_field_variant `
+  --source "..\BC_EKF\anchor_sets\laboratorio_7anc_ancoras_A2_alternativa.json" `
+  --out "anchor_sets\laboratorio_7anc_pr12_A2_alternativa_v3.json" `
+  --gate-source uwb_lms
+```
+
+No Pygame, rode **LS atual isolado**, comparando métricas de rota
+nominal, posição de partida e `closest_gate_distance_m`. A diferença
+entre os cenários pode indicar inconsistência, mas **não comprova**
+qual posição física é correta; isso depende da medição da A2.
+A trilateração 3D atual usa as primeiras quatro âncoras, incluindo A2,
+e portanto pode produzir outliers expressivos se A2 estiver incorreta.
+O PR #12 não modifica as rotinas matemáticas dos estimadores.
