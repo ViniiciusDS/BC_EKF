@@ -219,8 +219,54 @@ def split_start_gate_laps(
         for j, (start, stop) in enumerate(zip(boundaries, boundaries[1:]))
         if stop > start
     ]
+    # Evidência direta para separar erro de referencial de regras
+    # restritivas do portão. Todos estes valores são DESCRITIVOS:
+    # nunca deslocam automaticamente o portão para combinar com UWB.
+    finite = np.flatnonzero(np.isfinite(radius))
+    closest = int(finite[np.argmin(radius[finite])]) if len(finite) else None
+    first_valid = int(finite[0]) if len(finite) else None
+    gate_radius = return_radius_m if gate_mode == "corner_return" else half_width_m
+    window_start = float(t[0])
+    per_window = []
+    for win in range(int(math.ceil((float(t[-1]) - window_start) / 80.0))):
+        lo, hi = window_start + 80*win, window_start + 80*(win+1)
+        candidates = np.flatnonzero((t >= lo) & (t < hi) & np.isfinite(radius))
+        if len(candidates):
+            near = int(candidates[np.argmin(radius[candidates])])
+            per_window.append({
+                "window": win+1,
+                "start_s": round(lo-window_start, 2),
+                "end_s": round(min(hi, float(t[-1]))-window_start, 2),
+                "nearest_distance_m": round(float(radius[near]), 3),
+                "nearest_xy_m": [round(float(v), 3) for v in xy[near]],
+                "nearest_time_s": round(float(t[near]), 3),
+            })
+
     diagnostics = {
         "source_samples": len(xy), "pcnt_samples": int(total_samples),
+        "valid_xy_samples": int(len(finite)),
+        "samples_inside_gate_radius": int(np.sum(
+            np.isfinite(radius) & (radius <= gate_radius)
+        )),
+        "closest_gate_distance_m": (
+            round(float(radius[closest]), 3) if closest is not None else None
+        ),
+        "closest_gate_xy_m": (
+            [round(float(v), 3) for v in xy[closest]]
+            if closest is not None else None
+        ),
+        "closest_gate_time_s": (
+            round(float(t[closest]), 3) if closest is not None else None
+        ),
+        "first_valid_xy_m": (
+            [round(float(v), 3) for v in xy[first_valid]]
+            if first_valid is not None else None
+        ),
+        "first_valid_time_s": (
+            round(float(t[first_valid]), 3)
+            if first_valid is not None else None
+        ),
+        "nearest_gate_by_80s_window": per_window,
         "gate_mode": gate_mode, "crossing_indices_pcnt": crossings,
         "crossing_times_s": crossing_times,
         "complete_laps": sum(p.complete for p in slices),
