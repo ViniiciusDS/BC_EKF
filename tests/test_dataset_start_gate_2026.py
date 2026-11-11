@@ -103,6 +103,34 @@ class TestStartGateLapSegmentation(unittest.TestCase):
         self.assertEqual(laps[-1].stop, len(xy))
         np.testing.assert_array_equal(xy, before)
 
+    def test_debug_info_reveals_gate_geometry_mismatch_without_false_laps(self):
+        """Distingue referência UWB afastada de erro no sentido de chegada."""
+        xy, t = synthetic_corner_return_laps(2)
+        # Simula deslocamento sistemático da localização (p.ex. por
+        # âncora mal cadastrada), sem tocar no PCNT.
+        shifted = xy + np.array([1.5, 0.])
+        slices, info = split_start_gate_laps(
+            shifted, t, **self.corner_options()
+        )
+        self.assertEqual(info["complete_laps"], 0)
+        self.assertEqual(info["potential_arrivals"], 0)
+        self.assertEqual(info["samples_inside_gate_radius"], 0)
+        self.assertGreater(info["closest_gate_distance_m"], .5)
+        self.assertFalse(info["first_segment_near_gate"])
+        self.assertEqual(info["valid_xy_samples"], len(shifted))
+        self.assertGreater(len(info["nearest_gate_by_80s_window"]), 0)
+        self.assertEqual(len(slices), 1)
+
+    def test_debug_info_distinguishes_rejected_return_direction(self):
+        xy, t = synthetic_corner_return_laps(2)
+        opts = self.corner_options()
+        opts["return_direction_xy"] = [0., -1.]
+        _, info = split_start_gate_laps(xy, t, **opts)
+        self.assertGreater(info["samples_inside_gate_radius"], 0)
+        self.assertGreater(info["potential_arrivals"], 0)
+        self.assertGreater(info["rejected_arrival_direction"], 0)
+        self.assertEqual(info["complete_laps"], 0)
+
     def test_corner_rejects_wrong_approach_side(self):
         """Retorno pelo -Y não corresponde à última reta real do LAB7A."""
         xy, t = synthetic_corner_return_laps(2)
