@@ -65,7 +65,9 @@ from src.ui.algo_modes.dataset_lap_view import (
     select_laps,
     selection_label,
 )
-from src.ui.algo_modes.dataset_gate_laps import split_start_gate_laps
+from src.ui.algo_modes.dataset_gate_laps import (
+    split_start_gate_laps, first_complete_lap_index,
+)
 from src.ui.algo_modes.dataset_track_reference import build_track_from_first_complete_lap
 from src.ui.algo_modes.dataset_uwb2026_pipeline import (
     load_robot2026_single_tag_uwb, read_pcnt_anchor_slot_mapping,
@@ -819,10 +821,7 @@ class DatasetMode:
             )
             # Abrir a primeira volta CONFIRMADA, em vez do trecho parcial
             # inicial. O usuário ainda pode navegar ao trecho parcial.
-            selected_start = next(
-                (index for index, lap in enumerate(slices, start=1)
-                 if lap.complete), 1
-            )
+            selected_start = first_complete_lap_index(slices)
         else:
             # Não travar a navegação mostrando a sessão toda quando
             # a detecção não foi conclusiva. Janelas por tempo continuam
