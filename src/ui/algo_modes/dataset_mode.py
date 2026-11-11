@@ -6,6 +6,7 @@ import pygame as pg
 from pathlib import Path
 import re
 import csv
+import hashlib
 
 from src import config
 from src.ui.botton import Button
@@ -54,6 +55,7 @@ from src.ui.algo_modes.dataset_render import (
 )
 from src.ui.algo_modes.dataset_modal import DatasetConfigModal
 from src.analysis.field_diagnostic import build_field_diagnostic, save_field_diagnostic
+from src.analysis.field_lap_metrics import build_field_lap_metrics, save_field_lap_metrics
 from src.ui.algo_modes.dataset_odometry_pipeline import (
     ROBOT2026_PROFILE,
     load_robot2026_odometry,
@@ -709,6 +711,70 @@ class DatasetMode:
             return False
 
 
+    def _export_field_lap_metrics(self):
+        """F7: exporta indicadores por volta confirmada, SEM ground truth.
+
+        Não altera estado do batch, geometria, limites do portão ou
+        arquivos de entrada; o relatório inclui também trechos parciais
+        devidamente identificados para transparência experimental.
+        """
+        if (self.dataset_source_type != "real_odom_uwb_2026"
+                or self._robot2026_data is None
+                or not self._batch_results):
+            self.host._set_msg("F7: carregue PCNT+UWB e execute Rodar batch")
+            return
+        if (self._odom_is_time_window
+                or not self._odom_gate_diagnostics
+                or not self._robot2026_laps
+                or not any(lap.complete for lap in self._robot2026_laps)):
+            self.host._set_msg("F7: nao ha voltas completas por portao; janelas nao sao voltas")
+            return
+        try:
+            data = self._robot2026_data
+            reference = (
+                self._reference_route_display
+                if self._reference_route_display is not None
+                else self._route_waypoints
+            )
+            report = build_field_lap_metrics(
+                self._robot2026_laps,
+                data.timestamps_s,
+                data.poses_xytheta,
+                self._robot2026_uwb_indices,
+                self._batch_results,
+                reference_route=reference,
+                gate_diagnostics=self._odom_gate_diagnostics,
+            )
+            # Proveniência explícita das entradas usadas no batch.
+            raw_path = Path(data.path)
+            report["source_file"] = raw_path.name
+            report["source_sha256"] = hashlib.sha256(raw_path.read_bytes()).hexdigest()
+            report["session_id"] = int(data.session_id)
+            anchor_path = getattr(self, "_anchors_path", None)
+            if anchor_path:
+                cfg_path = Path(anchor_path)
+                report["anchor_config_file"] = cfg_path.name
+                report["anchor_config_sha256"] = hashlib.sha256(
+                    cfg_path.read_bytes()
+                ).hexdigest()
+            report["gate_crossing_times_s"] = list(
+                self._odom_gate_diagnostics.get("crossing_times_s", [])
+            )
+            name = re.sub(
+                r"[^A-Za-z0-9_-]", "_",
+                f"{raw_path.stem}_sessao_{data.session_id:02d}",
+            )
+            saved_json, saved_csv = save_field_lap_metrics(
+                report, Path("resultados") / "robot2026", name
+            )
+            self.host._set_msg(
+                f"F7: {report['complete_laps']} voltas completas; "
+                f"relatorios: {saved_json.name}, {saved_csv.name}"
+            )
+            print(f"[DATASET] Relatorio por voltas F7: {saved_json} | {saved_csv}")
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            self.host._set_msg(f"F7: nao foi possivel exportar voltas: {exc}")
+
     def _export_field_preflight(self):
         """Salva relatório de aquisição para a sessão PCNT atualmente carregada.
 
@@ -855,11 +921,24 @@ class DatasetMode:
         positions = lms.get("posicoes") if is_current_lms else None
         uwb = self._robot2026_uwb_data
         if positions is None or uwb is None:
+            # Batch pode mudar de uma execução para outra. Não reutilizar
+            # segmentação antiga se LS atual deixou de estar disponível.
+            self._odom_gate_diagnostics = None
+            if self._robot2026_data is not None:
+                self._robot2026_laps = split_time_windows(
+                    self._robot2026_data.timestamps_s, settings["window_duration_s"]
+                )
+                self._odom_is_time_window = True
             self._odom_gate_status = "Portao: selecione LS atual"
             return
         positions = np.asarray(positions, dtype=float)
         if (positions.ndim != 2 or positions.shape[1] < 2
                 or len(positions) != len(self._robot2026_uwb_indices)):
+            self._odom_gate_diagnostics = None
+            self._robot2026_laps = split_time_windows(
+                self._robot2026_data.timestamps_s, settings["window_duration_s"]
+            )
+            self._odom_is_time_window = True
             self._odom_gate_status = "Portao UWB/LMS: dados incompat."
             return
         try:
@@ -1144,6 +1223,10 @@ class DatasetMode:
                         continue
                     return _actions_menu()
                 
+                elif event.key == pg.K_F7:
+                    self._export_field_lap_metrics()
+                    continue
+
                 elif event.key == pg.K_F8:
                     self._toggle_field_quality_panel()
                     continue
