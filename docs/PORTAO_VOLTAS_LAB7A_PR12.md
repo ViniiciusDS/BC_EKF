@@ -256,3 +256,69 @@ qual posição física é correta; isso depende da medição da A2.
 A trilateração 3D atual usa as primeiras quatro âncoras, incluindo A2,
 e portanto pode produzir outliers expressivos se A2 estiver incorreta.
 O PR #12 não modifica as rotinas matemáticas dos estimadores.
+
+## Resultados do laboratório — mapa A2 corrigido e voltas recuperadas
+
+O operador apresentou o **croqui corrigido**, com A2=(0,268,176) cm.
+No referencial do arquivo isso corresponde a **(0,00; 2,68; 1,76) m**,
+logo o antigo JSON `laboratorio_7anc_ancoras.json` com
+A2=(2,68; 0,00; 1,76) m **NÃO representa o mapa corrigido**.
+Recomenda-se usar a cópia derivada de
+`laboratorio_7anc_ancoras_A2_alternativa.json`, mantendo o arquivo
+antigo apenas como registro histórico de erro de transcrição. O mapeamento
+de slots SPI ainda precisa de confirmação independente.
+
+Experimento controlado, com mesmo CSV LAB7A (3351 PCNT, 808 snapshots,
+805 posições LMS válidas), sessão, rota, demais parâmetros e portão:
+
+| Medida | A2 literal, incorreta | A2 corrigida |
+| --- | ---: | ---: |
+| RMS geométrica LMS à rota nominal | 0,374 m | **0,168 m** |
+| RMS Gauss-Newton | 0,293 m | **0,172 m** |
+| RMS trilateração | 3,065 m | **0,210 m** |
+| Distância mínima LMS ao portão | 0,541 m | **0,082 m** |
+| Amostras dentro da região de 0,50 m | 0 | **98** |
+| Eventos de retorno detectados | 0 | **7** |
+| Voltas classificadas como completas | 0 | **6** |
+
+Os retornos com A2 corrigida ocorreram aproximadamente em
+103,971 s; 213,221 s; 323,471 s; 433,721 s; 542,781 s;
+654,221 s; 764,473 s. O intervalo médio entre retornos
+consecutivos foi **110,08 s**, com variação pequena (desvio-padrão
+populacional aproximado 0,78 s). Isso é evidência de recorrência
+temporal, não ground truth independente.
+
+### Por que 7 retornos e apenas 6 voltas completas?
+
+A primeira posição LMS válida só aparece em **t=5,97 s**,
+em **(0,629; 1,530) m**; o início físico configurado é
+**(0,15; 1,38) m**. Essa medição está a aproximadamente **0,502 m**
+da largada, ligeiramente fora do raio de 0,50 m.
+Por isso `first_segment_near_gate=False`, e o primeiro trecho
+não pode ser considerado uma volta completa com a evidência UWB
+existente, mesmo com o operador informando saída em +X.
+
+Com 7 eventos de retorno, foram produzidas 8 fatias temporais:
+- Primeiro segmento: **parcial**, desde o início do registro até o
+  primeiro retorno.
+- Seis segmentos intermediários: **completos**, entre dois retornos.
+- Último segmento: **parcial**, após o último retorno.
+
+Isso evita declarar automaticamente 7 voltas completas quando o
+instante inicial da aquisição UWB não é uma passagem confirmada na
+região de largada. A versão atual da interface mostra os contadores
+**6 completas / 7 retornos** e abre diretamente a primeira fatia
+completa; os trechos parciais continuam acessíveis por navegação.
+
+Não aumentar o raio a partir do limiar de 0,502 m apenas para obter
+mais uma volta. Se uma gravação de vídeo ou anotação de início
+sincronizado comprovar que o robô saiu do ponto inicial na hora zero,
+isso deve ser documentado como referência externa, não inferido de
+uma localização LMS tardia.
+
+**Conclusão de campo:** o problema grave de estimativa UWB observado
+com A2 literal é consistente com erro de coordenada da âncora, e não
+com defeito introduzido no solver. A correção da geometria recuperou
+o padrão de resultados original. Os parâmetros reais das rodas ainda
+não foram calibrados definitivamente, e as métricas geométricas à
+pista nominal continuam não sendo erro absoluto de posição.
