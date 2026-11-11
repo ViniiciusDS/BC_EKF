@@ -220,11 +220,15 @@ def save_field_lap_metrics(report, output_dir, stem):
         "nominal_rms_m", "nominal_p95_m",
         "odom_disagreement_rms_m", "estimated_closure_gap_m",
     ]
+    created_json = False
+    created_csv = False
     try:
         with json_path.open("x", encoding="utf-8") as stream:
+            created_json = True
             json.dump(report, stream, indent=2, ensure_ascii=False, allow_nan=False)
             stream.write("\n")
         with csv_path.open("x", encoding="utf-8", newline="") as stream:
+            created_csv = True
             writer = csv.DictWriter(stream, fieldnames=columns)
             writer.writeheader()
             for segment in report["segments"]:
@@ -251,9 +255,11 @@ def save_field_lap_metrics(report, output_dir, stem):
                         "estimated_closure_gap_m": metrics["estimated_closure_gap_m"],
                     })
     except Exception:
-        # Nunca apagar relatório já existente. Só limpar JSON novo
-        # se a criação do segundo artefato falhou nesta operação.
-        if json_path.exists() and not csv_path.exists():
-            json_path.unlink()
+        # Exclusivamente arquivos criados por ESTA chamada. Uma falha
+        # de open('x') jamais pode apagar arquivo de outra execução.
+        if created_csv:
+            csv_path.unlink(missing_ok=True)
+        if created_json:
+            json_path.unlink(missing_ok=True)
         raise
     return json_path, csv_path
