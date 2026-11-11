@@ -38,6 +38,20 @@ def _median_xy_for_gate(positions, window):
     return out
 
 
+
+def first_complete_lap_index(laps):
+    """Índice de navegação (1-based) da primeira volta confirmada.
+
+    Preserva os trechos parciais no conjunto original. A navegação do
+    Dataset Mode abre uma volta completa, mas permite voltar à fatia
+    inicial com os botões Anterior/Próxima.
+    """
+    return next(
+        (index for index, lap in enumerate(laps, start=1) if lap.complete),
+        1,
+    )
+
+
 def split_start_gate_laps(
     positions_xy, timestamps_s, *, start_xy, direction_xy,
     sample_indices=None, total_samples=None,
