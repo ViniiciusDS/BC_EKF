@@ -216,25 +216,106 @@ def load_robot2026_single_tag_uwb(
 
 
 def read_robot2026_view_settings(anchor_json: str | Path) -> dict:
-    """Define segmentação APENAS para interface; não altera batch/odometria.
+    """Configura visualização, sem alterar PCNT/UWB ou inferir ground truth.
 
-    Use 'time_windows' quando o contador da coluna 4 não representar voltas
-    reais. A janela é declarada em segundos, nunca chamada de volta.
+    Modos: lap_counter (legado), time_windows (80s padrão) e start_gate.
+    O modo start_gate exige ponto e direção do portão medidos ou declarados
+    explicitamente no referencial das âncoras. A fonte de cruzamentos é
+    odometria ou UWB/LMS após batch, sempre indicada ao operador.
     """
     with Path(anchor_json).open("r", encoding="utf-8") as stream:
         data = json.load(stream)
     cfg = data.get("view_2026", {})
     if not isinstance(cfg, dict):
         raise ValueError("view_2026 deve ser um objeto")
-    if set(cfg) - {"segmentation", "window_duration_s"}:
-        raise ValueError("Campos não reconhecidos em view_2026")
+    allowed = {
+        "segmentation", "window_duration_s", "gate_source",
+        "gate_xy_m", "gate_direction_xy", "gate_half_width_m",
+        "gate_hysteresis_m", "gate_min_lap_s", "gate_min_lap_distance_m",
+        "gate_departure_m", "gate_max_step_m",
+        "gate_mode", "gate_return_direction_xy", "gate_return_radius_m",
+        "gate_smoothing_window", "gate_approach_lookback_s",
+        "gate_approach_min_m", "gate_max_gap_s",
+    }
+    extra = set(cfg) - allowed
+    if extra:
+        raise ValueError("Campos não reconhecidos em view_2026: " + ", ".join(sorted(extra)))
     kind = cfg.get("segmentation", "lap_counter")
-    if kind not in ("lap_counter", "time_windows"):
-        raise ValueError("view_2026.segmentation deve ser lap_counter ou time_windows")
-    duration = cfg.get("window_duration_s", 80.0)
-    if isinstance(duration, bool) or not np.isfinite(float(duration)) or float(duration) <= 0:
-        raise ValueError("view_2026.window_duration_s deve ser positivo")
-    return {"segmentation":kind, "window_duration_s":float(duration)}
+    if kind not in ("lap_counter", "time_windows", "start_gate"):
+        raise ValueError("view_2026.segmentation deve ser lap_counter, time_windows ou start_gate")
+
+    def positive(name, default):
+        value = cfg.get(name, default)
+        if isinstance(value, bool):
+            raise ValueError(f"view_2026.{name} deve ser positivo")
+        try:
+            number = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"view_2026.{name} deve ser positivo") from exc
+        if not np.isfinite(number) or number <= 0:
+            raise ValueError(f"view_2026.{name} deve ser positivo")
+        return number
+
+    duration = positive("window_duration_s", 80.0)
+    settings = {"segmentation": kind, "window_duration_s": duration}
+    if kind == "start_gate":
+        source = cfg.get("gate_source", "odometry")
+        if source not in ("odometry", "uwb_lms"):
+            raise ValueError("view_2026.gate_source deve ser odometry ou uwb_lms")
+
+        def vector(name):
+            value = cfg.get(name)
+            if not isinstance(value, list) or len(value) != 2 or any(
+                isinstance(v, bool) for v in value
+            ):
+                raise ValueError(f"view_2026.{name} exige [x, y] em metros")
+            try:
+                result = np.asarray(value, dtype=float)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"view_2026.{name} exige números finitos") from exc
+            if not np.isfinite(result).all():
+                raise ValueError(f"view_2026.{name} exige números finitos")
+            return result.tolist()
+
+        xy = vector("gate_xy_m")
+        direction = vector("gate_direction_xy")
+        if float(np.linalg.norm(direction)) < 1e-9:
+            raise ValueError("view_2026.gate_direction_xy não pode ser zero")
+        gate_mode = cfg.get("gate_mode", "crossing")
+        if gate_mode not in ("crossing", "corner_return"):
+            raise ValueError("view_2026.gate_mode deve ser crossing ou corner_return")
+        smooth = cfg.get("gate_smoothing_window", 1)
+        if type(smooth) is not int or not (1 <= smooth <= 21) or smooth % 2 == 0:
+            raise ValueError("view_2026.gate_smoothing_window exige ímpar de 1 a 21")
+        incoming = (
+            vector("gate_return_direction_xy")
+            if gate_mode == "corner_return" else None
+        )
+        if incoming is not None and float(np.linalg.norm(incoming)) < 1e-9:
+            raise ValueError("gate_return_direction_xy não pode ser zero")
+        settings.update({
+            "gate_source": source,
+            "gate_mode": gate_mode,
+            "gate_return_direction_xy": incoming,
+            "gate_smoothing_window": smooth,
+            "gate_return_radius_m": positive("gate_return_radius_m", .5),
+            "gate_approach_lookback_s": positive("gate_approach_lookback_s", 2.5),
+            "gate_approach_min_m": positive("gate_approach_min_m", .06),
+            "gate_max_gap_s": positive("gate_max_gap_s", 8.),
+            "gate_xy_m": xy,
+            "gate_direction_xy": direction,
+            "gate_half_width_m": positive("gate_half_width_m", .4),
+            "gate_hysteresis_m": positive("gate_hysteresis_m", .12),
+            "gate_min_lap_s": positive("gate_min_lap_s", 30.),
+            "gate_min_lap_distance_m": positive("gate_min_lap_distance_m", 4.5),
+            "gate_departure_m": positive("gate_departure_m", .8),
+            "gate_max_step_m": positive("gate_max_step_m", .8),
+        })
+        if settings["gate_hysteresis_m"] >= settings["gate_departure_m"]:
+            raise ValueError("gate_departure_m deve exceder gate_hysteresis_m")
+        if gate_mode == "corner_return" and settings["gate_return_radius_m"] >= settings["gate_departure_m"]:
+            raise ValueError("gate_return_radius_m deve ser menor que gate_departure_m")
+    return settings
 
 
 def read_uwb2026_processing_settings(anchor_json: str | Path) -> dict:

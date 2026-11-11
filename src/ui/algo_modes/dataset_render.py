@@ -295,6 +295,45 @@ def draw_reference_routes(mode):
             gap_px=8,
         )
 
+    # Portão virtual da pista: desenhado explicitamente, sem confundir
+    # marcação visual com obstáculo físico/oclusão de rádio.
+    gate = getattr(mode, "_robot2026_view_settings", None)
+    if (getattr(mode, "dataset_source_type", "") == "real_odom_uwb_2026"
+            and gate and gate.get("segmentation") == "start_gate"):
+        center = np.asarray(gate["gate_xy_m"], dtype=float)
+        normal = np.asarray(gate["gate_direction_xy"], dtype=float)
+        normal = normal / np.linalg.norm(normal)
+        tangent = np.array([-normal[1], normal[0]], dtype=float)
+        half_width = gate["gate_half_width_m"]
+        start = center - half_width * tangent
+        finish = center + half_width * tangent
+        p0 = cam.world_to_screen(float(start[0]), float(start[1]))
+        p1 = cam.world_to_screen(float(finish[0]), float(finish[1]))
+        pg.draw.line(screen, (20, 155, 82), p0, p1, 4)
+        middle = cam.world_to_screen(float(center[0]), float(center[1]))
+        tip = center + 0.25 * normal
+        ptip = cam.world_to_screen(float(tip[0]), float(tip[1]))
+        pg.draw.line(screen, (20, 155, 82), middle, ptip, 2)
+        # O início do LAB7A é um canto: a detecção usa reentrada no
+        # círculo verde pelo +Y, não cruzamento x<0 -> x>0.
+        if gate.get("gate_mode") == "corner_return":
+            radius = float(gate["gate_return_radius_m"])
+            radial = cam.world_to_screen(float(center[0]+radius), float(center[1]))
+            px_radius = round(float(np.hypot(
+                radial[0]-middle[0], radial[1]-middle[1]
+            )))
+            if px_radius >= 2:
+                pg.draw.circle(screen, (40, 160, 85), middle, px_radius, 1)
+            incoming = np.asarray(gate["gate_return_direction_xy"], dtype=float)
+            incoming = incoming / np.linalg.norm(incoming)
+            approach = center - .3*incoming
+            p_approach = cam.world_to_screen(
+                float(approach[0]), float(approach[1])
+            )
+            pg.draw.line(screen, (40, 160, 85), p_approach, middle, 2)
+        caption = mode.host.font.render("Portao", True, (20, 120, 70))
+        screen.blit(caption, (int(middle[0])+5, int(middle[1])-25))
+
     # Rota odométrica/reconstruída. Evita duplicar se for igual à referência.
     odom = (
         getattr(mode, "_dataset_route", None)
@@ -434,6 +473,10 @@ def draw_dataset_sidebar_controls(mode):
                 else "Pista aprox.: OFF"
             )
             mode.btn_odom_track.draw(screen)
+        status = getattr(mode, "_odom_gate_status", "")
+        if status:
+            stamp = font.render(status, True, (27, 117, 75))
+            screen.blit(stamp, (sidebar_x, y - 39))
         label = font.render(
             f"Visualizar: {mode._odometry_view_label()}", True, (65, 65, 72)
         )
