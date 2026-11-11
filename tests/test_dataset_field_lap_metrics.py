@@ -171,6 +171,18 @@ class TestFieldLapMetrics(unittest.TestCase):
         self.assertNotEqual(csv_first, csv_second)
         self.assertEqual(first.read_bytes(), raw1)
 
+    def test_export_cleans_only_its_own_partial_json_on_serialization_error(self):
+        """JSON inválido não pode deixar artefato quebrado nem apagar antigos."""
+        old, _ = save_field_lap_metrics(self.analyze(), self.folder, "LAB7A")
+        original = old.read_bytes()
+        broken = self.analyze()
+        broken["bad_numeric_value"] = float("nan")
+        with self.assertRaises(ValueError):
+            save_field_lap_metrics(broken, self.folder, "LAB7A")
+        self.assertEqual(old.read_bytes(), original)
+        self.assertFalse((self.folder / "LAB7A_voltas_002.json").exists())
+        self.assertFalse((self.folder / "LAB7A_voltas_002.csv").exists())
+
     def test_rejects_unsafe_export_stem(self):
         with self.assertRaises(ValueError):
             save_field_lap_metrics(self.analyze(), self.folder, "../bad")
