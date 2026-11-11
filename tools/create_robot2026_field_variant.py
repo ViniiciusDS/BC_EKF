@@ -137,6 +137,14 @@ def main(argv=None):
         json.dump(variant, stream, ensure_ascii=False, indent=2)
         stream.write("\n")
     print(f"Perfil experimental: {dest}")
+    meta = variant.get("meta", {})
+    for field in ("warning_A2", "slot_order"):
+        note = meta.get(field) if isinstance(meta, dict) else None
+        if isinstance(note, str) and note.strip():
+            # O croqui original contém uma coordenada ambígua para A2,
+            # e os slots SPI podem não corresponder à ordem assumida.
+            # Não corrigir automaticamente valores físicos desconhecidos.
+            print(f"[AVISO CONFIGURACAO] {field}: {note}")
     return variant
 
 
