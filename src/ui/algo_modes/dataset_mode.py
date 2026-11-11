@@ -804,10 +804,25 @@ class DatasetMode:
         self._odom_gate_diagnostics = diag
         source = "UWB/LMS" if sample_indices is not None else "odometria"
         complete = diag["complete_laps"]
+        selected_start = 1
         if complete:
             self._robot2026_laps = slices
             self._odom_is_time_window = False
-            self._odom_gate_status = f"Portao {source}: {complete} voltas"
+            # "7 retornos" não são necessariamente "7 voltas":
+            # o primeiro trecho é parcial quando a aquisição UWB inicia
+            # fora da região de largada; o último também pode ser parcial.
+            # Exibir os dois contadores evita interpretar uma marcação
+            # conservadora como perda de voltas físicas.
+            returns = len(diag["crossing_times_s"])
+            self._odom_gate_status = (
+                f"Portao: {complete} completas / {returns} retornos"
+            )
+            # Abrir a primeira volta CONFIRMADA, em vez do trecho parcial
+            # inicial. O usuário ainda pode navegar ao trecho parcial.
+            selected_start = next(
+                (index for index, lap in enumerate(slices, start=1)
+                 if lap.complete), 1
+            )
         else:
             # Não travar a navegação mostrando a sessão toda quando
             # a detecção não foi conclusiva. Janelas por tempo continuam
@@ -821,7 +836,7 @@ class DatasetMode:
         # Apenas contadores de diagnóstico: trajetórias continuam intactas.
         print(f"[DATASET] portao {source}: {diag}")
         self.odom_view_mode = "single"
-        self.odom_lap_start = 1
+        self.odom_lap_start = selected_start
         self.odom_lap_window = 5
 
     def _refresh_uwb_gate_laps_after_batch(self):
