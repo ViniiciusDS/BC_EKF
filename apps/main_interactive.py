@@ -150,8 +150,10 @@ def main():
     # -------- MENU --------
     state = STATE_MENU
 
-    btn_start = Button((440, 520, 180, 44), "Iniciar simulação", bigfont, bg=(240,250,240), fg=GREEN, border=GREEN)
-    btn_logs  = Button((720, 520, 180, 44), "Abrir pasta de logs", bigfont)
+    # Duas colunas de 220 px, alinhadas com os botões de baixo.
+    # O Button.draw também limita o texto se a fonte do sistema crescer.
+    btn_start = Button((440, 520, 220, 44), "Iniciar simulação", bigfont, bg=(240,250,240), fg=GREEN, border=GREEN)
+    btn_logs  = Button((720, 520, 220, 44), "Abrir pasta de logs", bigfont)
     btn_mapedit = Button((440, 580, 220, 44), "Editor de mapa", bigfont)
     btn_uwbtest = Button((720, 580, 220, 44), "Testes UWB", bigfont)
     btn_algos   = Button((440, 636, 500, 44), "Comparar Algoritmos (Dataset / Step)", bigfont,
