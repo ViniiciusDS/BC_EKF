@@ -27,8 +27,8 @@ def fit_button_label_size(text_width, text_height, rect_width, rect_height,
     max_h = max(1, int(rect_height) - int(padding_y) * 2)
     scale = min(1.0, max_w / text_width, max_h / text_height)
     return (
-        min(max_w, max(1, int(text_width * scale))),
-        min(max_h, max(1, int(text_height * scale))),
+        min(max_w, max(1, round(text_width * scale))),
+        min(max_h, max(1, round(text_height * scale))),
     )
 
 
