@@ -10,7 +10,10 @@ from src.ui.algo_modes.dataset_mode import DatasetMode
 from src.ui.botton import Button
 from src.trajectory import Trajectory
 from src.uwb.algoritmos_step import ALGORITMOS, NOMES_UI
-from src.ui.algo_modes.shared import ALGO_COLORS, ALGO_ORDER, MODE_DATASET, MODE_MONTE_CARLO, MODE_STEP
+from src.ui.algo_modes.shared import (
+    ALGO_COLORS, ALGO_ORDER, MODE_DATASET, MODE_MONTE_CARLO, MODE_STEP,
+    default_algorithm_variant_state, algorithm_button_label,
+)
 
 WHITE   = (255, 255, 255)
 BLACK   = (0,  0,  0)
@@ -69,9 +72,14 @@ class AlgoTestScreen:
             "trilaterate3d": True,
             "lms": True,
             "gauss_newton": True,
-            "lmsp": False,
+            # Mantém selecionados os quatro algoritmos comparáveis
+            # por padrão. O usuário pode desligar LMS-P no botão.
+            "lmsp": True,
             "bc_ekf": False,
         }
+        # A chave concreta e o booleano de ativação precisam concordar
+        # desde a primeira tela, antes de qualquer clique.
+        self.selected_algo_variants = default_algorithm_variant_state()
 
         self.speed_factor = 3
         self._msg = ""
@@ -191,6 +199,10 @@ class AlgoTestScreen:
         elif self.mode == MODE_DATASET:
             self.dataset_mode.on_enter(self)
 
+        # Reconstroi texto e cor ao trocar Dataset/Step/Monte Carlo.
+        # Evita que um modo herde rótulos inconsistentes do anterior.
+        self._refresh_algo_buttons()
+
     def _mode_label(self) -> str:
         labels = {
             MODE_DATASET: "Modo: Dataset (batch)",
@@ -200,6 +212,11 @@ class AlgoTestScreen:
         return labels.get(self.mode, f"Modo: {self.mode}")
 
     def _algo_label(self, nome: str) -> str:
+        """Mostra a variante realmente selecionada no modo Dataset."""
+        if self.mode == MODE_DATASET:
+            return algorithm_button_label(
+                nome, self.selected, self.selected_algo_variants
+            )
         tick = "✔" if self.selected.get(nome, False) else "○"
         return f"{tick}  {nome}"
 
