@@ -6,6 +6,7 @@ on:
     paths:
       - "src/odometry/**"
       - "src/analysis/field_diagnostic.py"
+      - "src/analysis/field_lap_metrics.py"
       - "tests/test_field_diagnostic.py"
       - "src/ui/algo_modes/dataset_*"
       - "tests/test_dataset_*.py"
@@ -46,4 +47,5 @@ jobs:
           python -m unittest discover -s tests -p "test_field_diagnostic.py" -v
           python -m unittest discover -s tests -p "test_assisted_encoder_calibration.py" -v
           python -m unittest discover -s tests -p "test_field_odometry_hypotheses.py" -v
+          python -m unittest discover -s tests -p "test_dataset_field_lap_metrics.py" -v
           python -m compileall -q src/odometry src/ui/algo_modes src/analysis/field_diagnostic.py tools
