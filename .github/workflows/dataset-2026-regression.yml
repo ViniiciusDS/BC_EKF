@@ -9,6 +9,11 @@ on:
       - "src/analysis/field_lap_metrics.py"
       - "tests/test_field_diagnostic.py"
       - "src/ui/algo_modes/dataset_*"
+      - "src/ui/algo_modes/shared.py"
+      - "src/ui/algo_test_screen.py"
+      - "src/ui/botton.py"
+      - "apps/main_interactive.py"
+      - "tests/test_ui_menu_default_algos_2026.py"
       - "tests/test_dataset_*.py"
       - "tests/test_pcntlog_adapter.py"
       - "tests/test_assisted_encoder_calibration.py"
@@ -51,4 +56,5 @@ jobs:
           python -m unittest discover -s tests -p "test_field_odometry_hypotheses.py" -v
           python -m unittest discover -s tests -p "test_dataset_field_lap_metrics.py" -v
           python -m unittest discover -s tests -p "test_field_calibration_audit_2026.py" -v
-          python -m compileall -q src/odometry src/ui/algo_modes src/analysis/field_diagnostic.py tools
+          python -m unittest discover -s tests -p "test_ui_menu_default_algos_2026.py" -v
+          python -m compileall -q apps/main_interactive.py src/ui/algo_test_screen.py src/ui/botton.py src/odometry src/ui/algo_modes src/analysis/field_diagnostic.py tools
