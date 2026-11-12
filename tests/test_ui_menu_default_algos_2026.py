@@ -133,8 +133,9 @@ class TestAlgorithmDefaults(unittest.TestCase):
                     for t in n.targets)
         )
         helpers = [public_function(self.shared, key) for key in (
-            "default_algorithm_variant_state", "algorithm_active_key",
-            "cycle_algorithm_variant", "algorithm_button_label"
+            "default_algorithm_variant_state", "get_algorithm_variants",
+            "algorithm_active_key", "cycle_algorithm_variant",
+            "algorithm_button_label"
         )]
         namespace = {"ALGO_VARIANTS": ast.literal_eval(dictionary.value)}
         exec(compile(ast.Module(body=helpers, type_ignores=[]),
