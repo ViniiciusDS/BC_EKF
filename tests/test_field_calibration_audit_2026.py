@@ -91,7 +91,11 @@ class TestFieldCalibrationAudit(unittest.TestCase):
         self.assertIsNone(result["selected_calibration"])
         self.assertFalse(result["applied_to_original_profile"])
         self.assertEqual(len(result["scenarios"]), 1)
-        self.assertEqual(result["uwb_odom_disagreement_from_f7"]["per_complete_lap_rms_m"], [.3,.6,.9])
+        for observed, expected in zip(
+            result["uwb_odom_disagreement_from_f7"]["per_complete_lap_rms_m"],
+            (.3, .6, .9),
+        ):
+            self.assertAlmostEqual(observed, expected)
         trend = result["uwb_odom_disagreement_from_f7"]["linear_trend"]
         self.assertAlmostEqual(trend["slope_m_per_lap"], .3)
         self.assertAlmostEqual(trend["r_squared_descriptive"], 1.)
@@ -146,7 +150,7 @@ class TestFieldCalibrationAudit(unittest.TestCase):
             self.audit(algorithm="lmsp")
         with self.assertRaisesRegex(ValueError, "positivas"):
             self.audit(scale_candidate=(0.,1.))
-        with self.assertRaisesRegex(ValueError, "giro esperado"):
+        with self.assertRaisesRegex(ValueError, "Giro esperado"):
             self.audit(expected_lap_turn_deg=0)
 
     def test_report_detects_session_reset_and_wrong_counts(self):
