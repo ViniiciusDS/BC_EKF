@@ -149,7 +149,7 @@ class TestAlgorithmDefaults(unittest.TestCase):
         self.assertTrue(selected["lmsp"])
         self.assertEqual(state["lmsp"], "wls_sigma")
         # Off continua acessível ao completar o ciclo de variantes.
-        for _ in range(len(namespace["ALGO_VARIANTS"]["lmsp"])-1):
+        for _ in range(3):  # sigma -> RKF -> Wang17 -> off
             namespace["cycle_algorithm_variant"]("lmsp",selected,state)
         self.assertIsNone(state["lmsp"])
         self.assertFalse(selected["lmsp"])
