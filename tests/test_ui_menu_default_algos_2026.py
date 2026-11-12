@@ -69,29 +69,108 @@ class TestMenuButtonGeometry(unittest.TestCase):
         self.assertEqual(start[1], logs[1])
         self.assertLessEqual(logs[0] + logs[2], 1280)
 
-    def test_button_text_fits_even_with_larger_system_font(self):
+    def test_button_uses_native_font_without_any_surface_scaling(self):
+        """Protege contra fonte embaçada causada pelo smoothscale do PR15."""
         source = module_ast("src/ui/botton.py")
-        func = public_function(source, "fit_button_label_size")
-        code = compile(ast.Module(body=[func], type_ignores=[]), "<fit_button_label_size>", "exec")
-        scope = {}
-        exec(code, scope)
-        fit = scope["fit_button_label_size"]
-        self.assertEqual(fit(150, 22, 220, 44), (150, 22))
-        width, height = fit(260, 30, 220, 44)
-        self.assertLessEqual(width, 196)  # 12 px de cada lado
-        self.assertLessEqual(height, 32)
-        self.assertGreater(width, 0)
-        self.assertGreater(height, 0)
-        self.assertAlmostEqual(width / height, 260/30, delta=.2)
-        with self.assertRaises(ValueError):
-            fit(0, 10, 220, 44)
-        button_cls = next(n for n in source.body
-                          if isinstance(n, ast.ClassDef) and n.name == "Button")
-        draw = next(n for n in button_cls.body
-                    if isinstance(n, ast.FunctionDef) and n.name == "draw")
-        self.assertIn("fit_button_label_size", call_names(draw))
-        self.assertIn("smoothscale", call_names(draw))
-        self.assertIn("blit", call_names(draw))
+        button_cls = next(
+            n for n in source.body
+            if isinstance(n, ast.ClassDef) and n.name == "Button"
+        )
+        draw = next(
+            n for n in button_cls.body
+            if isinstance(n, ast.FunctionDef) and n.name == "draw"
+        )
+        calls = call_names(draw)
+        self.assertIn("render", calls)
+        self.assertIn("get_rect", calls)
+        self.assertIn("blit", calls)
+        self.assertIn("set_clip", calls)
+        self.assertIn("get_clip", calls)
+        self.assertIn("inflate", calls)
+        self.assertNotIn("scale", calls)
+        self.assertNotIn("smoothscale", calls)
+
+    def test_button_restores_clipping_and_blits_original_rendered_surface(self):
+        """Exercita draw() com fakes, sem instalar pygame no CI."""
+        from types import SimpleNamespace
+
+        class FakeRect:
+            def __init__(self, value):
+                self.x, self.y, self.w, self.h = value
+
+            @property
+            def center(self):
+                return (self.x + self.w // 2, self.y + self.h // 2)
+
+            def inflate(self, dw, dh):
+                return FakeRect((self.x-dw//2, self.y-dh//2,
+                                 self.w+dw, self.h+dh))
+
+            def clip(self, other):
+                x = max(self.x, other.x)
+                y = max(self.y, other.y)
+                right = min(self.x+self.w, other.x+other.w)
+                bottom = min(self.y+self.h, other.y+other.h)
+                return FakeRect((x,y,max(0,right-x),max(0,bottom-y)))
+
+            def collidepoint(self, pos):
+                return (self.x <= pos[0] < self.x+self.w
+                        and self.y <= pos[1] < self.y+self.h)
+
+        class Image:
+            def get_rect(self, *, center):
+                return center
+
+        class Font:
+            def __init__(self):
+                self.image = Image()
+            def render(self, text, aa, color):
+                if text != "Abrir pasta de logs" or not aa:
+                    raise AssertionError("Texto ou antialiasing incorreto")
+                return self.image
+
+        class Surface:
+            def __init__(self):
+                self.clip = FakeRect((0, 0, 1280, 760))
+                self.previous_clip = self.clip
+                self.events = []
+            def get_clip(self):
+                return self.clip
+            def set_clip(self, rect):
+                self.clip = rect
+                self.events.append(("clip", rect))
+            def blit(self, image, rect):
+                self.events.append(("blit", image, self.clip))
+
+        fake_pg = SimpleNamespace(
+            Rect=FakeRect, draw=SimpleNamespace(rect=lambda *args, **kwargs: None)
+        )
+        tree = module_ast("src/ui/botton.py")
+        cls = next(n for n in tree.body
+                   if isinstance(n, ast.ClassDef) and n.name=="Button")
+        namespace = {"pg": fake_pg, "LBL": (40,40,40),
+                     "BLACK": (20,20,20)}
+        exec(compile(ast.Module(body=[cls], type_ignores=[]),
+                     "<native_button>", "exec"), namespace)
+        font = Font()
+        button = namespace["Button"]((720,520,220,44),
+                                     "Abrir pasta de logs", font)
+        surface = Surface()
+        button.draw(surface)
+        self.assertTrue(button.hit((750,540)))
+        self.assertFalse(button.hit((950,540)))
+        blits = [event for event in surface.events if event[0]=="blit"]
+        self.assertEqual(len(blits), 1)
+        # A imagem desenhada é a MESMA retornada pelo font.render:
+        # nenhuma superfície interpolada ou borrada intermediária.
+        self.assertIs(blits[0][1], font.image)
+        self.assertGreaterEqual(blits[0][2].x, button.rect.x)
+        self.assertLessEqual(
+            blits[0][2].x+blits[0][2].w,
+            button.rect.x+button.rect.w
+        )
+        self.assertIs(surface.clip, surface.previous_clip)
+
 
 
 class TestAlgorithmDefaults(unittest.TestCase):
