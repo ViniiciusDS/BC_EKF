@@ -11,6 +11,7 @@ import hashlib
 from src import config
 from src.ui.botton import Button
 from src.uwb.algoritmos_estaticos import run_batch
+from src.uwb.preprocessing import load_uwb_preprocess_config
 from src.ui.algo_modes.shared import (
     ALGO_ORDER,
     MODE_DATASET,
@@ -105,6 +106,7 @@ class DatasetMode:
         # dataset
         self._dataset_path = None
         self._dataset_label = ""
+        self._anchors_path = None
         self._batch_dists = None
         self._batch_devs = None
         self._batch_results = None
@@ -1491,6 +1493,23 @@ class DatasetMode:
 
             p_true = self._get_batch_ground_truth_xy()
 
+            # Politica opt-in do JSON de ancoras, compartilhada por
+            # fontes simuladas e reais. Arquivos sem campo adicional
+            # continuam usando EXATAMENTE o processamento anterior.
+            config_path = getattr(self, "_anchors_path", None)
+            pre_cfg = (
+                load_uwb_preprocess_config(config_path)
+                if config_path and str(config_path).lower().endswith(".json")
+                else None
+            )
+            if (pre_cfg is not None and pre_cfg.mode != "off"
+                    and self.dataset_source_type == "simulated"
+                    and self.simulated_dataset_kind == "BC"):
+                self.host._set_msg(
+                    "Pre-processamento: BC duas tags exige adaptador por tag; "
+                    "use off ou dataset de uma tag."
+                )
+                return
             raw_results = run_batch(
                 anchors_Nx3=anchors,
                 distances=self._batch_dists,
@@ -1498,6 +1517,7 @@ class DatasetMode:
                 algoritmos=algos_to_run,
                 p_true=p_true,
                 bc_ekf_data=self._bc_ekf_data,
+                preprocess_config=pre_cfg,
             )
 
             self._batch_results = self._remap_batch_results_to_sidebar_keys(raw_results)
@@ -1518,11 +1538,22 @@ class DatasetMode:
                     None
                 )
 
-            self.host._set_msg(
+            status = (
                 "Batch executado; Analyzer: comparacoes geometrica/odometrica (sem ground truth)"
                 if self.dataset_source_type == "real_odom_uwb_2026"
                 else "Batch executado"
             )
+            if pre_cfg is not None and pre_cfg.mode != "off":
+                # O resultado do batch guarda a mesma auditoria para
+                # todos os algoritmos, mas os arrays de origem nao mudam.
+                first = next(iter(raw_results.values()), {})
+                audit = first.get("preprocessing", {})
+                status += (
+                    f" | Preproc {pre_cfg.mode}: "
+                    f"{audit.get('flagged_cells', 0)} sinalizadas, "
+                    f"{audit.get('newly_masked_finite_positive_cells', 0)} mascaradas"
+                )
+            self.host._set_msg(status)
 
         except Exception as e:
             print(f"[DATASET] erro no batch: {e}")
