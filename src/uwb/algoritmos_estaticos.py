@@ -20,7 +20,6 @@ from itertools import combinations
 import time
 
 
-from src.bc_ekf import run_bc_ekf_from_data
 from src.uwb.preprocessing import UwbPreprocessConfig, preprocess_uwb_batch
 
 
@@ -1693,6 +1692,10 @@ def run_batch(
             # BC-EKF — batch próprio
             # =====================================================
             if nome == "bc_ekf":
+                # O BC-EKF completo possui dependencias de simulacao/
+                # plotagem. Importar apenas quando ele for selecionado:
+                # solvers estaticos e preprocessor rodam so com NumPy.
+                from src.bc_ekf import run_bc_ekf_from_data
                 if bc_ekf_data is None:
                     raise ValueError("bc_ekf requer bc_ekf_data")
 
