@@ -180,9 +180,9 @@ class TestDualTagPcnt2026(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,"range_unit=cm"):
             self.load()
         root["uwb_dual_2026"]["range_unit"]="cm"
-        root["uwb_dual_2026"]["anchor_ids_uwb"]=[2,3,4,5,6,7,9]
+        root["uwb_dual_2026"]["anchor_ids_uwb"]=[3,4,5,6,7,8,10]
         self.anchors.write_text(json.dumps(root))
-        with self.assertRaisesRegex(ValueError,"Nenhum snapshot"):
+        with self.assertRaisesRegex(ValueError,"Âncoras faltando"):
             self.load()
 
     def test_bad_time_and_session_boundary_never_joined(self):
