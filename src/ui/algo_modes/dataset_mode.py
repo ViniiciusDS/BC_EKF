@@ -13,6 +13,7 @@ from src.ui.botton import Button
 from src.uwb.algoritmos_estaticos import run_batch
 from src.uwb.preprocessing import load_uwb_preprocess_config
 from src.fusion.single_tag_range_ekf import load_single_tag_ekf_config
+from src.fusion.tag_geometry import load_tag_geometry
 from src.ui.algo_modes.dataset_single_tag_fusion import run_real_single_tag_fusion
 from src.uwb.preprocessing_workflow import load_preprocessed_pcnt_overlay
 from src.ui.algo_modes.shared import (
@@ -111,6 +112,8 @@ class DatasetMode:
         self._dataset_path = None
         self._dataset_label = ""
         self._anchors_path = None
+        self._modal_tag_preset = "auto"
+        self._tag_geometry_info = None
         # Sidecar opcional de medições UWB externas associadas ao PCNT
         # bruto. Nunca substituir o arquivo de origem nem encoders.
         self._real_preproc_sidecar_path = None
@@ -472,6 +475,10 @@ class DatasetMode:
                 f"SIM | tipo={self.simulated_dataset_kind} | "
                 f"dataset={os.path.basename(dataset_file)}"
             )
+            if self.simulated_dataset_kind == "BC" and self._tag_geometry_info:
+                self._dataset_label += (
+                    f" | tags={self._tag_geometry_info['preset']}"
+                )
 
             self.host._set_msg(
                 f"Dataset simulado configurado: tipo={self.simulated_dataset_kind}, "
@@ -2581,10 +2588,11 @@ class DatasetMode:
 
         # Prepara BC-EKF quando houver dados suficientes.
         if self._real_encoder_samples is not None and self._real_uwb_rows is not None:
-            self._prepare_bc_ekf_data_for_real_bc(
+            if not self._prepare_bc_ekf_data_for_real_bc(
                 self._real_encoder_samples,
                 self._real_uwb_rows,
-            )
+            ):
+                return False
 
         self.dataset_source_type = "real_encoder_uwb"
         self.simulated_dataset_kind = "Front"
@@ -2593,6 +2601,8 @@ class DatasetMode:
             f"REAL | enc={os.path.basename(str(encoder_path))} | "
             f"uwb={os.path.basename(str(uwb_path))}"
         )
+        if self._tag_geometry_info:
+            self._dataset_label += f" | tags={self._tag_geometry_info['preset']}"
 
         self.host._set_msg(
             f"Dataset real configurado: {self._batch_dists.shape[0]} amostras, "
@@ -2863,6 +2873,17 @@ class DatasetMode:
             return False
 
         self._bc_ekf_data = result.bc_ekf_data
+        self._tag_geometry_info = (
+            self._bc_ekf_data.get("tag_geometry_info")
+            if isinstance(self._bc_ekf_data, dict) else None
+        )
+        if self._tag_geometry_info:
+            print(
+                "[BC-EKF] geometria selecionada:",
+                self._tag_geometry_info["preset"],
+                "canais =", self._tag_geometry_info["channel_order"],
+                "baseline =", round(self._tag_geometry_info["baseline_m"],4),
+            )
 
         if result.batch_dists is not None:
             self._batch_dists = result.batch_dists
@@ -2942,7 +2963,26 @@ class DatasetMode:
 
         return True
 
+    def _resolve_two_tag_geometry(self):
+        """Uma única configuração compartilhada pelos dois modos BC.
+
+        Arquivo antigo/sem tag_geometry => frente/trás legado.
+        UI pode selecionar preset sem alterar o arquivo em disco.
+        """
+        return load_tag_geometry(
+            getattr(self, "_anchors_path", None),
+            default_baseline_m=float(getattr(config, "TAG_BASELINE", 0.25)),
+            default_height_m=float(getattr(config, "TAG_HEIGHT", 0.20)),
+            selection=getattr(self, "_modal_tag_preset", "auto"),
+        )
+
     def _prepare_bc_ekf_data_for_simulated_bc(self):
+        try:
+            geometry=self._resolve_two_tag_geometry()
+        except (ValueError, OSError) as exc:
+            self._bc_ekf_data=None
+            self.host._set_msg(f"Geometria de tags inválida: {exc}")
+            return False
         result = prepare_simulated_bc_ekf_data(
             batch_dists=self._batch_dists,
             batch_devs=self._batch_devs,
@@ -2952,12 +2992,19 @@ class DatasetMode:
             route_waypoints=self._route_waypoints,
             cfg=config,
             resample_polyline_fn=resample_polyline,
+            tag_geometry=geometry,
         )
 
-        self._apply_bc_prep_result(result)
+        return self._apply_bc_prep_result(result)
 
 
     def _prepare_bc_ekf_data_for_real_bc(self, encoder_samples, uwb_rows):
+        try:
+            geometry=self._resolve_two_tag_geometry()
+        except (ValueError, OSError) as exc:
+            self._bc_ekf_data=None
+            self.host._set_msg(f"Geometria de tags inválida: {exc}")
+            return False
         result = prepare_real_bc_ekf_data(
             encoder_samples=encoder_samples,
             uwb_rows=uwb_rows,
@@ -2966,9 +3013,10 @@ class DatasetMode:
             build_pose_path_fn=self._build_pose_path_from_encoder_samples,
             resample_pose_path_fn=self._resample_pose_path_to_length,
             apply_initial_pose_fn=self._apply_real_odom_initial_pose,
+            tag_geometry=geometry,
         )
 
-        self._apply_bc_prep_result(result)
+        return self._apply_bc_prep_result(result)
 
     def _build_pose_path_from_encoder_samples(self, encoder_samples):
         """
