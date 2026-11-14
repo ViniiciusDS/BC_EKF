@@ -43,6 +43,10 @@ class DatasetConfigModal:
             options=["Auto (JSON / legado)", "Frente / trás",
                      "Esquerda / direita", "Personalizado (JSON)"],
         )
+        self.dd_tag_profile = TextBoxDropdown(
+            pg.Rect(0,0,440,30),font,
+            options=["(Do JSON das âncoras)"],max_len=255,
+        )
 
         self.dd_dataset = TextBoxDropdown(pg.Rect(0, 0, 440, 30), font, options=[])
         self.dd_encoder = TextBoxDropdown(pg.Rect(0, 0, 440, 30), font, options=[])
@@ -74,6 +78,7 @@ class DatasetConfigModal:
         self.rows_sim_bc = [
             *self.rows_sim[:2],
             FormDropdownRow("Tags:", self.dd_tag_preset),
+            FormDropdownRow("Perfil tags:", self.dd_tag_profile),
             *self.rows_sim[2:],
         ]
 
@@ -89,6 +94,7 @@ class DatasetConfigModal:
         self.rows_real_bc = [
             *self.rows_real[:3],
             FormDropdownRow("Tags:", self.dd_tag_preset),
+            FormDropdownRow("Perfil tags:", self.dd_tag_profile),
             *self.rows_real[3:],
         ]
 
@@ -166,6 +172,10 @@ class DatasetConfigModal:
         self._set_dropdown_value(
             self.dd_tag_preset,labels.get(preset,"Auto (JSON / legado)")
         )
+        self._set_dropdown_value(
+            self.dd_tag_profile,
+            getattr(self.mode,"_modal_tag_profile","(Do JSON das âncoras)")
+        )
         self.mode.dataset_modal_open = True
 
     def close(self):
@@ -225,6 +235,11 @@ class DatasetConfigModal:
             self.dd_tag_preset,
             ["Auto (JSON / legado)", "Frente / trás",
              "Esquerda / direita", "Personalizado (JSON)"],
+        )
+        self._set_dropdown_options(
+            self.dd_tag_profile,
+            ["(Do JSON das âncoras)"] +
+            safe_list(getattr(m,"tag_profiles_dir","tag_profiles"),(".json",)),
         )
 
         dataset_files = safe_list(dataset_dir, (".txt", ".csv", ".jsonl"))
@@ -659,6 +674,9 @@ class DatasetConfigModal:
             "Esquerda / direita":"left_right",
             "Personalizado (JSON)":"custom",
         }.get(tags_selected,"auto")
+        m._modal_tag_profile=self._get_dropdown_value(
+            self.dd_tag_profile
+        ) or "(Do JSON das âncoras)"
         m._modal_anchor_file = self._get_dropdown_value(self.dd_anchors)
         route_value = self._get_dropdown_value(self.dd_route)
         map_value = self._get_dropdown_value(self.dd_map)
