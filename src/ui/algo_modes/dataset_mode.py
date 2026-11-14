@@ -113,6 +113,7 @@ class DatasetMode:
         self._dataset_label = ""
         self._anchors_path = None
         self._modal_tag_preset = "auto"
+        self._modal_tag_profile = "(Do JSON das âncoras)"
         self._tag_geometry_info = None
         # Sidecar opcional de medições UWB externas associadas ao PCNT
         # bruto. Nunca substituir o arquivo de origem nem encoders.
@@ -137,11 +138,13 @@ class DatasetMode:
         # dirs
         self.dataset_dir = os.path.join("resultados", "datasets")
         self.anchors_dir = "anchor_sets"
+        self.tag_profiles_dir = "tag_profiles"
         self.routes_dir = "routes"
         self.maps_dir = "maps"
 
         os.makedirs(self.dataset_dir, exist_ok=True)
         os.makedirs(self.anchors_dir, exist_ok=True)
+        os.makedirs(self.tag_profiles_dir, exist_ok=True)
         os.makedirs(self.routes_dir, exist_ok=True)
         os.makedirs(self.maps_dir, exist_ok=True)
 
@@ -2964,16 +2967,23 @@ class DatasetMode:
         return True
 
     def _resolve_two_tag_geometry(self):
-        """Uma única configuração compartilhada pelos dois modos BC.
+        """Prioriza o perfil de tag independente, depois JSON e legado.
 
-        Arquivo antigo/sem tag_geometry => frente/trás legado.
-        UI pode selecionar preset sem alterar o arquivo em disco.
+        Alterar o perfil não muda o hash do arquivo de âncoras, útil
+        quando a aquisição tem relatórios UWB processados do PR17.
         """
+        selected=getattr(self,"_modal_tag_profile","(Do JSON das âncoras)")
+        profile=None
+        if selected and selected!="(Do JSON das âncoras)":
+            profile=resolve_file_with_extensions(
+                self.tag_profiles_dir,selected,(".json",)
+            )
         return load_tag_geometry(
             getattr(self, "_anchors_path", None),
             default_baseline_m=float(getattr(config, "TAG_BASELINE", 0.25)),
             default_height_m=float(getattr(config, "TAG_HEIGHT", 0.20)),
             selection=getattr(self, "_modal_tag_preset", "auto"),
+            tag_profile_json=profile,
         )
 
     def _prepare_bc_ekf_data_for_simulated_bc(self):
