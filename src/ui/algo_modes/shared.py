@@ -176,6 +176,7 @@ def draw_analyzer_panel(
     h: int = 380,
     column_titles=("RMSE", "MAE", "Max"),
     boxplot_title="Boxplot de erro",
+    display_names: Mapping[str, str] | None = None,
     panel_fill=(250, 250, 252, 238),
     box_fill=(242, 242, 245),
     border=(120, 120, 130),
@@ -227,7 +228,13 @@ def draw_analyzer_panel(
     for algo in ordered:
         st = stats[algo]
         color = ALGO_COLORS.get(algo, BLACK)
-        label = NOMES_UI.get(algo, algo).split(") ", 1)[-1]
+        # No Dataset PCNT de uma tag, a quinta seleção é EKF 1tag;
+        # nas demais fontes continua sendo BC-EKF de duas tags.
+        label = (
+            display_names.get(algo)
+            if display_names and algo in display_names else
+            NOMES_UI.get(algo, algo).split(") ", 1)[-1]
+        )
 
         rmse = st.get("rmse", None)
         mae = st.get("mae", None)
@@ -268,6 +275,7 @@ def draw_analyzer_panel(
             selected=selected,
             box_fill=box_fill,
             plot_title=boxplot_title,
+            display_names=display_names,
         )
 
 def draw_boxplot_panel(
@@ -283,6 +291,7 @@ def draw_boxplot_panel(
     selected=None,
     box_fill=(242, 242, 245),
     plot_title="Boxplot de erro",
+    display_names: Mapping[str, str] | None = None,
 ):
     '''Desenha um boxplot horizontal para os algoritmos listados, usando as estatísticas fornecidas.'''
     if not ordered_algos:
@@ -318,7 +327,11 @@ def draw_boxplot_panel(
         s_q3 = sx(st["q3"])
         s_max = sx(st["max"])
 
-        label = NOMES_UI.get(algo, algo).split(") ", 1)[-1]
+        label = (
+            display_names.get(algo)
+            if display_names and algo in display_names else
+            NOMES_UI.get(algo, algo).split(") ", 1)[-1]
+        )
         rank = rank_pos.get(algo)
 
         if rank is not None:

@@ -12,6 +12,8 @@ from src import config
 from src.ui.botton import Button
 from src.uwb.algoritmos_estaticos import run_batch
 from src.uwb.preprocessing import load_uwb_preprocess_config
+from src.fusion.single_tag_range_ekf import load_single_tag_ekf_config
+from src.ui.algo_modes.dataset_single_tag_fusion import run_real_single_tag_fusion
 from src.uwb.preprocessing_workflow import load_preprocessed_pcnt_overlay
 from src.ui.algo_modes.shared import (
     ALGO_ORDER,
@@ -213,6 +215,7 @@ class DatasetMode:
         self._field_quality_report = None
         self._robot2026_uwb_data = None
         self._robot2026_uwb_indices = np.array([], dtype=int)
+        self._single_tag_fusion_result = None
         # Seleção de voltas altera somente o desenho; preserva todas as amostras.
         self._robot2026_laps = ()
         self._odom_is_time_window = False
@@ -741,6 +744,7 @@ class DatasetMode:
             )
             self._dataset_stats = None
             self._batch_results = None
+            self._single_tag_fusion_result = None
             self._bc_ekf_data = None
             self.host._dataset_anchors = self._dataset_anchors
             self.host._batch_dists = self._batch_dists
@@ -1066,6 +1070,15 @@ class DatasetMode:
                 self.selected,
                 self.selected_algo_variants,
             )
+            if (algo == "bc_ekf"
+                    and self.dataset_source_type == "real_odom_uwb_2026"):
+                # Mesmo botão físico dos filtros de fusão, mas algoritmos
+                # distintos: duas tags usam o BC-EKF legado; uma tag
+                # utiliza EKF por ranges e odometria.
+                label = (
+                    "◉ EKF 1 tag" if self.selected.get("bc_ekf", False)
+                    else "○ EKF 1 tag"
+                )
 
             # O Button do projeto usa .text.
             # Mantemos .label também por segurança.
@@ -1099,10 +1112,16 @@ class DatasetMode:
 
         self._refresh_dataset_algo_buttons()
 
-        self.host._set_msg(
-            f"{algo_key}: "
-            f"{algorithm_button_label(algo_key, self.selected, self.selected_algo_variants)}"
-        )
+        if (algo_key == "bc_ekf"
+                and self.dataset_source_type == "real_odom_uwb_2026"):
+            label = "EKF 1 tag"
+            state = "ativado" if self.selected.get("bc_ekf", False) else "desativado"
+            self.host._set_msg(f"{label}: {state}")
+        else:
+            self.host._set_msg(
+                f"{algo_key}: "
+                f"{algorithm_button_label(algo_key, self.selected, self.selected_algo_variants)}"
+            )
 
 
     def _resolve_algos_to_run(self):
@@ -1144,11 +1163,14 @@ class DatasetMode:
 
             if isinstance(result, dict):
                 result = dict(result)
-                result["algo_key_actual"] = concrete_key
-                result["algo_label"] = algorithm_button_label(
-                    base_key,
-                    self.selected,
-                    self.selected_algo_variants,
+                result["algo_key_actual"] = result.get(
+                    "algo_key_actual", concrete_key
+                )
+                result["algo_label"] = result.get(
+                    "algo_label",
+                    algorithm_button_label(
+                        base_key, self.selected, self.selected_algo_variants
+                    ),
                 )
 
             out[base_key] = result
@@ -1534,11 +1556,16 @@ class DatasetMode:
                     algos_to_run = [a for a in algos_to_run if a != "bc_ekf"]
                     self.host._set_msg("BC-EKF ignorado: dados BC não foram preparados corretamente")
 
-        if self.dataset_source_type == "real_odom_uwb_2026" and "bc_ekf" in algos_to_run:
+        # O quinto botão vira EKF por ranges de UMA tag no PCNT real.
+        # Não executar o BC-EKF de duas tags com dados incompatíveis.
+        run_one_tag_ekf = (
+            self.dataset_source_type == "real_odom_uwb_2026"
+            and "bc_ekf" in algos_to_run
+        )
+        if run_one_tag_ekf:
             algos_to_run = [a for a in algos_to_run if a != "bc_ekf"]
-            self.host._set_msg("BC-EKF ignorado: uma tag, sem baseline")
 
-        if not algos_to_run:
+        if not algos_to_run and not run_one_tag_ekf:
             self.host._set_msg("Selecione pelo menos um algoritmo compatível")
             return
 
@@ -1587,15 +1614,37 @@ class DatasetMode:
                     "use off ou dataset de uma tag."
                 )
                 return
-            raw_results = run_batch(
-                anchors_Nx3=anchors,
-                distances=self._batch_dists,
-                deviations=devs,
-                algoritmos=algos_to_run,
-                p_true=p_true,
-                bc_ekf_data=self._bc_ekf_data,
-                preprocess_config=pre_cfg,
+            raw_results = (
+                run_batch(
+                    anchors_Nx3=anchors,
+                    distances=self._batch_dists,
+                    deviations=devs,
+                    algoritmos=algos_to_run,
+                    p_true=p_true,
+                    bc_ekf_data=self._bc_ekf_data,
+                    preprocess_config=pre_cfg,
+                )
+                if algos_to_run else {}
             )
+
+            self._single_tag_fusion_result = None
+            if run_one_tag_ekf:
+                # MESMO conjunto UWB e MESMOS índices PCNT dos solvers
+                # estáticos. Se houver overlay mask, ele já foi validado
+                # e não será aplicado duas vezes.
+                if self._robot2026_data is None or self._robot2026_uwb_data is None:
+                    raise ValueError("EKF 1 tag exige PCNT real com UWB alinhado")
+                fusion = run_real_single_tag_fusion(
+                    odometry=self._robot2026_data,
+                    uwb=self._robot2026_uwb_data,
+                    anchors_xyz=anchors,
+                    distances=self._batch_dists,
+                    deviations=devs,
+                    config=load_single_tag_ekf_config(config_path),
+                    preprocess_config=pre_cfg,
+                )
+                raw_results["bc_ekf"] = fusion
+                self._single_tag_fusion_result = fusion
 
             self._batch_results = self._remap_batch_results_to_sidebar_keys(raw_results)
 
@@ -1635,13 +1684,20 @@ class DatasetMode:
                     f"{audit.get('flagged_cells', 0)} sinalizadas, "
                     f"{audit.get('newly_masked_finite_positive_cells', 0)} mascaradas"
                 )
+            if run_one_tag_ekf and self._single_tag_fusion_result is not None:
+                info = self._single_tag_fusion_result["fusion_diagnostics"]
+                status += (
+                    f" | EKF 1tag: {info['corrections_applied']}/"
+                    f"{info['uwb_epochs']} correcoes UWB"
+                )
             self.host._set_msg(status)
 
         except Exception as e:
             print(f"[DATASET] erro no batch: {e}")
             self._batch_results = None
             self._dataset_stats = None
-            self.host._set_msg("Erro no batch")
+            self._single_tag_fusion_result = None
+            self.host._set_msg(f"Erro no batch: {str(e)[:140]}")
 
 
     def _get_batch_ground_truth_xy(self):

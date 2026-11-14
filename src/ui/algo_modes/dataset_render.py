@@ -589,6 +589,7 @@ def draw_dataset_analyzer(mode):
         selected=mode.selected,
         column_titles=column_titles,
         boxplot_title=boxplot_title,
+        display_names={"bc_ekf": "EKF 1 tag"} if is_single_tag else None,
         x=10,
         y=40,
         w=500,
@@ -669,6 +670,11 @@ def draw_dataset_legend(mode):
             mode.host.font,
             mode.host.bigfont,
             selected=mode.selected,
+            labels=(
+                {"bc_ekf":"EKF 1 tag (odometria + UWB)"}
+                if getattr(mode,"dataset_source_type","")=="real_odom_uwb_2026"
+                else None
+            ),
         )
     else:
         mode._legend_close_rect = None
