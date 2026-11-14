@@ -47,6 +47,11 @@ class DualTagPcnt2026:
         return int(len(self.sample_indices))
 
     @property
+    def repeated_readings(self):
+        """Compatibilidade com painel PCNT 2026 (unidade: linhas repetidas)."""
+        return self.repeated_rows
+
+    @property
     def interleaved_distances(self):
         return self.distances_by_tag.transpose(0,2,1).reshape(self.sample_count,-1)
 
