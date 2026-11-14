@@ -168,3 +168,93 @@ Checklist:
   incluindo LAB7A, sem confundir rota nominal e ground truth.
 
 **PR #17 permanece Draft até CI e validação local.**
+
+## Janela de pré-processamento independente (revisão do PR #17)
+
+O botão **Pré-processar UWB** fica na coluna esquerda ao lado
+de **Exportar CSV** na barra lateral do Dataset Mode. Ele abre
+um modal que NÃO altera os dados ou as configurações correntes
+do simulador ao escolher arquivos, analisar ou salvar.
+
+Fluxo de uso:
+
+1. **Escolher arquivo**: `.csv`/`.txt` com pares `dist,sigma`,
+   ou CSV PCNT bruto 2026 (`5 + 3*N_slots` colunas). Também aceita
+   `.jsonl` legado `z_k` (somente tag frontal, com aviso explícito).
+   O botão **Usar arquivo atual** facilita a análise da fonte já
+   carregada no Dataset, sem mudar seu estado.
+2. **Escolher âncoras**: selecione o JSON com `anchors_xy`; para
+   PCNT, ele também deve declarar o mapeamento
+   `pcnt_slot_to_anchor_index`. A seleção é independente da tela
+   `Configurar Dataset`. As unidades são sempre metros.
+3. **Confirmar formato e sessão**: alternar `PCNT bruto`/
+   `dist/sigma`, e a sessão do CSV PCNT em caso de reset.
+4. **Política**: alternar **off / flag / mask**; demais parâmetros
+   são carregados do campo opcional `uwb_preprocessing` do JSON
+   selecionado. Sem bloco, a prévia começa em `flag` (sem limites
+   extras além de validade do range e sigma). Trocar a geometria
+   sem bloco também limpa limites do cenário anterior.
+5. **Analisar**: exibe um relatório rolável com número de amostras,
+   tags, âncoras, células sinalizadas/mascaradas, motivos individuais,
+   contagens por âncora e exemplos com índices/timestamps de origem.
+6. **Salvar cópia CSV** (opcional e somente após Analisar):
+   escolha um NOVO caminho; nenhum arquivo existente é sobrescrito.
+   O resultado inclui um `nome.csv` carregável pelo Dataset Simulado
+   e um `nome.preproc.json` com hash do arquivo de entrada/âncoras,
+   política, contagens, eventos e índices/tempos da fonte.
+
+**Diferença entre formatos:**
+
+- CSV PCNT bruto: primeiro realiza a normalização de unidades,
+  slots, repetição e seleção de snapshots novos existente no pipeline
+  2026. O CSV exportado é **somente UWB** e contém os snapshots
+  selecionados. Para fusionar UWB com encoder futuramente,
+  **continuar usando o PCNT original** e os índices/tempos preservados
+  no JSON de rastreabilidade. Não confundir com cópia integral do PCNT.
+- CSV/TXT dist/sigma: usa pares `[range_0,sigma_0,range_1,sigma_1,...]`.
+  Uma tag: 2*N colunas; duas tags: 4*N colunas na ordem
+  A0-front/A0-rear/A1-front/A1-rear. O arquivo exportado conserva
+  as linhas, inclusive as que ficam sem ranges suficientes.
+- JSONL legado `z_k`: se contém medições de duas tags, este
+  adaptador só extrai a frontal; a interface informa a limitação.
+  Sem sigmas, a exportação inclui `NaN` nas colunas sigma, e
+  estimadores ponderados podem não funcionar.
+
+**Atenção ao modo mask**: os solvers estáticos atuais têm regras
+históricas diferentes para ausência de medições (alguns podem
+reutilizar a posição anterior). A exportação é correta e
+não destrutiva, mas **uma melhoria real de precisão não está
+comprovada** apenas por mascarar ranges. Comparar cobertura e
+trajectórias de cada método, não apenas médias de erro.
+
+**Execução visual no Windows:**
+
+```powershell
+git fetch origin
+cd ..\BC_EKF_PR17
+git switch --detach origin/feature/generic-uwb-preprocessing-policies-2026
+python -m unittest discover -s tests -p "test_uwb_preprocessing_workflow_2026.py" -v
+python -m unittest discover -s tests -v
+python -m apps.main_interactive
+```
+
+No Dataset, clique **Pré-processar UWB** ao lado de Exportar CSV.
+Escolha uma fonte PCNT e o JSON corrigido de âncoras, execute em
+`flag`, verifique a quantidade de sinalizações; mude para `mask`,
+analise novamente e, se desejar, salve uma **cópia** em
+`resultados/datasets/`. O Dataset corrente não muda. Para utilizar
+a cópia, carregue-a explicitamente como **Simulado** e escolha a
+mesma geometria de âncoras. A cópia não possui odometria.
+
+A escolha por diálogos nativos `tkinter` é intencional para oferecer
+acesso a arquivos fora dos diretórios convencionais. Ela é acionada
+apenas quando o usuário clica; se Tk não estiver disponível, a
+interface mostra um erro sem afetar a aplicação. Os testes
+automatizados do motor de importação, análise e exportação não
+dependem de Tk nem Pygame.
+
+**Critérios de aceitação antes do merge**: testar a janela no
+Windows, validar fontes PCNT e CSV, comparar o CSV exportado com o
+resultado da prévia, preservar hashes e dados originais, validar a
+ausência de sobrescrita, e confirmar regressões anteriores do batch
+com modo off/flag.
