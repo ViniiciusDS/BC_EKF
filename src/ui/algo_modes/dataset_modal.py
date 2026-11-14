@@ -44,6 +44,11 @@ class DatasetConfigModal:
         self.dd_odom_session = TextBoxDropdown(
             pg.Rect(0, 0, 440, 30), font, options=["1", "2"], max_len=8
         )
+        # Sidecar JSON é a referência ao UWB tratado; o CSV correspondente
+        # é inferido somente após validação do par e do PCNT de origem.
+        self.dd_preprocessed_uwb = TextBoxDropdown(
+            pg.Rect(0, 0, 440, 30), font, options=["(Nenhum)"], max_len=255
+        )
         self.dd_anchors = TextBoxDropdown(pg.Rect(0, 0, 440, 30), font, options=[])
         self.dd_route = TextBoxDropdown(pg.Rect(0, 0, 440, 30), font, options=[])
         self.dd_map = TextBoxDropdown(pg.Rect(0, 0, 440, 30), font, options=[])
@@ -72,6 +77,7 @@ class DatasetConfigModal:
             FormDropdownRow("Fonte:", self.dd_source),
             FormDropdownRow("Arquivo PCNT:", self.dd_odom),
             FormDropdownRow("Sessão (bruto):", self.dd_odom_session),
+            FormDropdownRow("UWB tratado:", self.dd_preprocessed_uwb),
             FormDropdownRow("Âncoras:", self.dd_anchors),
             FormDropdownRow("Rota ref.:", self.dd_route),
             FormDropdownRow("Mapa:", self.dd_map),
@@ -108,6 +114,11 @@ class DatasetConfigModal:
 
         if not self._get_dropdown_value(self.dd_odom_session):
             self._set_dropdown_value(self.dd_odom_session, "2")
+        current_overlay=getattr(self.mode,"_real_preproc_sidecar_path",None)
+        if current_overlay:
+            self._set_dropdown_value(self.dd_preprocessed_uwb,str(current_overlay))
+        elif not self._get_dropdown_value(self.dd_preprocessed_uwb):
+            self._set_dropdown_value(self.dd_preprocessed_uwb,"(Nenhum)")
 
         kind = getattr(self.mode, "simulated_dataset_kind", "Front")
 
@@ -221,6 +232,20 @@ class DatasetConfigModal:
             ),
         )
         self._set_dropdown_options(self.dd_odom_session, ["1", "2", "3", "4", "5"])
+        # Arquivos exportados são apresentados como relatórios sidecar
+        # para não confundir CSV UWB-only com um PCNT bruto.
+        from pathlib import Path
+        pre_dir=Path(dataset_dir)
+        sidecars=sorted(
+            (str(p) for p in pre_dir.glob("*.preproc.json") if p.is_file()),
+            key=str.lower
+        ) if pre_dir.is_dir() else []
+        last=getattr(m,"_last_uwb_preproc_sidecar",None)
+        if last and Path(last).is_file() and str(last) not in sidecars:
+            sidecars.insert(0,str(last))
+        self._set_dropdown_options(
+            self.dd_preprocessed_uwb, ["(Nenhum)"]+sidecars
+        )
 
         self._set_dropdown_options(
             self.dd_anchors,
@@ -554,6 +579,10 @@ class DatasetConfigModal:
         if is_odometry or is_odom_uwb:
             m._modal_odom_file = self._get_dropdown_value(self.dd_odom)
             m._modal_odom_session = self._get_dropdown_value(self.dd_odom_session) or "1"
+            m._modal_preproc_sidecar = (
+                self._get_dropdown_value(self.dd_preprocessed_uwb)
+                if is_odom_uwb else "(Nenhum)"
+            )
             m._modal_dataset_file = ""
             m._modal_real_encoder_file = ""
             m._modal_real_uwb_file = ""
