@@ -322,6 +322,8 @@ class TestIndependentPreprocessingWorkflow(unittest.TestCase):
         mode=(root/"src/ui/algo_modes/dataset_mode.py").read_text(encoding="utf-8")
         self.assertIn('FormDropdownRow("UWB tratado:", self.dd_preprocessed_uwb)',modal)
         self.assertIn('"(Nenhum)"',modal)
+        self.assertIn('"(Escolher relatório...)"',modal)
+        self.assertIn("_select_native_file(sidecar=True)",modal)
         self.assertIn('load_preprocessed_pcnt_overlay(',mode)
         self.assertIn('self._real_preproc_report=overlay_report',mode)
         self.assertIn('pre_cfg=None',mode)
