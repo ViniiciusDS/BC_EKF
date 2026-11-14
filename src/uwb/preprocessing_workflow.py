@@ -349,7 +349,7 @@ def load_preprocessed_pcnt_overlay(
         raise ValueError("O arquivo processado deve ser um CSV de ranges")
     original_d=np.asarray(original_uwb.distances,dtype=float)
     original_s=np.asarray(original_uwb.deviations,dtype=float)
-    if original_d.ndim!=2 or original_s.shape!=original_d:
+    if original_d.ndim!=2 or original_s.shape!=original_d.shape:
         raise ValueError("O modo real PCNT exige ranges/sigmas MxN de uma tag")
     if report.get("tags")!=1 or report.get("anchors")!=original_d.shape[1]:
         raise ValueError("Quantidade de tags/âncoras incompatível")
