@@ -107,7 +107,7 @@ def _draw_algo_icon(screen, x, y, color):
         pg.draw.circle(screen, BLACK, (px, py), 2, 1)
 
 
-def draw_legend_overlay(screen: pg.Surface, font: pg.font.Font, bigfont: pg.font.Font, selected: dict | None = None):
+def draw_legend_overlay(screen: pg.Surface, font: pg.font.Font, bigfont: pg.font.Font, selected: dict | None = None, labels: dict | None = None):
     '''Desenha a sobreposição da legenda no centro da tela. Retorna o retângulo do botão de fechar para detectar cliques.'''
     sw, sh = screen.get_width(), screen.get_height()
 
@@ -162,7 +162,9 @@ def draw_legend_overlay(screen: pg.Surface, font: pg.font.Font, bigfont: pg.font
 
         color = ALGO_COLORS[key]
         _draw_algo_icon(screen, x + 55, yy + 8, color)
-        txt = font.render(ALGO_LABELS[key], True, color)
+        # A mesma chave visual identifica dois filtros de fusão
+        # distintos conforme a fonte: BC-EKF (duas tags) ou EKF 1 tag.
+        txt = font.render((labels or {}).get(key, ALGO_LABELS[key]), True, color)
         screen.blit(txt, (x + 90, yy))
         yy += 32
 
