@@ -55,6 +55,7 @@ from src.ui.algo_modes.dataset_render import (
     draw_dataset_analyzer,
 )
 from src.ui.algo_modes.dataset_modal import DatasetConfigModal
+from src.ui.algo_modes.preprocessing_modal import UwbPreprocessingModal
 from src.analysis.field_diagnostic import build_field_diagnostic, save_field_diagnostic
 from src.analysis.field_lap_metrics import build_field_lap_metrics, save_field_lap_metrics
 from src.ui.algo_modes.dataset_odometry_pipeline import (
@@ -136,6 +137,12 @@ class DatasetMode:
         # modal
         self.dataset_modal = DatasetConfigModal(self)
         self.dataset_modal_open = False
+        # Janela independente: não substitui o dataset em memória.
+        self.preprocessing_modal = UwbPreprocessingModal(self)
+        self.btn_preprocessor = Button(
+            (0, 0, 160, 28), "Pré-processar UWB", self.host.font,
+            bg=(238, 245, 254), fg=(32, 75, 145), border=(90, 135, 205),
+        )
 
         # câmera
         self._panning = False
@@ -1211,6 +1218,12 @@ class DatasetMode:
             if event.type == pg.QUIT:
                 return _actions_quit()
 
+            if self.preprocessing_modal.opened:
+                # Modal captura o clique, teclas e scroll; não deixa
+                # eventos atravessarem para a câmera/botões inferiores.
+                self.preprocessing_modal.handle_event(event)
+                continue
+
             if self.dataset_modal_open:
                 if self.dataset_modal.handle_event(event):
                     continue
@@ -1282,6 +1295,10 @@ class DatasetMode:
 
                     elif self.btn_run_batch.hit(pos):
                         self._run_batch()
+                        continue
+
+                    elif self.btn_preprocessor.hit(pos):
+                        self.preprocessing_modal.open()
                         continue
 
                     elif self.btn_export.hit(pos):
@@ -1400,6 +1417,13 @@ class DatasetMode:
 
         if hasattr(self, "btn_export") and self.btn_export is not None:
             self.btn_export.draw(self.host.screen)
+            # Alinha ao botão Exportar CSV na metade esquerda
+            # do painel, sem interferir em sua área de clique.
+            self.btn_preprocessor.rect = pg.Rect(
+                self.btn_export.rect.x - 166, self.btn_export.rect.y,
+                160, self.btn_export.rect.h,
+            )
+            self.btn_preprocessor.draw(self.host.screen)
 
         for algo in ALGO_ORDER:
             if algo in self._btn_algos:
@@ -1407,6 +1431,9 @@ class DatasetMode:
 
         if self.dataset_modal_open:
             self.dataset_modal.draw()
+        if self.preprocessing_modal.opened:
+            # Renderizar no topo, depois dos botões do Dataset.
+            self.preprocessing_modal.draw()
 
     def _normalize_simulated_dataset_by_kind(self):
         """
