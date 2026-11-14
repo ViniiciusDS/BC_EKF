@@ -35,6 +35,7 @@ class PreprocessingInput:
     sample_indices: np.ndarray
     timestamps_s: np.ndarray | None
     notes: tuple[str, ...] = ()
+    session_id: int | None = None
 
 
 def _read_interleaved(path, anchor_count):
@@ -163,6 +164,7 @@ def load_preprocessing_input(path, anchors_path, *, source_type, session_id=1):
             distances=data.distances.copy(), deviations=data.deviations.copy(),
             sample_indices=data.sample_indices.copy(),
             timestamps_s=data.timestamps_s.copy(),
+            session_id=int(session_id),
             notes=(
                 f"PCNT sessao {session_id}: indices originais preservados",
                 "Dataset exportado contém somente UWB, sem odometria PCNT",
@@ -236,6 +238,9 @@ def execute_preprocessing(input_data, anchors, anchor_config_path, config):
         "anchor_filename":anchor_path.name,
         "anchor_sha256":hashlib.sha256(anchor_path.read_bytes()).hexdigest(),
         "source_notes":list(input_data.notes),
+        "session_id": (
+            int(input_data.session_id) if input_data.session_id is not None else None
+        ),
         "first_30_flagged_cells":examples,
         "original_sample_indices":result.sample_indices.tolist(),
         "original_timestamps_s":(
@@ -278,7 +283,6 @@ def save_preprocessed_dataset(path,result,report):
     paired=np.empty((len(distances),2*distances.shape[1]),dtype=float)
     paired[:,0::2]=distances
     paired[:,1::2]=sigma
-    payload=json.dumps(report,ensure_ascii=False,indent=2,allow_nan=False)+"\n"
     created=[]
     try:
         dest.parent.mkdir(parents=True,exist_ok=True)
@@ -286,6 +290,11 @@ def save_preprocessed_dataset(path,result,report):
             created.append(dest)
             writer=csv.writer(handle,delimiter=",",lineterminator="\n")
             writer.writerows(paired)
+        # Associar metadados ao conteúdo gravado, impedindo aplicação
+        # acidental de CSV editado com sidecar antigo.
+        metadata=dict(report)
+        metadata["processed_csv_sha256"]=hashlib.sha256(dest.read_bytes()).hexdigest()
+        payload=json.dumps(metadata,ensure_ascii=False,indent=2,allow_nan=False)+"\n"
         with meta.open("x",encoding="utf-8") as handle:
             created.append(meta)
             handle.write(payload)
@@ -294,3 +303,99 @@ def save_preprocessed_dataset(path,result,report):
             file.unlink(missing_ok=True)
         raise
     return dest,meta
+
+
+@dataclass(frozen=True)
+class PreprocessedRealOverlay:
+    """Ranges/sigmas realinhados a um PCNT original autenticado."""
+    distances: np.ndarray
+    deviations: np.ndarray
+    report: dict
+
+
+def load_preprocessed_pcnt_overlay(
+    csv_path, sidecar_path, raw_pcnt_path, anchor_json_path,
+    original_uwb, *, session_id,
+):
+    """Associa cópia UWB aos snapshots REAIS, sem alterar a odometria.
+
+    A segurança do alinhamento exige origem SHA-256 idêntica, geometria
+    SHA-256 idêntica, índices/timestamps/forma iguais e nenhuma medição
+    positiva 'corrigida' sem regra explícita. A política mask pode
+    substituir somente células antigas por NaN; não inventa ranges.
+    """
+    source=Path(raw_pcnt_path)
+    anchors=Path(anchor_json_path)
+    csv_file=Path(csv_path)
+    meta_file=Path(sidecar_path)
+    for path in (source, anchors, csv_file, meta_file):
+        if not path.is_file():
+            raise ValueError(f"Arquivo necessário inexistente: {path}")
+    report=json.loads(meta_file.read_text(encoding="utf-8"))
+    if not isinstance(report,dict) or report.get("schema")!="bc_ekf.uwb_preprocessing.v1":
+        raise ValueError("Sidecar de pré-processamento inválido")
+    if report.get("source_type")!="pcnt":
+        raise ValueError("Somente exportação pré-processada de PCNT pode ser associada ao modo real")
+    if report.get("source_sha256")!=hashlib.sha256(source.read_bytes()).hexdigest():
+        raise ValueError("PCNT original não corresponde ao hash do relatório")
+    if report.get("anchor_sha256")!=hashlib.sha256(anchors.read_bytes()).hexdigest():
+        raise ValueError("JSON de âncoras não corresponde ao hash do relatório")
+    if report.get("session_id") is not None and report["session_id"]!=int(session_id):
+        raise ValueError("Sessão PCNT diferente daquela registrada na exportação")
+    if ("processed_csv_sha256" in report and report["processed_csv_sha256"]!=
+            hashlib.sha256(csv_file.read_bytes()).hexdigest()):
+        raise ValueError("CSV UWB processado foi modificado após a exportação")
+    if not csv_file.name.lower().endswith(".csv"):
+        raise ValueError("O arquivo processado deve ser um CSV de ranges")
+    original_d=np.asarray(original_uwb.distances,dtype=float)
+    original_s=np.asarray(original_uwb.deviations,dtype=float)
+    if original_d.ndim!=2 or original_s.shape!=original_d:
+        raise ValueError("O modo real PCNT exige ranges/sigmas MxN de uma tag")
+    if report.get("tags")!=1 or report.get("anchors")!=original_d.shape[1]:
+        raise ValueError("Quantidade de tags/âncoras incompatível")
+    if report.get("rows")!=original_d.shape[0]:
+        raise ValueError("Quantidade de snapshots incompatível")
+    if report.get("original_sample_indices")!=original_uwb.sample_indices.tolist():
+        raise ValueError("Índices PCNT não correspondem à aquisição original")
+    saved_times=report.get("original_timestamps_s")
+    if (not isinstance(saved_times,list) or
+            len(saved_times)!=len(original_uwb.timestamps_s) or
+            not np.allclose(
+                saved_times,original_uwb.timestamps_s,
+                rtol=0,atol=1e-7
+            )):
+        raise ValueError("Timestamps UWB diferem da aquisição PCNT original")
+    distances,sigmas=_read_interleaved(csv_file,original_d.shape[1])
+    if distances.ndim!=2 or distances.shape!=original_d or sigmas.shape!=original_s:
+        raise ValueError("CSV processado deve ter MxN ranges e sigmas")
+    mode=report.get("config",{}).get("mode")
+    if mode not in ("off","flag","mask"):
+        raise ValueError("Política do sidecar inválida")
+    if mode in ("off","flag"):
+        if (not np.allclose(distances,original_d,rtol=1e-9,atol=1e-9,equal_nan=True)
+                or not np.allclose(sigmas,original_s,rtol=1e-9,atol=1e-9,equal_nan=True)):
+            raise ValueError("CSV em off/flag não pode modificar os ranges originais")
+    else:
+        # Permitir somente NaN adicionais, mantendo valores sobreviventes
+        # idênticos. Os dois arrays devem mascarar a MESMA célula.
+        missing_new=np.isnan(distances)&np.isfinite(original_d)
+        if (not np.array_equal(missing_new,np.isnan(sigmas)&np.isfinite(original_s))
+                or not np.allclose(
+                    distances[~missing_new],original_d[~missing_new],
+                    rtol=1e-9,atol=1e-9,equal_nan=True
+                )
+                or not np.allclose(
+                    sigmas[~missing_new],original_s[~missing_new],
+                    rtol=1e-9,atol=1e-9,equal_nan=True
+                )):
+            raise ValueError("CSV mask alterou valores, sigmas ou células não permitidas")
+        expected=report.get("newly_masked_finite_positive_cells")
+        if expected is not None:
+            # Apenas ranges originalmente positivos e finitos contam no
+            # indicador; os demais já eram inválidos de origem.
+            added=int(np.count_nonzero(missing_new & (original_d>0)))
+            if added!=expected:
+                raise ValueError("Quantidade de medições mascaradas diverge do relatório")
+    return PreprocessedRealOverlay(
+        distances=distances.copy(),deviations=sigmas.copy(),report=report
+    )
