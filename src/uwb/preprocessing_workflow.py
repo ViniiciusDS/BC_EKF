@@ -123,11 +123,26 @@ def load_preprocessing_input(path, anchors_path, *, source_type, session_id=1):
         raise ValueError(f"Arquivo de medições inexistente: {source}")
     if not config_path.is_file():
         raise ValueError("Selecione antes um JSON de âncoras válido no Dataset")
-    from src.ui.algo_modes.shared import load_anchors_from_json
-    anchors, _ = load_anchors_from_json(str(config_path))
-    anchors = np.asarray(anchors,dtype=float)
-    if anchors.ndim!=2 or anchors.shape[1]!=3 or not np.isfinite(anchors).all():
-        raise ValueError("Pré-processamento requer geometria de âncoras Nx3")
+    # Leitura mínima de geometria: sem importar Pygame/UI no motor
+    # de análise. Mantém a convenção do loader compartilhado: Nx2
+    # pode usar anchor_height_m/anchor_z_m/z_anchor, default 1.0 m.
+    settings=json.loads(config_path.read_text(encoding="utf-8"))
+    if not isinstance(settings,dict):
+        raise ValueError("JSON de âncoras deve conter objeto")
+    anchors=np.asarray(
+        settings.get("anchors_xy",settings.get("anchors",[])),dtype=float
+    )
+    if anchors.ndim!=2 or anchors.shape[1] not in (2,3) or len(anchors)<1:
+        raise ValueError("Pré-processamento requer geometria Nx2 ou Nx3")
+    if anchors.shape[1]==2:
+        height=float(settings.get(
+            "anchor_height_m",settings.get(
+                "anchor_z_m",settings.get("z_anchor",1.0)
+            )
+        ))
+        anchors=np.column_stack((anchors,np.full(len(anchors),height)))
+    if not np.isfinite(anchors).all():
+        raise ValueError("Geometria de âncoras contém valores não finitos")
     n = len(anchors)
     if source_type=="pcnt":
         from src.ui.algo_modes.dataset_uwb2026_pipeline import (
