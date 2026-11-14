@@ -188,6 +188,12 @@ def load_tag_geometry(
             profile=json.load(stream)
         if not isinstance(profile,dict):
             raise ValueError("JSON de perfil de tags deve ser objeto")
+        if (isinstance(profile.get("meta"),dict)
+                and profile["meta"].get("example_only") is True):
+            raise ValueError(
+                "Perfil de tags é apenas EXEMPLO. Copie, meça X/Y/Z, "
+                "ajuste os canais e defina meta.example_only=false"
+            )
         settings=profile.get("tag_geometry",profile)
         from_profile=True
     if selection=="custom" and (not isinstance(settings,dict) or
