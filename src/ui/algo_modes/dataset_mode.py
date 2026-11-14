@@ -1112,10 +1112,16 @@ class DatasetMode:
 
         self._refresh_dataset_algo_buttons()
 
-        self.host._set_msg(
-            f"{algo_key}: "
-            f"{algorithm_button_label(algo_key, self.selected, self.selected_algo_variants)}"
-        )
+        if (algo_key == "bc_ekf"
+                and self.dataset_source_type == "real_odom_uwb_2026"):
+            label = "EKF 1 tag"
+            state = "ativado" if self.selected.get("bc_ekf", False) else "desativado"
+            self.host._set_msg(f"{label}: {state}")
+        else:
+            self.host._set_msg(
+                f"{algo_key}: "
+                f"{algorithm_button_label(algo_key, self.selected, self.selected_algo_variants)}"
+            )
 
 
     def _resolve_algos_to_run(self):
