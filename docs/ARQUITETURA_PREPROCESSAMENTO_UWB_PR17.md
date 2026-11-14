@@ -258,3 +258,66 @@ Windows, validar fontes PCNT e CSV, comparar o CSV exportado com o
 resultado da prévia, preservar hashes e dados originais, validar a
 ausência de sobrescrita, e confirmar regressões anteriores do batch
 com modo off/flag.
+
+## Reutilizar o CSV tratado no modo real PCNT + UWB 2026
+
+O CSV criado na janela **Pré-processar UWB** não é um arquivo PCNT
+bruto: ele contém somente UWB e, sozinho, não reproduz odometria,
+voltas ou os timestamps de coleta. A cópia é reutilizável sem
+falsificar essas informações por meio da seleção **UWB tratado**
+em **Configurar Dataset → Real (PCNT + UWB 2026)**.
+
+1. Selecione **Fonte: Real (PCNT + UWB 2026)**.
+2. Em **Arquivo PCNT**, selecione `Bruto: ...` com o CSV integral
+   de origem, não o CSV de 14 colunas extraído.
+3. Ajuste **Sessão (bruto)** para a mesma sessão da exportação.
+4. Em **UWB tratado**, selecione o arquivo
+   `nome.preproc.json` criado junto a `nome.csv`.
+   O dropdown lista os relatórios de `resultados/datasets/`
+   e a opção **(Escolher relatório...)** permite procurar
+   outro arquivo no sistema.
+5. Em **Âncoras**, mantenha exatamente o JSON utilizado na
+   exportação. Os hashes SHA-256 precisam ser idênticos.
+6. Selecione rota/mapa conforme a aquisição original, clique
+   **Carregar** e depois **Rodar batch**.
+
+O modo real mantém a odometria, os 3.351 registros PCNT, os índices
+originais de snapshots e a segmentação física por portão. As matrizes
+UWB selecionadas (808 snapshots no LAB7A) são substituídas em
+memória **apenas depois** de validações de SHA-256, forma MxN,
+sessão, índices e timestamps. O arquivo bruto nunca é alterado.
+
+A política de pré-processamento contida no JSON de âncoras **não é
+executada novamente** quando o usuário carrega explicitamente um
+CSV tratado. Assim evitamos filtragem dupla. Para voltar ao
+comportamento anterior, escolha **UWB tratado: (Nenhum)**.
+Sem sidecar, permanece disponível o pré-processamento implícito
+opt-in do JSON de âncoras introduzido no início deste PR.
+
+**Garantias do carregador:** no modo `flag`, o CSV deve coincidir
+com os valores UWB do PCNT original. No modo `mask`, só se pode
+introduzir `NaN` nas células de range/sigma assinaladas, nunca
+trocar um valor por outro. Uma nova exportação vincula o hash
+SHA-256 do próprio CSV ao relatório; relatórios antigos que não
+possuem esse hash também são aceitos somente se as medições
+e o alinhamento forem coerentes com o PCNT. Arquivos de outra
+sessão, geometria, origem ou com timestamps diferentes são
+recusados com mensagem, sem recorrer a aproximações.
+
+**Validação funcional sugerida:**
+
+- Use o mesmo PCNT e geometria corrigida em duas execuções reais:
+  **(Nenhum)** e `_preproc_flag.preproc.json`. Como `flag` não
+  mascara, os quatro algoritmos estáticos devem estimar
+  posições idênticas, e as seis voltas completas devem permanecer.
+- Teste `mask` em nova exportação e compare disponibilidade de
+  posições, erros nominais e medidas descartadas; não supor que
+  cada solver possui a mesma política de falha diante de `NaN`.
+- Nunca escolher o CSV UWB extraído como **Arquivo PCNT bruto**.
+- Não confundir métricas da fonte **Simulado**, sem odometria e
+  sem segmentação física original, com as métricas da fonte
+  **Real PCNT+UWB**. Distância à rota nominal não é ground truth.
+
+Este caminho atende ao PCNT+UWB 2026 de **uma tag**. O adaptador
+da fonte legada `Real (encoder + UWB)` tem contrato de arquivo
+distinto, e não é alterado por esta etapa.
