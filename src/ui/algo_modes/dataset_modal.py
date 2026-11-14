@@ -244,7 +244,8 @@ class DatasetConfigModal:
         if last and Path(last).is_file() and str(last) not in sidecars:
             sidecars.insert(0,str(last))
         self._set_dropdown_options(
-            self.dd_preprocessed_uwb, ["(Nenhum)"]+sidecars
+            self.dd_preprocessed_uwb,
+            ["(Nenhum)", "(Escolher relatório...)"]+sidecars
         )
 
         self._set_dropdown_options(
@@ -532,6 +533,18 @@ class DatasetConfigModal:
                 dd.dropdown_open = False
                 self.open_dropdown = None
                 self.dropdown_scroll = 0
+
+                if dd is self.dd_preprocessed_uwb and full_value=="(Escolher relatório...)":
+                    # Seleção de sidecar externo: não tentar abrir um CSV
+                    # como PCNT. O motor validará o par CSV+JSON depois.
+                    from src.ui.algo_modes.preprocessing_modal import _select_native_file
+                    from pathlib import Path
+                    file=_select_native_file(sidecar=True)
+                    if file and Path(file).name.endswith(".preproc.json"):
+                        self._set_dropdown_value(self.dd_preprocessed_uwb,file)
+                    else:
+                        self._set_dropdown_value(self.dd_preprocessed_uwb,"(Nenhum)")
+                    return True
 
                 if dd is self.dd_source:
                     self.refresh_options()
