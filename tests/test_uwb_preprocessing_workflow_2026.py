@@ -21,6 +21,7 @@ from src.uwb.preprocessing_workflow import (
     execute_preprocessing,
     load_preprocessing_input,
     save_preprocessed_dataset,
+    load_preprocessed_pcnt_overlay,
 )
 
 
@@ -200,6 +201,130 @@ class TestIndependentPreprocessingWorkflow(unittest.TestCase):
         )
         _,sigmas=_read_interleaved(exported,5)
         self.assertTrue(np.isnan(sigmas).all())
+
+
+    def make_real_export(self, mode="flag"):
+        """Arquivo PCNT com duas aquisições UWB novas e encoder integral."""
+        raw=self.root/"pcnt.csv"
+        def line(ts,base,first=None):
+            out=[ts,ts//10,-ts//10,0,0]
+            for j in range(5):
+                out.extend([first if j==0 and first is not None else base+j*10,4.,2.])
+            return ",".join(map(str,out))
+        raw.write_text("\n".join([
+            line(0,100,50),line(250,100,50),line(500,110)
+        ])+"\n",encoding="utf-8")
+        from src.ui.algo_modes.dataset_uwb2026_pipeline import (
+            load_robot2026_single_tag_uwb,read_pcnt_anchor_slot_mapping,
+        )
+        original=load_robot2026_single_tag_uwb(
+            raw,session_id=1,anchor_count=5,
+            slot_to_anchor_index=read_pcnt_anchor_slot_mapping(self.anchors,5)
+        )
+        inp,xyz=load_preprocessing_input(
+            raw,self.anchors,source_type="pcnt",session_id=1
+        )
+        result,report=execute_preprocessing(
+            inp,xyz,self.anchors,
+            UwbPreprocessConfig(mode=mode,tag_heights_m=.2)
+        )
+        processed,sidecar=save_preprocessed_dataset(
+            self.root/f"{mode}_processed.csv",result,report
+        )
+        return raw,original,processed,sidecar
+
+    def test_real_overlay_flag_is_identity_and_keeps_encoder(self):
+        raw,original,csv_path,sidecar=self.make_real_export("flag")
+        overlay=load_preprocessed_pcnt_overlay(
+            csv_path,sidecar,raw,self.anchors,original,session_id=1
+        )
+        np.testing.assert_allclose(
+            overlay.distances,original.distances,equal_nan=True
+        )
+        np.testing.assert_allclose(
+            overlay.deviations,original.deviations,equal_nan=True
+        )
+        self.assertEqual(overlay.report["session_id"],1)
+        self.assertEqual(
+            overlay.report["processed_csv_sha256"],
+            hashlib.sha256(csv_path.read_bytes()).hexdigest()
+        )
+        np.testing.assert_array_equal(original.sample_indices,[0,2])
+        self.assertEqual(original.odometry.sample_count,3)
+
+    def test_real_overlay_mask_removes_only_flagged_cell(self):
+        raw,original,csv_path,sidecar=self.make_real_export("mask")
+        overlay=load_preprocessed_pcnt_overlay(
+            csv_path,sidecar,raw,self.anchors,original,session_id=1
+        )
+        self.assertEqual(overlay.distances.shape,original.distances.shape)
+        self.assertTrue(np.isnan(overlay.distances[0,0]))
+        self.assertTrue(np.isnan(overlay.deviations[0,0]))
+        self.assertAlmostEqual(original.distances[0,0],.5)
+        self.assertEqual(overlay.report["newly_masked_finite_positive_cells"],1)
+
+    def test_real_overlay_rejects_wrong_session_source_anchor_or_csv(self):
+        raw,original,csv_path,sidecar=self.make_real_export("flag")
+        with self.assertRaisesRegex(ValueError,"Sessão"):
+            load_preprocessed_pcnt_overlay(
+                csv_path,sidecar,raw,self.anchors,original,session_id=2
+            )
+        other_raw=self.root/"wrong_raw.csv"
+        other_raw.write_bytes(raw.read_bytes()+b"\n")
+        with self.assertRaisesRegex(ValueError,"PCNT original"):
+            load_preprocessed_pcnt_overlay(
+                csv_path,sidecar,other_raw,self.anchors,original,session_id=1
+            )
+        other_anchors=self.root/"wrong_anchors.json"
+        other_anchors.write_text(self.anchors.read_text(encoding="utf-8")+"\n")
+        with self.assertRaisesRegex(ValueError,"JSON de âncoras"):
+            load_preprocessed_pcnt_overlay(
+                csv_path,sidecar,raw,other_anchors,original,session_id=1
+            )
+        csv_path.write_text(
+            csv_path.read_text(encoding="utf-8")+"\n",encoding="utf-8"
+        )
+        with self.assertRaisesRegex(ValueError,"modificado"):
+            load_preprocessed_pcnt_overlay(
+                csv_path,sidecar,raw,self.anchors,original,session_id=1
+            )
+
+    def test_real_overlay_rejects_changed_indices(self):
+        raw,original,csv_path,sidecar=self.make_real_export("flag")
+        report=json.loads(sidecar.read_text(encoding="utf-8"))
+        report["original_sample_indices"]=[0,1]
+        sidecar.write_text(json.dumps(report),encoding="utf-8")
+        with self.assertRaisesRegex(ValueError,"Índices PCNT"):
+            load_preprocessed_pcnt_overlay(
+                csv_path,sidecar,raw,self.anchors,original,session_id=1
+            )
+
+    def test_real_overlay_legacy_report_without_csv_hash_still_checks_ranges(self):
+        raw,original,csv_path,sidecar=self.make_real_export("flag")
+        report=json.loads(sidecar.read_text(encoding="utf-8"))
+        report.pop("session_id")
+        report.pop("processed_csv_sha256")
+        sidecar.write_text(json.dumps(report),encoding="utf-8")
+        load_preprocessed_pcnt_overlay(
+            csv_path,sidecar,raw,self.anchors,original,session_id=1
+        )
+        lines=csv_path.read_text(encoding="utf-8").splitlines()
+        lines[0]=lines[0].replace("0.5,","0.6,",1)
+        csv_path.write_text("\n".join(lines)+"\n",encoding="utf-8")
+        with self.assertRaisesRegex(ValueError,"não pode modificar"):
+            load_preprocessed_pcnt_overlay(
+                csv_path,sidecar,raw,self.anchors,original,session_id=1
+            )
+
+    def test_real_overlay_gui_selector_and_no_double_preprocessing(self):
+        root=Path(__file__).resolve().parents[1]
+        modal=(root/"src/ui/algo_modes/dataset_modal.py").read_text(encoding="utf-8")
+        mode=(root/"src/ui/algo_modes/dataset_mode.py").read_text(encoding="utf-8")
+        self.assertIn('FormDropdownRow("UWB tratado:", self.dd_preprocessed_uwb)',modal)
+        self.assertIn('"(Nenhum)"',modal)
+        self.assertIn('load_preprocessed_pcnt_overlay(',mode)
+        self.assertIn('self._real_preproc_report=overlay_report',mode)
+        self.assertIn('pre_cfg=None',mode)
 
     def test_gui_button_modal_and_event_priority_wired_without_pygame_ci(self):
         root=Path(__file__).resolve().parents[1]
