@@ -366,7 +366,7 @@ def load_preprocessed_pcnt_overlay(
             )):
         raise ValueError("Timestamps UWB diferem da aquisição PCNT original")
     distances,sigmas=_read_interleaved(csv_file,original_d.shape[1])
-    if distances.ndim!=2 or distances.shape!=original_d or sigmas.shape!=original_s:
+    if distances.ndim!=2 or distances.shape!=original_d.shape or sigmas.shape!=original_s.shape:
         raise ValueError("CSV processado deve ter MxN ranges e sigmas")
     mode=report.get("config",{}).get("mode")
     if mode not in ("off","flag","mask"):
