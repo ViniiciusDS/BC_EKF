@@ -59,6 +59,7 @@ class UwbPreprocessingModal:
         self.mode=mode
         self.opened=False
         self.source_path=""
+        self.anchor_path=""
         self.source_type="pcnt"
         self.session_id=1
         self.policy=UwbPreprocessConfig(mode="flag")
@@ -70,6 +71,7 @@ class UwbPreprocessingModal:
         self.buttons={
             "select":Button((0,0,190,32),"Escolher arquivo",font,bg=(236,242,255)),
             "current":Button((0,0,190,32),"Usar arquivo atual",font),
+            "anchors":Button((0,0,190,32),"Escolher âncoras",font,bg=(238,242,255)),
             "kind":Button((0,0,195,32),"Formato: PCNT",font),
             "session":Button((0,0,120,32),"Sessão: 1",font),
             "policy":Button((0,0,170,32),"Política: flag",font),
@@ -100,6 +102,7 @@ class UwbPreprocessingModal:
         self.source_path,self.source_type,self.session_id=self._default_current()
         self.policy=UwbPreprocessConfig(mode="flag")
         anchors=getattr(self.mode,"_anchors_path",None)
+        self.anchor_path=str(anchors or "")
         if anchors and str(anchors).lower().endswith(".json") and Path(anchors).is_file():
             try:
                 saved=load_uwb_preprocess_config(anchors)
@@ -119,9 +122,9 @@ class UwbPreprocessingModal:
     def _source(self):
         if not self.source_path:
             raise ValueError("Escolha um arquivo de dados UWB antes de analisar")
-        anchors=getattr(self.mode,"_anchors_path",None)
+        anchors=self.anchor_path
         if not anchors or not Path(anchors).is_file():
-            raise ValueError("Carregue primeiro o JSON de âncoras em Configurar Dataset")
+            raise ValueError("Selecione o JSON de âncoras antes de analisar")
         return anchors
 
     def _choose_file(self):
@@ -135,6 +138,25 @@ class UwbPreprocessingModal:
                 self.source_type="ranges"
             self._reset_result()
             self.message="Arquivo selecionado. Confirme formato e política antes de analisar."
+
+    def _choose_anchors(self):
+        # Seleção explícita do perfil/geometry SEM trocar o cenário do
+        # Dataset Mode: importante ao analisar arquivos de outros ensaios.
+        chosen=_select_native_file(
+            initialdir=Path(self.anchor_path).parent if self.anchor_path else
+                       Path(getattr(self.mode,"anchors_dir","anchor_sets"))
+        )
+        if not chosen:
+            return
+        if Path(chosen).suffix.lower()!=".json":
+            raise ValueError("Âncoras devem estar em arquivo .json")
+        # Só trocar estado local depois de validação; nunca muta Dataset.
+        cfg=load_uwb_preprocess_config(chosen)
+        self.anchor_path=chosen
+        if cfg is not None:
+            self.policy=replace(cfg,mode="flag" if cfg.mode=="off" else cfg.mode)
+        self._reset_result()
+        self.message="Geometria de âncoras selecionada para esta análise."
 
     def _analyze(self):
         anchor_path=self._source()
@@ -185,6 +207,7 @@ class UwbPreprocessingModal:
         x,y=r.x+24,r.y+100
         self.buttons["select"].rect.topleft=(x,y)
         self.buttons["current"].rect.topleft=(x+200,y)
+        self.buttons["anchors"].rect.topleft=(x+400,y)
         self.buttons["kind"].rect.topleft=(x,y+46)
         self.buttons["session"].rect.topleft=(x+205,y+46)
         self.buttons["policy"].rect.topleft=(x+340,y+46)
@@ -225,7 +248,7 @@ class UwbPreprocessingModal:
         if r is None:
             return [
                 "Selecione um CSV PCNT bruto ou dataset dist/sigma.",
-                "A geometria vem do JSON de âncoras carregado no Dataset.",
+                "Selecione também a geometria de âncoras correspondente.",
                 "Formato PCNT: mantém apenas snapshots UWB novos suficientes.",
                 "Formato dist/sigma: arquivo com pares de colunas (m).",
                 "Clique em Analisar para ver contagens; Salvar é opcional.",
@@ -281,7 +304,8 @@ class UwbPreprocessingModal:
         )
         self._draw_line(
             screen,font,
-            "Arquivo: "+(self.source_path or "(nenhum)"),
+            "Arquivo: "+(self.source_path or "(nenhum)") +
+            " | Âncoras: "+(Path(self.anchor_path).name if self.anchor_path else "(nenhuma)"),
             self.rect.x+24,self.rect.y+78,
         )
         for button in self.buttons.values():
@@ -336,6 +360,8 @@ class UwbPreprocessingModal:
                 self.source_path,self.source_type,self.session_id=self._default_current()
                 self._reset_result()
                 self.message="Arquivo atual selecionado."
+            elif self.buttons["anchors"].hit(pos):
+                self._choose_anchors()
             elif self.buttons["kind"].hit(pos):
                 self.source_type="ranges" if self.source_type=="pcnt" else "pcnt"
                 self._reset_result()
