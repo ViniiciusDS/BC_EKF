@@ -379,7 +379,7 @@ def load_preprocessed_pcnt_overlay(
         # Permitir somente NaN adicionais, mantendo valores sobreviventes
         # idênticos. Os dois arrays devem mascarar a MESMA célula.
         missing_new=np.isnan(distances)&np.isfinite(original_d)
-        if (not np.array_equal(missing_new,np.isnan(sigmas)&np.isfinite(original_s))
+        if (not np.all(np.isnan(sigmas[missing_new]))
                 or not np.allclose(
                     distances[~missing_new],original_d[~missing_new],
                     rtol=1e-9,atol=1e-9,equal_nan=True
