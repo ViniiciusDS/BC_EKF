@@ -11,6 +11,8 @@ import hashlib
 from src import config
 from src.ui.botton import Button
 from src.uwb.algoritmos_estaticos import run_batch
+from src.uwb.preprocessing import load_uwb_preprocess_config
+from src.uwb.preprocessing_workflow import load_preprocessed_pcnt_overlay
 from src.ui.algo_modes.shared import (
     ALGO_ORDER,
     MODE_DATASET,
@@ -54,6 +56,7 @@ from src.ui.algo_modes.dataset_render import (
     draw_dataset_analyzer,
 )
 from src.ui.algo_modes.dataset_modal import DatasetConfigModal
+from src.ui.algo_modes.preprocessing_modal import UwbPreprocessingModal
 from src.analysis.field_diagnostic import build_field_diagnostic, save_field_diagnostic
 from src.analysis.field_lap_metrics import build_field_lap_metrics, save_field_lap_metrics
 from src.ui.algo_modes.dataset_odometry_pipeline import (
@@ -105,6 +108,12 @@ class DatasetMode:
         # dataset
         self._dataset_path = None
         self._dataset_label = ""
+        self._anchors_path = None
+        # Sidecar opcional de medições UWB externas associadas ao PCNT
+        # bruto. Nunca substituir o arquivo de origem nem encoders.
+        self._real_preproc_sidecar_path = None
+        self._last_uwb_preproc_sidecar = None
+        self._real_preproc_report = None
         self._batch_dists = None
         self._batch_devs = None
         self._batch_results = None
@@ -134,6 +143,12 @@ class DatasetMode:
         # modal
         self.dataset_modal = DatasetConfigModal(self)
         self.dataset_modal_open = False
+        # Janela independente: não substitui o dataset em memória.
+        self.preprocessing_modal = UwbPreprocessingModal(self)
+        self.btn_preprocessor = Button(
+            (0, 0, 160, 28), "Pré-processar UWB", self.host.font,
+            bg=(238, 245, 254), fg=(32, 75, 145), border=(90, 135, 205),
+        )
 
         # câmera
         self._panning = False
@@ -351,7 +366,8 @@ class DatasetMode:
             )
         if self.dataset_source_type == "real_odom_uwb_2026":
             return self._apply_robot2026_single_tag_config(
-                odom_file, odom_session, anchor_file, route_file, map_file
+                odom_file, odom_session, anchor_file, route_file, map_file,
+                preproc_sidecar=getattr(self,"_modal_preproc_sidecar","(Nenhum)"),
             )
 
         # Para os modos legados, mantém a detecção de arquivos existente.
@@ -616,8 +632,9 @@ class DatasetMode:
     def _apply_robot2026_single_tag_config(
         self, selection: str, session: str,
         anchor_file: str, route_file: str, map_file: str,
+        preproc_sidecar: str | None = None,
     ) -> bool:
-        """Adiciona ranges do ESP32 a uma sessão PCNT, sem ground truth fictício."""
+        """Adiciona ranges do PCNT e uma cópia UWB opcional alinhada."""
         try:
             if not selection.startswith("Bruto: "):
                 raise ValueError("Selecione o PCNT bruto de 20 colunas (Bruto: ...)")
@@ -639,10 +656,40 @@ class DatasetMode:
                 path, session_id=int(session or "1"), anchor_count=len(anchors),
                 slot_to_anchor_index=slots, profile=profile, **settings,
             )
+            overlay_report=None
+            selected=str(preproc_sidecar or "").strip()
+            if selected and selected!="(Nenhum)":
+                # O sidecar referencia CSV pre-processado E o PCNT bruto.
+                # Verifica origem, geometria, timestamps e indices antes
+                # de tocar no estado do Dataset Mode.
+                sidecar=Path(selected)
+                if not sidecar.is_file():
+                    sidecar=Path(self.dataset_dir)/selected
+                suffix=".preproc.json"
+                if not sidecar.name.endswith(suffix):
+                    raise ValueError("Selecione um relatório .preproc.json")
+                processed_csv=sidecar.with_name(
+                    sidecar.name[:-len(suffix)]+".csv"
+                )
+                overlay=load_preprocessed_pcnt_overlay(
+                    processed_csv,sidecar,path,anchor_path,combined,
+                    session_id=int(session or "1"),
+                )
+                from dataclasses import replace
+                combined=replace(
+                    combined,
+                    distances=overlay.distances,
+                    deviations=overlay.deviations,
+                )
+                overlay_report=overlay.report
             if not self._apply_robot2026_odometry_config(
                 selection, session, route_file, map_file, profile=profile
             ):
                 return False
+            self._real_preproc_report=overlay_report
+            self._real_preproc_sidecar_path=(
+                str(sidecar) if overlay_report is not None else None
+            )
             self._robot2026_uwb_data = combined
             self._robot2026_uwb_indices = combined.sample_indices.copy()
             self._robot2026_view_settings = view_settings
@@ -690,6 +737,7 @@ class DatasetMode:
             self._dataset_label = (
                 f"PCNT+UWB 2026 | sessao={combined.odometry.session_id} "
                 f"| {combined.sample_count} amostras UWB"
+                + (" | UWB pre-processado" if overlay_report is not None else "")
             )
             self._dataset_stats = None
             self._batch_results = None
@@ -704,6 +752,11 @@ class DatasetMode:
                 f"UWB: {combined.sample_count} snapshots "
                 f"({settings['min_valid_anchors']} âncoras); "
                 f"repetidas ignoradas: {combined.repeated_readings}"
+                + (
+                    f" | UWB tratado {overlay_report['config']['mode']}: "
+                    f"{overlay_report['flagged_cells']} flags"
+                    if overlay_report is not None else ""
+                )
             )
             return True
         except (OSError, ValueError, KeyError, TypeError) as exc:
@@ -1209,6 +1262,12 @@ class DatasetMode:
             if event.type == pg.QUIT:
                 return _actions_quit()
 
+            if self.preprocessing_modal.opened:
+                # Modal captura o clique, teclas e scroll; não deixa
+                # eventos atravessarem para a câmera/botões inferiores.
+                self.preprocessing_modal.handle_event(event)
+                continue
+
             if self.dataset_modal_open:
                 if self.dataset_modal.handle_event(event):
                     continue
@@ -1280,6 +1339,10 @@ class DatasetMode:
 
                     elif self.btn_run_batch.hit(pos):
                         self._run_batch()
+                        continue
+
+                    elif self.btn_preprocessor.hit(pos):
+                        self.preprocessing_modal.open()
                         continue
 
                     elif self.btn_export.hit(pos):
@@ -1398,6 +1461,13 @@ class DatasetMode:
 
         if hasattr(self, "btn_export") and self.btn_export is not None:
             self.btn_export.draw(self.host.screen)
+            # Alinha ao botão Exportar CSV na metade esquerda
+            # do painel, sem interferir em sua área de clique.
+            self.btn_preprocessor.rect = pg.Rect(
+                self.btn_export.rect.x - 166, self.btn_export.rect.y,
+                160, self.btn_export.rect.h,
+            )
+            self.btn_preprocessor.draw(self.host.screen)
 
         for algo in ALGO_ORDER:
             if algo in self._btn_algos:
@@ -1405,6 +1475,9 @@ class DatasetMode:
 
         if self.dataset_modal_open:
             self.dataset_modal.draw()
+        if self.preprocessing_modal.opened:
+            # Renderizar no topo, depois dos botões do Dataset.
+            self.preprocessing_modal.draw()
 
     def _normalize_simulated_dataset_by_kind(self):
         """
@@ -1491,6 +1564,29 @@ class DatasetMode:
 
             p_true = self._get_batch_ground_truth_xy()
 
+            # Politica opt-in do JSON de ancoras, compartilhada por
+            # fontes simuladas e reais. Arquivos sem campo adicional
+            # continuam usando EXATAMENTE o processamento anterior.
+            config_path = getattr(self, "_anchors_path", None)
+            pre_cfg = (
+                load_uwb_preprocess_config(config_path)
+                if config_path and str(config_path).lower().endswith(".json")
+                else None
+            )
+            # Evitar aplicar a mesma politica duas vezes quando o
+            # usuário escolheu explicitamente um CSV tratado associado
+            # ao PCNT. O resultado é o que foi salvo e validado.
+            if (self.dataset_source_type=="real_odom_uwb_2026"
+                    and self._real_preproc_report is not None):
+                pre_cfg=None
+            if (pre_cfg is not None and pre_cfg.mode != "off"
+                    and self.dataset_source_type == "simulated"
+                    and self.simulated_dataset_kind == "BC"):
+                self.host._set_msg(
+                    "Pre-processamento: BC duas tags exige adaptador por tag; "
+                    "use off ou dataset de uma tag."
+                )
+                return
             raw_results = run_batch(
                 anchors_Nx3=anchors,
                 distances=self._batch_dists,
@@ -1498,6 +1594,7 @@ class DatasetMode:
                 algoritmos=algos_to_run,
                 p_true=p_true,
                 bc_ekf_data=self._bc_ekf_data,
+                preprocess_config=pre_cfg,
             )
 
             self._batch_results = self._remap_batch_results_to_sidebar_keys(raw_results)
@@ -1518,11 +1615,27 @@ class DatasetMode:
                     None
                 )
 
-            self.host._set_msg(
+            status = (
                 "Batch executado; Analyzer: comparacoes geometrica/odometrica (sem ground truth)"
                 if self.dataset_source_type == "real_odom_uwb_2026"
                 else "Batch executado"
             )
+            if self.dataset_source_type=="real_odom_uwb_2026" and self._real_preproc_report is not None:
+                status += (
+                    f" | UWB tratado ({self._real_preproc_report['config']['mode']}) "
+                    f"carregado por indices PCNT"
+                )
+            if pre_cfg is not None and pre_cfg.mode != "off":
+                # O resultado do batch guarda a mesma auditoria para
+                # todos os algoritmos, mas os arrays de origem nao mudam.
+                first = next(iter(raw_results.values()), {})
+                audit = first.get("preprocessing", {})
+                status += (
+                    f" | Preproc {pre_cfg.mode}: "
+                    f"{audit.get('flagged_cells', 0)} sinalizadas, "
+                    f"{audit.get('newly_masked_finite_positive_cells', 0)} mascaradas"
+                )
+            self.host._set_msg(status)
 
         except Exception as e:
             print(f"[DATASET] erro no batch: {e}")

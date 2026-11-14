@@ -8,6 +8,12 @@ on:
       - "src/analysis/field_diagnostic.py"
       - "src/analysis/field_lap_metrics.py"
       - "src/analysis/uwb_link_quality.py"
+      - "src/uwb/preprocessing.py"
+      - "src/uwb/preprocessing_workflow.py"
+      - "src/ui/algo_modes/preprocessing_modal.py"
+      - "tests/test_uwb_preprocessing_workflow_2026.py"
+      - "src/uwb/algoritmos_estaticos.py"
+      - "tests/test_uwb_preprocessing_2026.py"
       - "tests/test_uwb_link_quality_2026.py"
       - "tools/audit_uwb_links_2026.py"
       - "tests/test_field_diagnostic.py"
@@ -60,5 +66,7 @@ jobs:
           python -m unittest discover -s tests -p "test_dataset_field_lap_metrics.py" -v
           python -m unittest discover -s tests -p "test_field_calibration_audit_2026.py" -v
           python -m unittest discover -s tests -p "test_uwb_link_quality_2026.py" -v
+          python -m unittest discover -s tests -p "test_uwb_preprocessing_2026.py" -v
+          python -m unittest discover -s tests -p "test_uwb_preprocessing_workflow_2026.py" -v
           python -m unittest discover -s tests -p "test_ui_menu_default_algos_2026.py" -v
-          python -m compileall -q apps/main_interactive.py src/ui/algo_test_screen.py src/ui/botton.py src/odometry src/ui/algo_modes src/analysis/field_diagnostic.py src/analysis/uwb_link_quality.py tools
+          python -m compileall -q apps/main_interactive.py src/ui/algo_test_screen.py src/ui/botton.py src/odometry src/ui/algo_modes src/analysis/field_diagnostic.py src/analysis/uwb_link_quality.py src/uwb/preprocessing.py src/uwb/preprocessing_workflow.py src/uwb/algoritmos_estaticos.py src/ui/algo_modes/preprocessing_modal.py tools

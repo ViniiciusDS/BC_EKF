@@ -20,7 +20,7 @@ from itertools import combinations
 import time
 
 
-from src.bc_ekf import run_bc_ekf_from_data
+from src.uwb.preprocessing import UwbPreprocessConfig, preprocess_uwb_batch
 
 
 #######################################################
@@ -1594,6 +1594,7 @@ def run_batch(
     algoritmos:   Optional[list[str]] = None,
     p_true:       Optional[np.ndarray] = None,
     bc_ekf_data:  Optional[dict]   = None,
+    preprocess_config: UwbPreprocessConfig | dict | None = None,
 ) -> dict:
     """
     Processa um dataset completo com múltiplos algoritmos.
@@ -1603,6 +1604,10 @@ def run_batch(
     - algoritmos batch rodam uma vez;
     - algoritmos amostra-a-amostra têm apenas um loop M;
     - evita loops M x M acidentais.
+    - preprocess_config opcional aplica politica declarativa ANTES dos
+      solvers estaticos, sem alterar o comportamento padrao.
+      O BC-EKF de duas tags usa z_hist em estrutura independente e nao
+      pode receber uma mascara MxN deste ponto (falha explicita).
     """
     anchors_Nx3 = np.asarray(anchors_Nx3, dtype=float)
     distances = np.asarray(distances, dtype=float)
@@ -1629,6 +1634,25 @@ def run_batch(
             else:
                 filtered.append(a)
         algoritmos = filtered
+
+    # Ponto unico de entrada da politica para TODOS os solvers UWB
+    # estaticos. 'off' e ausencia de config preservam o legado.
+    preprocessing_summary = None
+    if preprocess_config is not None:
+        cfg = (UwbPreprocessConfig.from_dict(preprocess_config)
+               if isinstance(preprocess_config, dict) else preprocess_config)
+        if not isinstance(cfg, UwbPreprocessConfig):
+            raise ValueError("preprocess_config invalido")
+        if cfg.mode != "off" and "bc_ekf" in algoritmos:
+            raise ValueError(
+                "Pre-processamento MxN nao se aplica ao z_hist frontal/traseiro "
+                "do BC-EKF; forneca interface por tag antes de habilitar."
+            )
+        prepared = preprocess_uwb_batch(
+            anchors_Nx3, distances, deviations, config=cfg
+        )
+        distances, deviations = prepared.distances, prepared.deviations
+        preprocessing_summary = prepared.summary
 
     resultados = {}
     anchors_3d_cached = _as_anchors_3d(anchors_Nx3)
@@ -1668,6 +1692,10 @@ def run_batch(
             # BC-EKF — batch próprio
             # =====================================================
             if nome == "bc_ekf":
+                # O BC-EKF completo possui dependencias de simulacao/
+                # plotagem. Importar apenas quando ele for selecionado:
+                # solvers estaticos e preprocessor rodam so com NumPy.
+                from src.bc_ekf import run_bc_ekf_from_data
                 if bc_ekf_data is None:
                     raise ValueError("bc_ekf requer bc_ekf_data")
 
@@ -2100,6 +2128,9 @@ def run_batch(
             "rmse_xy": rmse_xy,
             "rmse_xyz": rmse_xyz,
         }
+        if preprocessing_summary is not None:
+            # Metadados compartilhados, nao entram em metricas de erro.
+            resultados[nome]["preprocessing"] = preprocessing_summary
 
     return resultados
 
