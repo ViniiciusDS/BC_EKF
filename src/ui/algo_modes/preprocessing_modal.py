@@ -17,7 +17,7 @@ from src.uwb.preprocessing_workflow import (
 )
 
 
-def _select_native_file(*, save=False, initialdir=None, initialfile=None):
+def _select_native_file(*, save=False, anchors=False, initialdir=None, initialfile=None):
     """Diálogo do sistema, sem importar Tk nem abrir janela antes do clique."""
     import tkinter as tk
     from tkinter import filedialog
@@ -37,6 +37,12 @@ def _select_native_file(*, save=False, initialdir=None, initialfile=None):
                 "initialfile":str(initialfile or "dataset_preprocessado.csv"),
             })
             return filedialog.asksaveasfilename(**options) or None
+        if anchors:
+            options.update({
+                "title":"Escolher JSON de geometria de âncoras",
+                "filetypes":[("JSON de âncoras","*.json")],
+            })
+            return filedialog.askopenfilename(**options) or None
         options.update({
             "title":"Escolher dados UWB (PCNT ou ranges)",
             "filetypes":[
@@ -143,6 +149,7 @@ class UwbPreprocessingModal:
         # Seleção explícita do perfil/geometry SEM trocar o cenário do
         # Dataset Mode: importante ao analisar arquivos de outros ensaios.
         chosen=_select_native_file(
+            anchors=True,
             initialdir=Path(self.anchor_path).parent if self.anchor_path else
                        Path(getattr(self.mode,"anchors_dir","anchor_sets"))
         )
@@ -153,8 +160,10 @@ class UwbPreprocessingModal:
         # Só trocar estado local depois de validação; nunca muta Dataset.
         cfg=load_uwb_preprocess_config(chosen)
         self.anchor_path=chosen
-        if cfg is not None:
-            self.policy=replace(cfg,mode="flag" if cfg.mode=="off" else cfg.mode)
+        self.policy=(
+            replace(cfg,mode="flag" if cfg.mode=="off" else cfg.mode)
+            if cfg is not None else UwbPreprocessConfig(mode=self.policy.mode)
+        )
         self._reset_result()
         self.message="Geometria de âncoras selecionada para esta análise."
 
@@ -261,6 +270,7 @@ class UwbPreprocessingModal:
             f"Política: {r['config']['mode']} | Células: {r['total_cells']}",
             f"Sinalizadas: {r['flagged_cells']} | Válidas mascaradas: {r['newly_masked_finite_positive_cells']}",
             f"Linhas com alerta: {r['rows_with_any_flag']}",
+            "Config: " + str(r["config"]),
             "Motivos (um range pode ter mais de uma sinalização):",
         ]
         for name,count in r["flag_counts"].items():
