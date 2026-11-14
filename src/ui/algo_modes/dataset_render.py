@@ -589,6 +589,7 @@ def draw_dataset_analyzer(mode):
         selected=mode.selected,
         column_titles=column_titles,
         boxplot_title=boxplot_title,
+        display_names={"bc_ekf": "EKF 1 tag"} if is_single_tag else None,
         x=10,
         y=40,
         w=500,
