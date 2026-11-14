@@ -1,7 +1,6 @@
 # bc_ekf.py
 # EKF (passo unico + wrapper) para robô diferencial com UWB
 import numpy as np
-import src.utils as utils
 from typing import Optional
 
 def run_bc_ekf(
@@ -16,6 +15,7 @@ def run_bc_ekf(
     sigma_w=0.05,
     sigma_uwb=np.sqrt(0.0025),
     x0=None,
+    tag_offsets_xyz=None,
 ):
     """
     Executa o EKF em uma simulação com velocidades constantes.
@@ -44,7 +44,7 @@ def run_bc_ekf(
     ])
 
     # Medidas UWB
-    z_hist = _generate_uwb_measurements(x_hist_true, anchors, l, z_c, sigma_uwb)
+    z_hist = _generate_uwb_measurements(x_hist_true, anchors, l, z_c, sigma_uwb, tag_offsets_xyz=tag_offsets_xyz)
 
     # Estimativa inicial e covariância
     x_est = x_hist_true[:, 0].copy()
@@ -58,11 +58,26 @@ def run_bc_ekf(
     for k in range(1, len(t)):
         v_k = input_noisy[0,k]
         w_k = input_noisy[1,k]
-        x_pred, A_k = _predict_state(x_est, v_k, w_k, T)
-        P_pred = A_k @ P @ A_k.T + Q
+        step_dt=(float(time_axis[k]-time_axis[k-1])
+                 if time_axis is not None else T)
+        x_pred, A_k = _predict_state(x_est, v_k, w_k, step_dt)
+        P_pred = A_k @ P @ A_k.T + (
+            Q*(step_dt/T) if time_axis is not None else Q
+        )
 
-        if k % update_ratio == 0:
-            h_pred, H_k = _measurement_model(x_pred, anchors, l, z_c)
+        if time_axis is not None or k % update_ratio == 0:
+            # Evita calcular H e inverter matriz quando o valor de UWB
+            # é repetido/ausente. Mantém BC antigo quando timestamps
+            # não são informados, sem mudar seu resultado.
+            z_k = z_hist[:, k]
+            if not np.all(np.isfinite(z_k)):
+                x_est=x_pred
+                P=P_pred
+                x_hist_est[:,k]=x_est
+                continue
+            h_pred, H_k = _measurement_model(
+                x_pred, anchors, l, z_c, tag_offsets_xyz=tag_offsets_xyz
+            )
             K_k = P_pred @ H_k.T @ np.linalg.inv(H_k @ P_pred @ H_k.T + R)
             z_k = z_hist[:,k]
             x_est = x_pred + K_k @ (z_k - h_pred)
@@ -91,6 +106,7 @@ def run_bc_ekf_custom_commands(
     sigma_w=0.05,
     sigma_uwb=np.sqrt(0.0025),
     x0=None,
+    tag_offsets_xyz=None,
 ):
     """
     Executa EKF com comandos de velocidade variáveis ao longo do tempo.
@@ -121,7 +137,7 @@ def run_bc_ekf_custom_commands(
     ])
 
     # Medidas UWB
-    z_hist = _generate_uwb_measurements(x_hist_true, anchors, l, z_c, sigma_uwb)
+    z_hist = _generate_uwb_measurements(x_hist_true, anchors, l, z_c, sigma_uwb, tag_offsets_xyz=tag_offsets_xyz)
 
     # Inicialização
     x_est = x_hist_true[:, 0].copy()
@@ -138,7 +154,7 @@ def run_bc_ekf_custom_commands(
         P_pred = A_k @ P @ A_k.T + Q
 
         if k % update_ratio == 0:
-            h_pred, H_k = _measurement_model(x_pred, anchors, l, z_c)
+            h_pred, H_k = _measurement_model(x_pred, anchors, l, z_c, tag_offsets_xyz=tag_offsets_xyz)
             K_k = P_pred @ H_k.T @ np.linalg.inv(H_k @ P_pred @ H_k.T + R)
             z_k = z_hist[:,k]
             x_est = x_pred + K_k @ (z_k - h_pred)
@@ -164,6 +180,8 @@ def run_bc_ekf_from_data(
     sigma_uwb,
     x0=None,
     update_hz=5.0,
+    tag_offsets_xyz=None,
+    timestamps_s=None,
 ):
     """
     Roda o BC-EKF recebendo diretamente odometria e medições UWB.
@@ -192,6 +210,16 @@ def run_bc_ekf_from_data(
         raise ValueError(
             f"z_hist possui {z_hist.shape[0]} linhas, esperado {2 * num_anchors}"
         )
+
+    # O dataset novo registra PCNT em intervalos variáveis. Quando o
+    # tempo exato é informado, usar dt real e realizar updates apenas
+    # onde há ranges NOVOS (NaN em todos os demais instantes).
+    time_axis=None
+    if timestamps_s is not None:
+        time_axis=np.asarray(timestamps_s,dtype=float)
+        if (time_axis.shape!=(num_steps,) or not np.isfinite(time_axis).all()
+                or np.any(np.diff(time_axis)<=0)):
+            raise ValueError("timestamps_s precisa conter N instantes PCNT crescentes")
 
     # Inicialização
     if x0 is None:
@@ -229,7 +257,7 @@ def run_bc_ekf_from_data(
         P_pred = A_k @ P @ A_k.T + Q
 
         if k % update_ratio == 0:
-            h_pred, H_k = _measurement_model(x_pred, anchors, l, z_c)
+            h_pred, H_k = _measurement_model(x_pred, anchors, l, z_c, tag_offsets_xyz=tag_offsets_xyz)
 
             z_k = z_hist[:, k]
             if np.all(np.isfinite(z_k)):
@@ -262,7 +290,8 @@ def run_bc_ekf_step(
         Q: np.ndarray, 
         R: np.ndarray, 
         dt: Optional[float] = None, 
-        debug: bool = False
+        debug: bool = False,
+        tag_offsets_xyz=None,
         ):
     """
     Executa UM passo do BC-EKF (predição +, opcionalmente, correção).
@@ -328,37 +357,23 @@ def run_bc_ekf_step(
             }
         return x_pred, P_pred
 
-    # --- Modelo de medição (h, H) em x_pred ---
-    xp, yp, th = x_pred
-    pf = np.array([xp + l*np.cos(th), yp + l*np.sin(th), z_c])
-    pr = np.array([xp - l*np.cos(th), yp - l*np.sin(th), z_c])
-
-    h = np.zeros(2*num_anchors)
-    H = np.zeros((2*num_anchors, 3))
-
-    for i in range(num_anchors):
-        a = anchors[:, i]
-        Df = np.linalg.norm(pf - a)
-        Dr = np.linalg.norm(pr - a)
-
-        # Evitar divisões por zero
-        if Df < 1e-9 or Dr < 1e-9:
-            if debug:
-                return x_pred, P_pred, {
-                    "innov": None, "S": None, "K": None, "h": None, "H": None,
-                    "x_pred": x_pred.copy(), "P_pred": P_pred.copy(), "dt": dt,
-                    "warn": "Distância tag-âncora ~ 0"
-                }
-            return x_pred, P_pred
-
-        h[2*i]     = Df
-        h[2*i + 1] = Dr
-
-        Cf = - (pf[0]-a[0]) * l*np.sin(th) + (pf[1]-a[1]) * l*np.cos(th)
-        Cr =   (pr[0]-a[0]) * l*np.sin(th) - (pr[1]-a[1]) * l*np.cos(th)
-
-        H[2*i, :]     = [(pf[0]-a[0]) / Df, (pf[1]-a[1]) / Df, Cf / Df]
-        H[2*i + 1, :] = [(pr[0]-a[0]) / Dr, (pr[1]-a[1]) / Dr, Cr / Dr]
+    # --- Modelo de medição compartilhado com batch/simulador ---
+    # A ordem dos ranges permanece A0_canal0, A0_canal1, A1_canal0,
+    # A1_canal1... independente da montagem física das tags.
+    try:
+        h, H = _measurement_model(
+            x_pred, anchors, l, z_c, tag_offsets_xyz=tag_offsets_xyz
+        )
+    except ValueError as exc:
+        if "Distância tag-âncora" not in str(exc):
+            raise
+        if debug:
+            return x_pred, P_pred, {
+                "innov": None, "S": None, "K": None, "h": None, "H": None,
+                "x_pred": x_pred.copy(), "P_pred": P_pred.copy(), "dt": dt,
+                "warn": str(exc),
+            }
+        return x_pred, P_pred
 
     # --- Atualização de Kalman robusta ---
     # Checagem de dimensões
@@ -431,85 +446,77 @@ def _predict_state(x_est, v, w, T):
     return x_pred, A_k
 
 
-def _measurement_model(x_pred, anchors, l, z_c):
+def _resolved_tag_offsets(l, z_c, tag_offsets_xyz=None):
+    """Matriz 2x3 em referencial robô (x frente, y esquerda, z cima).
+
+    Ausência da opção reproduz o modelo histórico: frente/trás
+    com distância 2*l e altura z_c. Não reordena os canais do log.
     """
-    Calcula as distâncias esperadas das tags (frontal e traseira) às âncoras
-    e o Jacobiano da função de medição.
-    
-    Args:
-        x_pred (ndarray): Estado previsto [x, y, theta].
-        anchors (ndarray): Matriz 3xN das posições das âncoras.
-        l (float): Metade do baseline do robô.
-        z_c (float): Altura fixa das tags.
-        
-    Returns:
-        h_pred (ndarray): Vetor de medições esperadas.
-        H_k (ndarray): Jacobiano da função de medição.
+    if tag_offsets_xyz is None:
+        offsets = np.array([[l, 0., z_c], [-l, 0., z_c]], dtype=float)
+    else:
+        offsets = np.asarray(tag_offsets_xyz, dtype=float)
+    if offsets.shape != (2, 3) or not np.isfinite(offsets).all():
+        raise ValueError("tag_offsets_xyz exige duas coordenadas XYZ finitas")
+    return offsets
+
+
+def _measurement_model(x_pred, anchors, l, z_c, tag_offsets_xyz=None):
+    """Ranges e Jacobiano para tags XYZ arbitrárias, com canais fixos.
+
+    Para cada tag j, offset local (a,b,c) vira no mundo:
+    xt=x+cos(theta)*a-sin(theta)*b
+    yt=y+sin(theta)*a+cos(theta)*b
+    zt=c
+    h_ij=norm([xt,yt,zt] - anchor_i)
+    d(xt)/dtheta=-sin(theta)*a-cos(theta)*b
+    d(yt)/dtheta= cos(theta)*a-sin(theta)*b
+
+    Ordem h/H: [âncora0_canal0, âncora0_canal1, ...].
     """
-    num_anchors = anchors.shape[1]
-    xp, yp, theta_p = x_pred
-
-    pf = np.array([xp + l*np.cos(theta_p), yp + l*np.sin(theta_p), z_c])
-    pr = np.array([xp - l*np.cos(theta_p), yp - l*np.sin(theta_p), z_c])
-
-    h_pred = np.zeros(2 * num_anchors)
-    H_k = np.zeros((2 * num_anchors, 3))
-
-    for i in range(num_anchors):
-        # Distâncias previstas
-        D_f = np.linalg.norm(pf - anchors[:, i])
-        D_r = np.linalg.norm(pr - anchors[:, i])
-
-        # Componentes parciais para derivada em relação ao ângulo
-        C_f = -(pf[0] - anchors[0, i]) * l * np.sin(theta_p) + (pf[1] - anchors[1, i]) * l * np.cos(theta_p)
-        C_r = (pr[0] - anchors[0, i]) * l * np.sin(theta_p) - (pr[1] - anchors[1, i]) * l * np.cos(theta_p)
-
-        # Vetor de medições
-        h_pred[2*i] = D_f
-        h_pred[2*i + 1] = D_r
-
-        # Jacobiano
-        H_k[2*i, :] = [
-            (pf[0] - anchors[0, i]) / D_f,
-            (pf[1] - anchors[1, i]) / D_f,
-            C_f / D_f
-        ]
-        H_k[2*i + 1, :] = [
-            (pr[0] - anchors[0, i]) / D_r,
-            (pr[1] - anchors[1, i]) / D_r,
-            C_r / D_r
-        ]
-
-    return h_pred, H_k
+    anchors=np.asarray(anchors,dtype=float)
+    if anchors.ndim!=2 or anchors.shape[0]!=3 or not np.isfinite(anchors).all():
+        raise ValueError("anchors deve ser matriz 3xN finita")
+    p=np.asarray(x_pred,dtype=float).reshape(3)
+    offsets=_resolved_tag_offsets(l,z_c,tag_offsets_xyz)
+    ct,st=np.cos(p[2]),np.sin(p[2])
+    h=np.empty(2*anchors.shape[1],dtype=float)
+    H=np.empty((2*anchors.shape[1],3),dtype=float)
+    for i in range(anchors.shape[1]):
+        for j,(ox,oy,oz) in enumerate(offsets):
+            tx=p[0]+ct*ox-st*oy
+            ty=p[1]+st*ox+ct*oy
+            dtx=-st*ox-ct*oy
+            dty= ct*ox-st*oy
+            delta=np.array([tx-anchors[0,i],ty-anchors[1,i],oz-anchors[2,i]])
+            dist=float(np.linalg.norm(delta))
+            if dist<1e-9:
+                raise ValueError("Distância tag-âncora ~ 0")
+            k=2*i+j
+            h[k]=dist
+            H[k,0]=delta[0]/dist
+            H[k,1]=delta[1]/dist
+            H[k,2]=(delta[0]*dtx+delta[1]*dty)/dist
+    return h,H
 
 
-def _generate_uwb_measurements(x_hist, anchors, l, z_c, sigma_uwb):
+def _generate_uwb_measurements(
+    x_hist, anchors, l, z_c, sigma_uwb, tag_offsets_xyz=None
+):
+    """Gera 2N ranges por passo usando a MESMA geometria do filtro.
+
+    Importa o ruído sintético do projeto somente quando usado, para
+    permitir testes NumPy-only do BC-EKF com dados reais no CI.
     """
-    Simula medições UWB (distâncias) com ruído gaussiano ao longo da trajetória.
-    
-    Args:
-        x_hist (ndarray): Trajetória real [3 x N].
-        anchors (ndarray): Matriz 3xN das âncoras.
-        l (float): Metade do baseline.
-        z_c (float): Altura das tags.
-        sigma_uwb (float): Desvio padrão do ruído UWB.
-        
-    Returns:
-        z_hist (ndarray): Matriz 2*num_anchors x N com medições ruidosas.
-    """
-    num_anchors = anchors.shape[1]
-    z_hist = np.zeros((2 * num_anchors, x_hist.shape[1]))
-
+    import src.utils as utils
+    num_anchors=anchors.shape[1]
+    z_hist=np.empty((2*num_anchors,x_hist.shape[1]),dtype=float)
     for k in range(x_hist.shape[1]):
-        theta = x_hist[2, k]
-        xt, yt = x_hist[0, k], x_hist[1, k]
-        pf = [xt + l*np.cos(theta), yt + l*np.sin(theta), z_c]
-        pr = [xt - l*np.cos(theta), yt - l*np.sin(theta), z_c]
-        for i in range(num_anchors):
-            dist_f = utils.apply_uwb_errors(np.linalg.norm(pf - anchors[:,i]), sigma_uwb)
-            dist_r = utils.apply_uwb_errors(np.linalg.norm(pr - anchors[:,i]), sigma_uwb)
-            z_hist[2*i, k] = dist_f
-            z_hist[2*i + 1, k] = dist_r
+        expected,_=_measurement_model(
+            x_hist[:,k],anchors,l,z_c,tag_offsets_xyz=tag_offsets_xyz
+        )
+        for j,dist in enumerate(expected):
+            z_hist[j,k]=utils.apply_uwb_errors(dist,sigma_uwb)
     return z_hist
 
 

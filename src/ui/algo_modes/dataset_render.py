@@ -171,7 +171,7 @@ def _draw_estimated_track(mode, algo, result):
     if pts.ndim != 2 or pts.shape[0] < 2 or pts.shape[1] < 2:
         return
 
-    if getattr(mode, "dataset_source_type", "") == "real_odom_uwb_2026":
+    if getattr(mode, "dataset_source_type", "") in ("real_odom_uwb_2026", "real_odom_uwb_dual_2026"):
         sample_indices = getattr(mode, "_robot2026_uwb_indices", np.array([]))
         if len(sample_indices) == len(pts):
             selected = mode._selected_odom_laps()
@@ -298,7 +298,7 @@ def draw_reference_routes(mode):
     # Portão virtual da pista: desenhado explicitamente, sem confundir
     # marcação visual com obstáculo físico/oclusão de rádio.
     gate = getattr(mode, "_robot2026_view_settings", None)
-    if (getattr(mode, "dataset_source_type", "") == "real_odom_uwb_2026"
+    if (getattr(mode, "dataset_source_type", "") in ("real_odom_uwb_2026", "real_odom_uwb_dual_2026")
             and gate and gate.get("segmentation") == "start_gate"):
         center = np.asarray(gate["gate_xy_m"], dtype=float)
         normal = np.asarray(gate["gate_direction_xy"], dtype=float)
@@ -337,13 +337,13 @@ def draw_reference_routes(mode):
     # Rota odométrica/reconstruída. Evita duplicar se for igual à referência.
     odom = (
         getattr(mode, "_dataset_route", None)
-        if getattr(mode, "dataset_source_type", "") in ("real_encoder_uwb", "real_odometry_2026", "real_odom_uwb_2026")
+        if getattr(mode, "dataset_source_type", "") in ("real_encoder_uwb", "real_odometry_2026", "real_odom_uwb_2026", "real_odom_uwb_dual_2026", "real_odom_uwb_dual_2026")
         else None
     )
 
     # O modo 2026 desenha as voltas independentemente, sem ligar o fim
     # de uma volta ao início da seguinte com um segmento artificial.
-    if getattr(mode, "dataset_source_type", "") in ("real_odometry_2026", "real_odom_uwb_2026"):
+    if getattr(mode, "dataset_source_type", "") in ("real_odometry_2026", "real_odom_uwb_2026", "real_odom_uwb_dual_2026"):
         data = getattr(mode, "_robot2026_data", None)
         if data is not None:
             # Referência aproximada extraída da primeira volta odométrica.
@@ -459,7 +459,7 @@ def draw_dataset_sidebar_controls(mode):
 
     # Controles de voltas ocupam o espaço entre o status e os botões inferiores.
     if (
-        getattr(mode, "dataset_source_type", "") in ("real_odometry_2026", "real_odom_uwb_2026")
+        getattr(mode, "dataset_source_type", "") in ("real_odometry_2026", "real_odom_uwb_2026", "real_odom_uwb_dual_2026")
         and getattr(mode, "_robot2026_data", None) is not None
     ):
         font = mode.host.font
@@ -521,7 +521,7 @@ def draw_dataset_status(mode):
 
     # O painel sobre o mapa já mostra fonte e número de amostras.
     # Evita colisão com os controles de voltas e de pista aproximada.
-    if getattr(mode, "dataset_source_type", "") in ("real_odometry_2026", "real_odom_uwb_2026"):
+    if getattr(mode, "dataset_source_type", "") in ("real_odometry_2026", "real_odom_uwb_2026", "real_odom_uwb_dual_2026"):
         return
 
     sidebar_x = mode.host.cam.viewport[0] + 16
@@ -550,10 +550,13 @@ def draw_dataset_analyzer(mode):
         return
 
     is_single_tag = getattr(mode, "dataset_source_type", "") == "real_odom_uwb_2026"
+    is_real_pcnt = getattr(mode, "dataset_source_type", "") in (
+        "real_odom_uwb_2026", "real_odom_uwb_dual_2026"
+    )
     stats = getattr(mode, "_dataset_stats", None)
     if not stats:
         # Ao clicar em "Mostrar", exibir informação em vez de botão inerte.
-        if is_single_tag and getattr(mode, "_batch_results", None) is not None:
+        if is_real_pcnt and getattr(mode, "_batch_results", None) is not None:
             screen = mode.host.screen
             panel = pg.Surface((500, 90), pg.SRCALPHA)
             panel.fill((250, 250, 252, 240))
@@ -567,7 +570,7 @@ def draw_dataset_analyzer(mode):
     column_titles = ("RMSE", "MAE", "Max")
     boxplot_title = "Boxplot de erro"
 
-    if is_single_tag:
+    if is_real_pcnt:
         # São distâncias geométricas / diferenças odométricas, NÃO
         # estimativas do erro de posição verdadeiro.
         captions = {
@@ -599,7 +602,7 @@ def draw_dataset_analyzer(mode):
 
 def draw_robot2026_odometry_info(mode):
     """Resumo da odometria isolada, sem apresentar RMSE como ground truth."""
-    if getattr(mode, "dataset_source_type", "") not in ("real_odometry_2026", "real_odom_uwb_2026"):
+    if getattr(mode, "dataset_source_type", "") not in ("real_odometry_2026", "real_odom_uwb_2026", "real_odom_uwb_dual_2026"):
         return
     odom = getattr(mode, "_robot2026_data", None)
     if odom is None or odom.sample_count == 0:
@@ -609,7 +612,7 @@ def draw_robot2026_odometry_info(mode):
     # Quando o Analyzer está visível, o painel PCNT vai para a direita.
     # Evita sobrepor duas superfícies em (10,40), preservando o status.
     show_summary_compact = (
-        getattr(mode, "dataset_source_type", "") == "real_odom_uwb_2026"
+        getattr(mode, "dataset_source_type", "") in ("real_odom_uwb_2026", "real_odom_uwb_dual_2026")
         and getattr(mode, "show_analyzer", False)
         and bool(getattr(mode, "_dataset_stats", None))
     )
@@ -630,8 +633,13 @@ def draw_robot2026_odometry_info(mode):
     xf, yf, heading = odom.poses_xytheta[end_idx]
     combined = getattr(mode, "_robot2026_uwb_data", None)
     lines = [
-        ("PCNT + UWB tag unica (sem ground truth)" if combined is not None
-         else "Odometria real - sem UWB / sem ground truth"),
+        (
+            "PCNT + UWB duas tags (sem ground truth)"
+            if getattr(mode,"dataset_source_type","")=="real_odom_uwb_dual_2026"
+            else "PCNT + UWB tag unica (sem ground truth)"
+            if combined is not None
+            else "Odometria real - sem UWB / sem ground truth"
+        ),
         f"Sessao {odom.session_id} | dataset completo: {odom.sample_count} amostras | {odom.duration_s:.1f} s",
         f"Exibindo {mode._odometry_view_label()} | {visible_count} pontos desenhados",
         (
@@ -651,7 +659,7 @@ def draw_robot2026_odometry_info(mode):
         )
     if show_summary_compact:
         lines = [
-            f"PCNT + UWB | Sessao {odom.session_id}",
+            f"PCNT + {'2 TAGS' if getattr(mode,'dataset_source_type','')=="real_odom_uwb_dual_2026" else 'UWB'} | Sessao {odom.session_id}",
             f"PCNT: {odom.sample_count} | UWB: {combined.sample_count}",
             f"Repetidas: {combined.repeated_readings}",
             f"Exibindo: {mode._odometry_view_label()}",

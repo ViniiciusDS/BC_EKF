@@ -1,0 +1,15 @@
+{
+  "meta": {
+    "example_only": true,
+    "notes": "Substituir baseline, altura e ordem pelos valores medidos antes de usar"
+  },
+  "tag_geometry": {
+    "preset": "left_right",
+    "baseline_m": 0.3,
+    "height_m": 0.215,
+    "channel_order": [
+      "left",
+      "right"
+    ]
+  }
+}

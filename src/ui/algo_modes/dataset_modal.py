@@ -28,13 +28,24 @@ class DatasetConfigModal:
         self.dd_source = TextBoxDropdown(
             pg.Rect(0, 0, 440, 30),
             font,
-            options=["Simulado", "Real (encoder + UWB)", "Real (odometria 2026)", "Real (PCNT + UWB 2026)"],
+            options=["Simulado", "Real (encoder + UWB)", "Real (odometria 2026)", "Real (PCNT + UWB 2026)", "Real (PCNT + 2 tags 2026)"],
         )
 
         self.dd_sim_kind = TextBoxDropdown(
             pg.Rect(0, 0, 440, 30),
             font,
             options=["Front", "Rear", "Mid", "BC"],
+        )
+        # Só BC de duas tags: a geometria é uma propriedade do
+        # experimento, jamais uma escolha escondida no solver.
+        self.dd_tag_preset = TextBoxDropdown(
+            pg.Rect(0,0,440,30),font,
+            options=["Auto (JSON / legado)", "Frente / trás",
+                     "Esquerda / direita", "Personalizado (JSON)"],
+        )
+        self.dd_tag_profile = TextBoxDropdown(
+            pg.Rect(0,0,440,30),font,
+            options=["(Do JSON das âncoras)"],max_len=255,
         )
 
         self.dd_dataset = TextBoxDropdown(pg.Rect(0, 0, 440, 30), font, options=[])
@@ -64,6 +75,13 @@ class DatasetConfigModal:
             FormDropdownRow("Mapa:", self.dd_map),
         ]
 
+        self.rows_sim_bc = [
+            *self.rows_sim[:2],
+            FormDropdownRow("Tags:", self.dd_tag_preset),
+            FormDropdownRow("Perfil tags:", self.dd_tag_profile),
+            *self.rows_sim[2:],
+        ]
+
         self.rows_real = [
             FormDropdownRow("Fonte:", self.dd_source),
             FormDropdownRow("Encoder real:", self.dd_encoder),
@@ -73,11 +91,29 @@ class DatasetConfigModal:
             FormDropdownRow("Mapa:", self.dd_map),
         ]
 
+        self.rows_real_bc = [
+            *self.rows_real[:3],
+            FormDropdownRow("Tags:", self.dd_tag_preset),
+            FormDropdownRow("Perfil tags:", self.dd_tag_profile),
+            *self.rows_real[3:],
+        ]
+
         self.rows_odom_uwb = [
             FormDropdownRow("Fonte:", self.dd_source),
             FormDropdownRow("Arquivo PCNT:", self.dd_odom),
             FormDropdownRow("Sessão (bruto):", self.dd_odom_session),
             FormDropdownRow("UWB tratado:", self.dd_preprocessed_uwb),
+            FormDropdownRow("Âncoras:", self.dd_anchors),
+            FormDropdownRow("Rota ref.:", self.dd_route),
+            FormDropdownRow("Mapa:", self.dd_map),
+        ]
+
+        self.rows_odom_uwb_dual = [
+            FormDropdownRow("Fonte:", self.dd_source),
+            FormDropdownRow("Arquivo PCNT:", self.dd_odom),
+            FormDropdownRow("Sessão (bruto):", self.dd_odom_session),
+            FormDropdownRow("Tags:", self.dd_tag_preset),
+            FormDropdownRow("Perfil tags:", self.dd_tag_profile),
             FormDropdownRow("Âncoras:", self.dd_anchors),
             FormDropdownRow("Rota ref.:", self.dd_route),
             FormDropdownRow("Mapa:", self.dd_map),
@@ -103,7 +139,9 @@ class DatasetConfigModal:
 
         # Sincroniza estado atual do DatasetMode para os dropdowns.
         source = getattr(self.mode, "dataset_source_type", "simulated")
-        if source == "real_encoder_uwb":
+        if source == "real_odom_uwb_dual_2026":
+            self._set_dropdown_value(self.dd_source, "Real (PCNT + 2 tags 2026)")
+        elif source == "real_encoder_uwb":
             self._set_dropdown_value(self.dd_source, "Real (encoder + UWB)")
         elif source == "real_odometry_2026":
             self._set_dropdown_value(self.dd_source, "Real (odometria 2026)")
@@ -137,6 +175,20 @@ class DatasetConfigModal:
             kind_map.get(str(kind).strip().lower(), "Front"),
         )
 
+        preset=getattr(self.mode,"_modal_tag_preset","auto")
+        labels={
+            "auto":"Auto (JSON / legado)",
+            "front_rear":"Frente / trás",
+            "left_right":"Esquerda / direita",
+            "custom":"Personalizado (JSON)",
+        }
+        self._set_dropdown_value(
+            self.dd_tag_preset,labels.get(preset,"Auto (JSON / legado)")
+        )
+        self._set_dropdown_value(
+            self.dd_tag_profile,
+            getattr(self.mode,"_modal_tag_profile","(Do JSON das âncoras)")
+        )
         self.mode.dataset_modal_open = True
 
     def close(self):
@@ -185,12 +237,22 @@ class DatasetConfigModal:
 
         self._set_dropdown_options(
             self.dd_source,
-            ["Simulado", "Real (encoder + UWB)", "Real (odometria 2026)", "Real (PCNT + UWB 2026)"],
+            ["Simulado", "Real (encoder + UWB)", "Real (odometria 2026)", "Real (PCNT + UWB 2026)", "Real (PCNT + 2 tags 2026)"],
         )
 
         self._set_dropdown_options(
             self.dd_sim_kind,
             ["Front", "Rear", "Mid", "BC"],
+        )
+        self._set_dropdown_options(
+            self.dd_tag_preset,
+            ["Auto (JSON / legado)", "Frente / trás",
+             "Esquerda / direita", "Personalizado (JSON)"],
+        )
+        self._set_dropdown_options(
+            self.dd_tag_profile,
+            ["(Do JSON das âncoras)"] +
+            safe_list(getattr(m,"tag_profiles_dir","tag_profiles"),(".json",)),
         )
 
         dataset_files = safe_list(dataset_dir, (".txt", ".csv", ".jsonl"))
@@ -354,12 +416,23 @@ class DatasetConfigModal:
     def is_odom_uwb(self):
         return self._get_dropdown_value(self.dd_source) == "Real (PCNT + UWB 2026)"
 
+    def is_dual_uwb(self):
+        return self._get_dropdown_value(self.dd_source) == "Real (PCNT + 2 tags 2026)"
+
     def active_rows(self):
+        if self.is_dual_uwb():
+            return self.rows_odom_uwb_dual
         if self.is_odom_uwb():
             return self.rows_odom_uwb
         if self.is_odometry():
             return self.rows_odometry
-        return self.rows_real if self.is_real() else self.rows_sim
+        if self.is_real():
+            return self.rows_real_bc
+        return (
+            self.rows_sim_bc
+            if self._get_dropdown_value(self.dd_sim_kind)=="BC"
+            else self.rows_sim
+        )
 
     def draw(self):
         screen = self.mode.host.screen
@@ -583,13 +656,15 @@ class DatasetConfigModal:
         is_real = self.is_real()
         is_odometry = self.is_odometry()
         is_odom_uwb = self.is_odom_uwb()
+        is_dual = self.is_dual_uwb()
         m.dataset_source_type = (
+            "real_odom_uwb_dual_2026" if is_dual else
             "real_odom_uwb_2026" if is_odom_uwb else
             "real_odometry_2026" if is_odometry else
             "real_encoder_uwb" if is_real else "simulated"
         )
 
-        if is_odometry or is_odom_uwb:
+        if is_odometry or is_odom_uwb or is_dual:
             m._modal_odom_file = self._get_dropdown_value(self.dd_odom)
             m._modal_odom_session = self._get_dropdown_value(self.dd_odom_session) or "1"
             m._modal_preproc_sidecar = (
@@ -612,6 +687,16 @@ class DatasetConfigModal:
             m._modal_simulated_kind = selected_kind
             m.simulated_dataset_kind = selected_kind
 
+        tags_selected=self._get_dropdown_value(self.dd_tag_preset)
+        m._modal_tag_preset={
+            "Auto (JSON / legado)":"auto",
+            "Frente / trás":"front_rear",
+            "Esquerda / direita":"left_right",
+            "Personalizado (JSON)":"custom",
+        }.get(tags_selected,"auto")
+        m._modal_tag_profile=self._get_dropdown_value(
+            self.dd_tag_profile
+        ) or "(Do JSON das âncoras)"
         m._modal_anchor_file = self._get_dropdown_value(self.dd_anchors)
         route_value = self._get_dropdown_value(self.dd_route)
         map_value = self._get_dropdown_value(self.dd_map)
