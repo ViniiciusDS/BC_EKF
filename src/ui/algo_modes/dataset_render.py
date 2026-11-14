@@ -670,6 +670,11 @@ def draw_dataset_legend(mode):
             mode.host.font,
             mode.host.bigfont,
             selected=mode.selected,
+            labels=(
+                {"bc_ekf":"EKF 1 tag (odometria + UWB)"}
+                if getattr(mode,"dataset_source_type","")=="real_odom_uwb_2026"
+                else None
+            ),
         )
     else:
         mode._legend_close_rect = None
