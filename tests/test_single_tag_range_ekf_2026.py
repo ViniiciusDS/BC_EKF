@@ -292,7 +292,7 @@ class TestOneTagRangeEkf(unittest.TestCase):
         fn=ast.unparse(methods["_run_batch"])
         self.assertIn("run_one_tag_ekf",fn)
         self.assertIn("run_real_single_tag_fusion(",fn)
-        self.assertIn('raw_results["bc_ekf"] = fusion',fn)
+        self.assertIn("raw_results['bc_ekf'] = fusion",fn)
         self.assertIn("preprocess_config=pre_cfg",fn)
         self.assertIn('self._real_preproc_report is not None',fn)
         self.assertIn("run_batch(",fn)  # outros algoritmos ainda presentes
