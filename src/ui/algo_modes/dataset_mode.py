@@ -15,6 +15,7 @@ from src.uwb.preprocessing import load_uwb_preprocess_config
 from src.fusion.single_tag_range_ekf import load_single_tag_ekf_config
 from src.fusion.tag_geometry import load_tag_geometry
 from src.ui.algo_modes.dataset_single_tag_fusion import run_real_single_tag_fusion
+from src.ui.algo_modes.dataset_two_tag2026_pipeline import load_dual_tag_pcnt
 from src.uwb.preprocessing_workflow import load_preprocessed_pcnt_overlay
 from src.ui.algo_modes.shared import (
     ALGO_ORDER,
@@ -373,6 +374,10 @@ class DatasetMode:
             return self._apply_robot2026_odometry_config(
                 odom_file, odom_session, route_file, map_file
             )
+        if self.dataset_source_type == "real_odom_uwb_dual_2026":
+            return self._apply_robot2026_dual_tag_config(
+                odom_file,odom_session,anchor_file,route_file,map_file
+            )
         if self.dataset_source_type == "real_odom_uwb_2026":
             return self._apply_robot2026_single_tag_config(
                 odom_file, odom_session, anchor_file, route_file, map_file,
@@ -639,6 +644,153 @@ class DatasetMode:
             return True
         except (OSError, ValueError) as exc:
             self.host._set_msg(f"Erro ao carregar odometria 2026: {exc}")
+            return False
+
+
+    def _apply_robot2026_dual_tag_config(
+        self, selection: str, session: str, anchor_file: str,
+        route_file: str, map_file: str,
+    ) -> bool:
+        """PCNT 39 colunas, duas tags e odometria íntegra em memória.
+
+        NÃO usa o parser de uma tag: a entrada possui cabeçalho
+        t1_aN_avg/std e t2_aN_avg/std. O firmware repete UWB
+        em várias amostras PCNT: cada atualização exige os
+        dois canais novos e contém um único epoch de fusão.
+        """
+        try:
+            if not str(selection).startswith("Bruto: "):
+                raise ValueError("Selecione Bruto: ... (39 colunas com cabeçalho)")
+            if not anchor_file:
+                raise ValueError("Selecione JSON com uwb_dual_2026.anchor_ids_uwb")
+            path=resolve_robot2026_source(
+                selection,self.robot2026_raw_dir,self.robot2026_processed_dir
+            )
+            anchor_path=resolve_file_with_extensions(
+                self.anchors_dir,anchor_file,(".json",)
+            )
+            anchors,_=load_anchors_from_json(anchor_path)
+            validate_robot2026_anchor_geometry(anchors)
+            # Usar a geometria do NOVO ensaio, não a que estava
+            # ativa anteriormente no Dataset Mode.
+            tag_profile=getattr(
+                self,"_modal_tag_profile","(Do JSON das âncoras)"
+            )
+            selected_profile=None
+            if tag_profile and tag_profile!="(Do JSON das âncoras)":
+                selected_profile=resolve_file_with_extensions(
+                    self.tag_profiles_dir,tag_profile,(".json",)
+                )
+            geometry=load_tag_geometry(
+                anchor_path,
+                default_baseline_m=float(getattr(config,"TAG_BASELINE",.25)),
+                default_height_m=float(getattr(config,"TAG_HEIGHT",.20)),
+                selection=getattr(self,"_modal_tag_preset","auto"),
+                tag_profile_json=selected_profile,
+            )
+            profile=read_robot2026_profile_from_anchor_json(anchor_path)
+            dual=load_dual_tag_pcnt(
+                path,anchor_path,profile=profile,
+                session_id=int(session or "1"),
+                baseline_m=geometry.baseline_m,
+            )
+            odom=dual.odometry
+            if route_file and not self._try_load_route(
+                resolve_file_with_extensions(
+                    self.routes_dir,route_file,(".json",)
+                )
+            ):
+                return False
+            if map_file and not self._try_load_map(
+                resolve_file_with_extensions(
+                    self.maps_dir,map_file,(".json",)
+                )
+            ):
+                return False
+            # A trilateração/LMS/GN estática vê tag1 (direita);
+            # a trajetória BC-EKF representa o CENTRO do robô.
+            # Não rotular distância à rota como RMSE/GT.
+            self._dataset_anchors=np.asarray(anchors,dtype=float)
+            self._anchors_path=str(anchor_path)
+            self._dataset_path=str(path)
+            self._anchors_uwb_ids=None
+            self._batch_dists=dual.distances_by_tag[:,0,:].copy()
+            self._batch_devs=dual.deviations_by_tag[:,0,:].copy()
+            self._robot2026_data=odom
+            self._robot2026_uwb_data=dual
+            self._robot2026_uwb_indices=dual.sample_indices.copy()
+            self._real_preproc_report=None
+            self._real_preproc_sidecar_path=None
+            self._real_timestamps=dual.timestamps_s.tolist()
+            self._real_anchor_ids=list(dual.anchor_ids)
+            self._real_range_matrix=self._batch_dists.copy()
+            self._real_sigma_matrix=self._batch_devs.copy()
+            self._real_odom_path=odom.poses_xytheta.copy()
+            self._dataset_route=odom.poses_xytheta.copy()
+            self._tag_geometry_info=geometry.as_dict()
+            T=float(np.median(np.diff(odom.timestamps_s)))
+            # Usar piso conservador no BC-EKF para não dar
+            # confiança excessiva à dispersão interna do firmware.
+            self._bc_ekf_data={
+                "T":T,
+                "timestamps_s":odom.timestamps_s.copy(),
+                "odometry_noisy":np.vstack((odom.v_m_s,odom.omega_rad_s)),
+                "z_hist":dual.z_hist.copy(),
+                "output_indices":dual.sample_indices.copy(),
+                "l":geometry.baseline_m/2,
+                "z_c":float(np.mean(geometry.offsets[:,2])),
+                "tag_offsets_xyz":geometry.offsets,
+                "tag_geometry_info":geometry.as_dict(),
+                "sigma_uwb":max(.15,float(np.nanmedian(
+                    dual.deviations_by_tag
+                ))),
+                "x0":odom.poses_xytheta[0].copy(),
+            }
+            view=read_robot2026_view_settings(anchor_path)
+            self._robot2026_view_settings=view
+            self._robot2026_laps=split_time_windows(
+                odom.timestamps_s,view["window_duration_s"]
+            )
+            self._odom_is_time_window=True
+            self._odom_gate_status="Janelas por tempo (nao voltas)"
+            self._odom_gate_diagnostics=None
+            self._odom_track_template=None
+            self.show_odom_track_template=False
+            self.odom_view_mode="all"
+            self.odom_lap_start=1
+            self.odom_lap_window=5
+            self._single_tag_fusion_result=None
+            self._batch_results=None
+            self._dataset_stats=None
+            self.metric_mode=(
+                "reference_route" if self._reference_route_display is not None
+                else "encoder_route"
+            )
+            self._dataset_label=(
+                f"PCNT+2TAG 2026 | sessao={odom.session_id} "
+                f"| PCNT={odom.sample_count}, UWB={dual.sample_count} "
+                f"| tags={geometry.channels[0]}/{geometry.channels[1]}"
+            )
+            self.host._dataset_anchors=self._dataset_anchors
+            self.host._batch_dists=self._batch_dists
+            self.host._batch_devs=self._batch_devs
+            self.host._batch_results=None
+            self.host._dataset_label=self._dataset_label
+            self.host._set_msg(
+                f"2 tags: {odom.sample_count} PCNT, "
+                f"{dual.sample_count} snapshots novos; "
+                f"{dual.repeated_rows} linhas UWB repetidas; "
+                f"{dual.pairing_anomaly_count} divergencias > "
+                f"{geometry.baseline_m:.2f}m + margem"
+            )
+            print("[DUAL2026]",self._dataset_label)
+            print("[DUAL2026] perfil:",geometry.as_dict())
+            print("[DUAL2026] ids:",dual.anchor_ids,
+                  "anomalies:",dual.pairing_anomaly_count)
+            return True
+        except (OSError,ValueError,TypeError,KeyError) as exc:
+            self.host._set_msg(f"Erro PCNT+2 tags: {str(exc)[:180]}")
+            print("[DUAL2026] erro",exc)
             return False
 
 
