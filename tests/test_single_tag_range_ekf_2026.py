@@ -59,7 +59,7 @@ class TestOneTagRangeEkf(unittest.TestCase):
         self.idx=np.arange(0,len(self.t),5,dtype=int)
         rng=np.random.default_rng(410)
         tag_height=.215
-        delta=self.true[self.idx,:2,None] - self.anchors[None,:,:2]
+        delta=self.true[self.idx,:2][:,None,:] - self.anchors[None,:,:2]
         truth_ranges=np.sqrt(
             np.sum(delta**2,axis=2)
             +(tag_height-self.anchors[None,:,2])**2
