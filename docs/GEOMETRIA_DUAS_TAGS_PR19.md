@@ -239,3 +239,128 @@ porque a posição das tags foi alterada.
 O perfil separado armazena exclusivamente a geometria das tags;
 não altera os canais PCNT UWB, o modelo de encoder, o número de
 âncoras nem a configuração da rota.
+
+## Ensaio 14/11/2026 — novo CSV 39 colunas com PCNT e duas tags
+
+**Arquivo analisado:** `pcntLog_14_11_26_1o.csv`, fornecido
+pelo laboratório. Não é necessário convertê-lo manualmente para
+`range_front/range_rear`, nem transformá-lo em dataset simulado.
+
+O firmware agora produz um **cabeçalho explícito**:
+
+```text
+time_ms,left,right,t1_a1_avg,t1_a1_std,...,t1_a9_avg,t1_a9_std,
+t2_a1_avg,t2_a1_std,...,t2_a9_avg,t2_a9_std
+```
+
+Identificação física confirmada pelo usuário:
+- Tag 1 (T1) = **direita** do robô (Y local negativo);
+- Tag 2 (T2) = **esquerda** (Y local positivo);
+- Separação entre centros = **0,36 m**;
+- Altura das duas tags = **0,215 m**, igual ao ensaio anterior;
+- Posições das âncoras A3–A8 mantidas;
+- A9 ocupa o lugar **anteriormente nomeado A2**:
+  `(0, 2.68, 1.76)` metros.
+
+### Configurações reais adicionadas ao PR
+
+- `anchor_sets/lab_duas_tags_A3_A9_14_11_2026.json`:
+  geometria em metros, ordem **A3,A4,A5,A6,A7,A8,A9**,
+  `uwb_dual_2026.anchor_ids_uwb=[3,4,5,6,7,8,9]`, unidades
+  de ranges e desvios do novo firmware **cm**, encoder com
+  raio 0.03425m, base 0.229m, 4560 CPR, invert_right=true,
+  e pose inicial experimental herdada do LAB7A.
+- `tag_profiles/lab_14_11_2026_t1_direita_t2_esquerda_36cm.json`:
+  preset left_right, baseline 0.36m, altura 0.215m e
+  **channel_order=[right,left]**.
+
+**Hipótese que ainda precisa de verificação física:** os offsets
+X=0 e Y=±0.18m pressupõem centro das duas tags simétrico
+em relação à origem cinemática do robô. A distância de 36 cm
+e o lado físico foram confirmados, mas a simetria em relação ao
+centro cinemático não foi medida neste diálogo. Caso não sejam
+simétricas, mudar o perfil para custom com XYZ individuais.
+
+### Diagnóstico do arquivo enviado
+
+Leitura direta do CSV de laboratório:
+- **4.209 linhas PCNT**, 39 colunas, aproximadamente 1.052s
+  de ensaio (17,5 minutos);
+- A1/A2 zeradas; **A3–A9** ativas nas duas tags;
+- Após sete linhas iniciais sem UWB, as 4.202 restantes
+  possuem sete ranges positivos por tag;
+- **510 snapshots UWB conjuntos novos**, renovados
+  aproximadamente a cada 2,06 segundos. Linhas PCNT
+  intermediárias repetem as leituras;
+- Houve **339 pares de ranges tag1/tag2** (de 3.570 pares)
+  com diferença superior à distância física das tags
+  mais margem de 5 cm. São sinalizações diagnósticas,
+  **não mascaramento automático**. Causas possíveis incluem
+  viés/NLOS, não simultaneidade física do ranging,
+  associação incorreta dos canais ou geometria real
+  diferente da hipótese. Não é possível atribuir causa
+  a partir desses números isolados.
+
+O novo `dataset_two_tag2026_pipeline.py` lê por cabeçalho,
+mantém todo PCNT para odometria, converte cm→m, ignora
+as leituras zero dos slots não ativos, detecta atualizações
+novas **de ambas as tags** e conserva somente elas como
+observações UWB em instantes PCNT existentes. O BC-EKF
+faz predição nos 4.209 instantes, usando `dt` real;
+corrige apenas quando aparece uma das 510 observações
+novas. A curva fusionada completa possui 4.209 poses,
+mas as métricas/analyzer utilizam as 510 poses correspondentes
+aos instantes UWB dos métodos estáticos.
+
+O parser anterior de **PCNT+UWB de uma tag** permanece
+inalterado. Assim, o novo log não pode ser acidentalmente
+interpretado como 5+3*N colunas.
+
+### Como carregar no Windows
+
+1. Salvar/copiar o arquivo do laboratório em
+   `dados_reais/robot2026/pcntLog_14_11_26_1o.csv`
+   no **worktree PR19**;
+2. `python -m apps.main_interactive`;
+3. `Comparar Algoritmos (Dataset / Step)` → **Configurar Dataset**;
+4. **Fonte:** `Real (PCNT + 2 tags 2026)`;
+5. **Arquivo PCNT:** `Bruto: pcntLog_14_11_26_1o.csv`;
+6. **Sessão:** `1`;
+7. **Tags:** `Auto (JSON / legado)`;
+8. **Perfil tags:** `lab_14_11_2026_t1_direita_t2_esquerda_36cm.json`;
+9. **Âncoras:** `lab_duas_tags_A3_A9_14_11_2026.json`;
+10. **Rota ref.:** arquivo da rota nominal LAB7A, caso esteja
+    presente na pasta `routes/`. Se não houver, use nenhuma.
+    Não há ground truth sincronizado;
+11. **Carregar** → marcar **BC-EKF** e, opcionalmente, outros
+    métodos UWB → **Rodar batch**.
+
+A interface mostra a contagem PCNT/UWB, canal escolhido e
+número de inconsistências geométricas sinalizadas. Por
+segurança, esta configuração usa inicialmente **janelas por
+tempo**, não afirma que são voltas físicas. É possível
+aplicar depois o detector de portão a partir da trajetória
+UWB real, verificando posição do início e sentido físico.
+
+**Atenção ao Analyzer:** métodos estáticos recebem
+os ranges da **T1 direita** (posição da tag); o BC-EKF
+estima o **centro do robô**. Distâncias à pista nominal
+não são ground truth e não devem ser usadas como uma
+comparação justa de erro entre tag deslocada e centro
+sem primeiro normalizar o referencial.
+
+### Testes novos
+
+`tests/test_dual_tag_pcnt2026.py` gera logs com o mesmo
+esquema de 39 colunas, incluindo A1/A2 inativas,
+verifica a conversão de unidades, reuso de ranges,
+mapeamento de A9, sinal e integração PCNT, séries
+completas e amostras comparáveis do BC-EKF, sessões,
+formatos inválidos e a nova opção de interface.
+
+```powershell
+python -m unittest discover -s tests -p "test_dual_tag_pcnt2026.py" -v
+python -m unittest discover -s tests -v
+```
+
+**Não executar merge sem teste real de interface no Windows.**
