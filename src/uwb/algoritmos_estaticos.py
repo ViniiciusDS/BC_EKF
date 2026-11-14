@@ -1710,6 +1710,7 @@ def run_batch(
                     z_c=bc_ekf_data["z_c"],
                     sigma_uwb=bc_ekf_data["sigma_uwb"],
                     x0=bc_ekf_data.get("x0", None),
+                    tag_offsets_xyz=bc_ekf_data.get("tag_offsets_xyz"),
                 )
 
                 _save_trajectory(posicoes, x_hist_est.T)
