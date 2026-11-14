@@ -97,7 +97,24 @@ def load_single_tag_ekf_config(anchor_json: str | Path):
         root=json.load(src)
     if not isinstance(root, dict):
         raise ValueError("JSON de âncoras precisa ser objeto")
-    return SingleTagEkfConfig.from_dict(root.get("single_tag_ekf", {}))
+    explicit=root.get("single_tag_ekf", {})
+    if not isinstance(explicit,dict):
+        raise ValueError("single_tag_ekf deve ser objeto JSON")
+    params=dict(explicit)
+    if "tag_height_m" not in params:
+        # A altura usada para validar os ranges também descreve a
+        # posição física da tag; reutilizar SOMENTE se explícita
+        # no bloco de pré-processamento. Nunca assumir altura LAB7A.
+        pre=root.get("uwb_preprocessing", {})
+        height=pre.get("tag_heights_m") if isinstance(pre,dict) else None
+        if type(height) in (int,float):
+            params["tag_height_m"]=height
+        else:
+            raise ValueError(
+                "EKF 1 tag exige tag_height_m no bloco single_tag_ekf "
+                "ou tag_heights_m escalar em uwb_preprocessing"
+            )
+    return SingleTagEkfConfig.from_dict(params)
 
 
 @dataclass(frozen=True)
@@ -310,6 +327,7 @@ def run_single_tag_range_ekf(
             "uwb_epochs":int(m),
             "corrections_applied":int(np.count_nonzero(updates)),
             "predict_only_uwb_epochs":int(m-np.count_nonzero(updates)),
+            "insufficient_or_unsolved_epochs":int(missing_epochs),
             "total_ranges_used":int(np.sum(used)),
             "sigma_fallback_ranges":int(sigma_fallback_count),
             "innovation_rms_mean_m":(
