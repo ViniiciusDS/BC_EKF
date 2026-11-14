@@ -28,7 +28,7 @@ class DatasetConfigModal:
         self.dd_source = TextBoxDropdown(
             pg.Rect(0, 0, 440, 30),
             font,
-            options=["Simulado", "Real (encoder + UWB)", "Real (odometria 2026)", "Real (PCNT + UWB 2026)"],
+            options=["Simulado", "Real (encoder + UWB)", "Real (odometria 2026)", "Real (PCNT + UWB 2026)", "Real (PCNT + 2 tags 2026)"],
         )
 
         self.dd_sim_kind = TextBoxDropdown(
@@ -108,6 +108,17 @@ class DatasetConfigModal:
             FormDropdownRow("Mapa:", self.dd_map),
         ]
 
+        self.rows_odom_uwb_dual = [
+            FormDropdownRow("Fonte:", self.dd_source),
+            FormDropdownRow("Arquivo PCNT:", self.dd_odom),
+            FormDropdownRow("Sessão (bruto):", self.dd_odom_session),
+            FormDropdownRow("Tags:", self.dd_tag_preset),
+            FormDropdownRow("Perfil tags:", self.dd_tag_profile),
+            FormDropdownRow("Âncoras:", self.dd_anchors),
+            FormDropdownRow("Rota ref.:", self.dd_route),
+            FormDropdownRow("Mapa:", self.dd_map),
+        ]
+
         self.rows_odometry = [
             FormDropdownRow("Fonte:", self.dd_source),
             FormDropdownRow("Arquivo PCNT:", self.dd_odom),
@@ -128,7 +139,9 @@ class DatasetConfigModal:
 
         # Sincroniza estado atual do DatasetMode para os dropdowns.
         source = getattr(self.mode, "dataset_source_type", "simulated")
-        if source == "real_encoder_uwb":
+        if source == "real_odom_uwb_dual_2026":
+            self._set_dropdown_value(self.dd_source, "Real (PCNT + 2 tags 2026)")
+        elif source == "real_encoder_uwb":
             self._set_dropdown_value(self.dd_source, "Real (encoder + UWB)")
         elif source == "real_odometry_2026":
             self._set_dropdown_value(self.dd_source, "Real (odometria 2026)")
@@ -224,7 +237,7 @@ class DatasetConfigModal:
 
         self._set_dropdown_options(
             self.dd_source,
-            ["Simulado", "Real (encoder + UWB)", "Real (odometria 2026)", "Real (PCNT + UWB 2026)"],
+            ["Simulado", "Real (encoder + UWB)", "Real (odometria 2026)", "Real (PCNT + UWB 2026)", "Real (PCNT + 2 tags 2026)"],
         )
 
         self._set_dropdown_options(
@@ -403,7 +416,12 @@ class DatasetConfigModal:
     def is_odom_uwb(self):
         return self._get_dropdown_value(self.dd_source) == "Real (PCNT + UWB 2026)"
 
+    def is_dual_uwb(self):
+        return self._get_dropdown_value(self.dd_source) == "Real (PCNT + 2 tags 2026)"
+
     def active_rows(self):
+        if self.is_dual_uwb():
+            return self.rows_odom_uwb_dual
         if self.is_odom_uwb():
             return self.rows_odom_uwb
         if self.is_odometry():
@@ -638,13 +656,15 @@ class DatasetConfigModal:
         is_real = self.is_real()
         is_odometry = self.is_odometry()
         is_odom_uwb = self.is_odom_uwb()
+        is_dual = self.is_dual_uwb()
         m.dataset_source_type = (
+            "real_odom_uwb_dual_2026" if is_dual else
             "real_odom_uwb_2026" if is_odom_uwb else
             "real_odometry_2026" if is_odometry else
             "real_encoder_uwb" if is_real else "simulated"
         )
 
-        if is_odometry or is_odom_uwb:
+        if is_odometry or is_odom_uwb or is_dual:
             m._modal_odom_file = self._get_dropdown_value(self.dd_odom)
             m._modal_odom_session = self._get_dropdown_value(self.dd_odom_session) or "1"
             m._modal_preproc_sidecar = (
