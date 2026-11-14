@@ -131,7 +131,15 @@ def resolve_tag_geometry(
             "height_m",settings.get("height_m",default_height_m),
         )
         names=("front","rear") if preset=="front_rear" else ("left","right")
-        provided=settings.get("channel_order",list(names))
+        # A opção GUI força um NOVO preset. Os nomes de canais de
+        # outro preset não são transferíveis (left/right != front/rear).
+        # Se o preset é o mesmo, preserva a ordem física explícita.
+        from_file = (
+            selection=="auto" or
+            settings.get("preset", "front_rear")==preset
+        )
+        provided=(settings.get("channel_order",list(names))
+                  if from_file else list(names))
         if (not isinstance(provided,list) or len(provided)!=2
                 or set(provided)!=set(names)):
             raise ValueError(
