@@ -199,3 +199,43 @@ Validação recomendada:
 
 **PR Draft; não executar merge antes da validação real com o log
 de duas tags, especialmente a ordem dos canais.**
+
+## Perfis de tags separados das âncoras (recomendado para laboratório)
+
+Para não modificar o JSON de âncoras, utilize arquivos independentes
+na pasta `tag_profiles/`. A interface agora mostra dois campos
+no Dataset de duas tags:
+
+- **Tags:** escolha Auto, Frente/trás, Esquerda/direita,
+  Personalizado (JSON);
+- **Perfil tags:** selecione `(Do JSON das âncoras)` para usar a
+  configuração embutida/legado ou selecione outro
+  `tag_profiles/*.json` do diretório.
+
+O perfil de tags tem prioridade sobre o bloco `tag_geometry`
+embutido no JSON de âncoras; o preset do menu pode sobrescrever
+apenas a orientação do preset, reutilizando baseline e altura
+do perfil. Para offsets independentes e assimétricos,
+escolha `Personalizado (JSON)` ou Auto com perfil custom.
+
+**Passo a passo no laboratório:**
+1. Copie `tag_profiles/EXEMPLO_esquerda_direita.json` como
+   `tag_profiles/tags_lab_laterais.json`.
+2. Meça os centros das antenas em relação ao centro cinemático
+   e atualize `baseline_m` e `height_m`.
+   Se não forem simétricas, copie `EXEMPLO_personalizado.json`
+   e preencha XYZ individualmente.
+3. Confirme a ordem de canais gravada pelo firmware.
+4. Defina `meta.example_only=false` na cópia validada.
+5. Na interface, selecione `Auto (JSON / legado)` +
+   `tags_lab_laterais.json` em **Perfil tags**.
+
+Os dois exemplos são bloqueados por `meta.example_only=true`
+para evitar que medidas ilustrativas sejam usadas em testes reais.
+Nenhum arquivo de âncoras é reescrito; assim os hashes dos
+relatórios gerados anteriormente no PR17 não mudam apenas
+porque a posição das tags foi alterada.
+
+O perfil separado armazena exclusivamente a geometria das tags;
+não altera os canais PCNT UWB, o modelo de encoder, o número de
+âncoras nem a configuração da rota.
