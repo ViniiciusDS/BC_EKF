@@ -17,7 +17,7 @@ from src.uwb.preprocessing_workflow import (
 )
 
 
-def _select_native_file(*, save=False, anchors=False, initialdir=None, initialfile=None):
+def _select_native_file(*, save=False, anchors=False, sidecar=False, initialdir=None, initialfile=None):
     """Diálogo do sistema, sem importar Tk nem abrir janela antes do clique."""
     import tkinter as tk
     from tkinter import filedialog
@@ -37,6 +37,12 @@ def _select_native_file(*, save=False, anchors=False, initialdir=None, initialfi
                 "initialfile":str(initialfile or "dataset_preprocessado.csv"),
             })
             return filedialog.asksaveasfilename(**options) or None
+        if sidecar:
+            options.update({
+                "title":"Selecionar relatório do UWB pré-processado",
+                "filetypes":[("Relatório de pré-processamento","*.preproc.json")],
+            })
+            return filedialog.askopenfilename(**options) or None
         if anchors:
             options.update({
                 "title":"Escolher JSON de geometria de âncoras",
