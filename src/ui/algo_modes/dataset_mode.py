@@ -937,7 +937,7 @@ class DatasetMode:
         arquivos de entrada; o relatório inclui também trechos parciais
         devidamente identificados para transparência experimental.
         """
-        if (self.dataset_source_type != "real_odom_uwb_2026"
+        if (self.dataset_source_type not in ("real_odom_uwb_2026", "real_odom_uwb_dual_2026")
                 or self._robot2026_data is None
                 or not self._batch_results):
             self.host._set_msg("F7: carregue PCNT+UWB e execute Rodar batch")
@@ -1000,7 +1000,7 @@ class DatasetMode:
         Atalho F9: não modifica dados, poses, algoritmos ou configurações.
         """
         if self.dataset_source_type not in (
-            "real_odometry_2026", "real_odom_uwb_2026"
+            "real_odometry_2026", "real_odom_uwb_2026", "real_odom_uwb_dual_2026"
         ) or self._robot2026_data is None:
             self.host._set_msg("F9: carregue primeiro um log PCNT 2026")
             return
@@ -1029,7 +1029,7 @@ class DatasetMode:
     def _toggle_field_quality_panel(self):
         """F8 alterna painel descritivo para a sessão PCNT carregada."""
         if self.dataset_source_type not in (
-            "real_odometry_2026", "real_odom_uwb_2026"
+            "real_odometry_2026", "real_odom_uwb_2026", "real_odom_uwb_dual_2026"
         ) or self._robot2026_data is None:
             self.host._set_msg("F8: carregue uma sessão PCNT 2026")
             return
@@ -1342,7 +1342,7 @@ class DatasetMode:
     def _metric_mode_label(self, mode=None):
         mode = mode or self.metric_mode
 
-        if self.dataset_source_type == "real_odom_uwb_2026":
+        if self.dataset_source_type in ("real_odom_uwb_2026", "real_odom_uwb_dual_2026"):
             return {
                 "reference_route": "Rota nominal",
                 "encoder_route": "UWB x odometria",
@@ -1369,7 +1369,7 @@ class DatasetMode:
             ]
 
         modes = self.available_metric_modes
-        if self.dataset_source_type == "real_odom_uwb_2026":
+        if self.dataset_source_type in ("real_odom_uwb_2026", "real_odom_uwb_dual_2026"):
             # Nunca oferecer pseudo-sincronismo com rota MATLAB nominal:
             # geometria não contém posições verdadeiras por timestamp.
             modes = ["encoder_route", "cluster"]
@@ -1536,7 +1536,7 @@ class DatasetMode:
                         continue
                     
                     elif (
-                        self.dataset_source_type in ("real_odometry_2026", "real_odom_uwb_2026")
+                        self.dataset_source_type in ("real_odometry_2026", "real_odom_uwb_2026", "real_odom_uwb_dual_2026")
                         and self._robot2026_data is not None
                         and self.btn_odom_track.hit(pos)
                     ):
@@ -1544,7 +1544,7 @@ class DatasetMode:
                         continue
 
                     elif (
-                        self.dataset_source_type in ("real_odometry_2026", "real_odom_uwb_2026")
+                        self.dataset_source_type in ("real_odometry_2026", "real_odom_uwb_2026", "real_odom_uwb_dual_2026")
                         and self._robot2026_data is not None
                         and self.btn_lap_mode.hit(pos)
                     ):
@@ -1552,7 +1552,7 @@ class DatasetMode:
                         continue
 
                     elif (
-                        self.dataset_source_type in ("real_odometry_2026", "real_odom_uwb_2026")
+                        self.dataset_source_type in ("real_odometry_2026", "real_odom_uwb_2026", "real_odom_uwb_dual_2026")
                         and self._robot2026_data is not None
                         and self.btn_lap_prev.hit(pos)
                     ):
@@ -1560,7 +1560,7 @@ class DatasetMode:
                         continue
 
                     elif (
-                        self.dataset_source_type in ("real_odometry_2026", "real_odom_uwb_2026")
+                        self.dataset_source_type in ("real_odometry_2026", "real_odom_uwb_2026", "real_odom_uwb_dual_2026")
                         and self._robot2026_data is not None
                         and self.btn_lap_next.hit(pos)
                     ):
@@ -1568,7 +1568,7 @@ class DatasetMode:
                         continue
 
                     elif (
-                        self.dataset_source_type in ("real_odometry_2026", "real_odom_uwb_2026")
+                        self.dataset_source_type in ("real_odometry_2026", "real_odom_uwb_2026", "real_odom_uwb_dual_2026")
                         and self._robot2026_data is not None
                         and self.btn_lap_less.hit(pos)
                     ):
@@ -1576,7 +1576,7 @@ class DatasetMode:
                         continue
 
                     elif (
-                        self.dataset_source_type in ("real_odometry_2026", "real_odom_uwb_2026")
+                        self.dataset_source_type in ("real_odometry_2026", "real_odom_uwb_2026", "real_odom_uwb_dual_2026")
                         and self._robot2026_data is not None
                         and self.btn_lap_more.hit(pos)
                     ):
@@ -1810,7 +1810,7 @@ class DatasetMode:
 
             self._batch_results = self._remap_batch_results_to_sidebar_keys(raw_results)
 
-            if self.dataset_source_type == "real_odom_uwb_2026":
+            if self.dataset_source_type in ("real_odom_uwb_2026", "real_odom_uwb_dual_2026"):
                 self._refresh_uwb_gate_laps_after_batch()
 
             if not self._batch_results:
@@ -1828,7 +1828,7 @@ class DatasetMode:
 
             status = (
                 "Batch executado; Analyzer: comparacoes geometrica/odometrica (sem ground truth)"
-                if self.dataset_source_type == "real_odom_uwb_2026"
+                if self.dataset_source_type in ("real_odom_uwb_2026", "real_odom_uwb_dual_2026")
                 else "Batch executado"
             )
             if self.dataset_source_type=="real_odom_uwb_2026" and self._real_preproc_report is not None:
@@ -1845,6 +1845,11 @@ class DatasetMode:
                     f" | Preproc {pre_cfg.mode}: "
                     f"{audit.get('flagged_cells', 0)} sinalizadas, "
                     f"{audit.get('newly_masked_finite_positive_cells', 0)} mascaradas"
+                )
+            if self.dataset_source_type=="real_odom_uwb_dual_2026":
+                status+=(
+                    " | UWB estaticos: tag1 direita; "
+                    "BC-EKF: centro robotico (referencias distintas)"
                 )
             if run_one_tag_ekf and self._single_tag_fusion_result is not None:
                 info = self._single_tag_fusion_result["fusion_diagnostics"]
@@ -2805,7 +2810,7 @@ class DatasetMode:
         - encoder_route: comparação com odometria reconstruída;
         - cluster: dispersão relativa.
         """
-        if self.dataset_source_type == "real_odom_uwb_2026":
+        if self.dataset_source_type in ("real_odom_uwb_2026", "real_odom_uwb_dual_2026"):
             # O leitor conserva os índices temporais: a janela exibida
             # NÃO reduz as amostras de entrada do Analyzer.
             ref = (
