@@ -195,6 +195,52 @@ class TestTwoTagGeometry(unittest.TestCase):
             )
             np.testing.assert_allclose(override.offsets[0],[.255,0,.3])
 
+    def test_independent_profile_overrides_anchor_inline_geometry(self):
+        with tempfile.TemporaryDirectory() as d:
+            folder=Path(d)
+            anchors=folder/"anchors.json"
+            profile=folder/"tags.json"
+            # O JSON das âncoras NÃO deve ser alterado ao trocar tags.
+            anchors.write_text(json.dumps({
+                "anchors_xy":self.a.T.tolist(),
+                "tag_geometry":{"preset":"front_rear","baseline_m":.38}
+            }),encoding="utf8")
+            before=anchors.read_bytes()
+            profile.write_text(json.dumps({
+                "meta":{"example_only":False},
+                "tag_geometry":{
+                    "preset":"left_right","baseline_m":.44,
+                    "height_m":.23,"channel_order":["right","left"],
+                }
+            }),encoding="utf8")
+            g=load_tag_geometry(
+                anchors,default_baseline_m=self.baseline,
+                default_height_m=self.height,tag_profile_json=profile,
+            )
+            self.assertEqual(g.source,"profile")
+            self.assertEqual(g.preset,"left_right")
+            np.testing.assert_allclose(g.offsets,[[0,-.22,.23],[0,.22,.23]])
+            self.assertEqual(before,anchors.read_bytes())
+            forced=load_tag_geometry(
+                anchors,default_baseline_m=self.baseline,
+                default_height_m=self.height,tag_profile_json=profile,
+                selection="front_rear"
+            )
+            self.assertEqual(forced.source,"profile+ui")
+            np.testing.assert_allclose(
+                forced.offsets,[[.22,0,.23],[-.22,0,.23]]
+            )
+            profile.write_text(json.dumps({
+                "meta":{"example_only":True},
+                "tag_geometry":{"preset":"left_right","baseline_m":.44}
+            }),encoding="utf8")
+            with self.assertRaisesRegex(ValueError,"EXEMPLO"):
+                load_tag_geometry(
+                    anchors,default_baseline_m=self.baseline,
+                    default_height_m=self.height,tag_profile_json=profile,
+                )
+            self.assertEqual(before,anchors.read_bytes())
+
     def test_custom_option_without_coordinates_and_bad_geometry_fail(self):
         cases=[
             {"preset":"custom"},
@@ -335,6 +381,8 @@ class TestTwoTagGeometry(unittest.TestCase):
         self.assertIn('"Esquerda / direita"',modal)
         self.assertIn('"Personalizado (JSON)"',modal)
         self.assertIn('self.rows_real_bc',modal)
+        self.assertIn('FormDropdownRow("Perfil tags:", self.dd_tag_profile)',modal)
+        self.assertIn('m._modal_tag_profile=',modal)
         self.assertIn('self.rows_sim_bc',modal)
         self.assertIn('selection=getattr(self, "_modal_tag_preset", "auto")',mode)
         self.assertIn('tag_offsets_xyz=bc_ekf_data.get("tag_offsets_xyz")',batch)
