@@ -10,7 +10,7 @@ as posições clássicas [±baseline/2, 0, height] do BC-EKF.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 import math
 from pathlib import Path
@@ -167,21 +167,41 @@ def load_tag_geometry(
     anchor_json: str | Path | None, *,
     default_baseline_m: float, default_height_m: float,
     selection: str="auto",
+    tag_profile_json: str | Path | None=None,
 ) -> TagGeometry:
-    """Configuração do experimento; sem arquivo, cai no legado de forma explícita."""
+    """Resolve primeiro o perfil independente, depois JSON/legado.
+
+    Arquivos .json de perfil aceitam {"tag_geometry": {...}} ou um
+    objeto de geometria direto. Arquivos antigos de âncoras continuam
+    válidos e o perfil não os modifica.
+    """
     settings=None
+    from_profile=False
     if anchor_json is not None and str(anchor_json).lower().endswith(".json"):
         with Path(anchor_json).open("r",encoding="utf-8") as stream:
             root=json.load(stream)
         if not isinstance(root,dict):
             raise ValueError("JSON de âncoras deve conter objeto")
         settings=root.get("tag_geometry")
+    if tag_profile_json is not None:
+        with Path(tag_profile_json).open("r",encoding="utf-8") as stream:
+            profile=json.load(stream)
+        if not isinstance(profile,dict):
+            raise ValueError("JSON de perfil de tags deve ser objeto")
+        settings=profile.get("tag_geometry",profile)
+        from_profile=True
     if selection=="custom" and (not isinstance(settings,dict) or
                                 not settings.get("tags")):
         raise ValueError(
-            "Personalizado exige tag_geometry.tags no JSON de âncoras"
+            "Personalizado exige duas tags XYZ no perfil de tags "
+            "ou em tag_geometry.tags no JSON de âncoras"
         )
-    return resolve_tag_geometry(
+    result=resolve_tag_geometry(
         settings, default_baseline_m=default_baseline_m,
         default_height_m=default_height_m, selection=selection,
     )
+    if from_profile:
+        return replace(
+            result,source="profile" if selection=="auto" else "profile+ui"
+        )
+    return result
