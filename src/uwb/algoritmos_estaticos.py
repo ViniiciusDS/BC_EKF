@@ -1686,6 +1686,7 @@ def run_batch(
     for nome in algoritmos:
         t0_algo = time.perf_counter()
         posicoes = _new_posicoes()
+        bc_full_poses = None
 
         try:
             # =====================================================
@@ -1711,9 +1712,22 @@ def run_batch(
                     sigma_uwb=bc_ekf_data["sigma_uwb"],
                     x0=bc_ekf_data.get("x0", None),
                     tag_offsets_xyz=bc_ekf_data.get("tag_offsets_xyz"),
+                    timestamps_s=bc_ekf_data.get("timestamps_s"),
                 )
 
-                _save_trajectory(posicoes, x_hist_est.T)
+                bc_full_poses=x_hist_est.T
+                sample_idx=bc_ekf_data.get("output_indices")
+                if sample_idx is not None:
+                    # N linhas PCNT, M conjuntos UWB novos. O Analyzer
+                    # compartilha M timestamps entre todos os algoritmos.
+                    sample_idx=np.asarray(sample_idx,dtype=int)
+                    if (sample_idx.shape!=(M,) or np.any(sample_idx<0)
+                            or np.any(sample_idx>=len(bc_full_poses))
+                            or np.any(np.diff(sample_idx)<=0)):
+                        raise ValueError("BC-EKF output_indices inválidos")
+                    _save_trajectory(posicoes,bc_full_poses[sample_idx])
+                else:
+                    _save_trajectory(posicoes,bc_full_poses)
 
             # =====================================================
             # Métodos vetorizados — rodam uma única vez
@@ -2129,6 +2143,9 @@ def run_batch(
             "rmse_xy": rmse_xy,
             "rmse_xyz": rmse_xyz,
         }
+        if nome=="bc_ekf" and bc_full_poses is not None:
+            # Trajetória completa para inspeção PCNT e exportação futura.
+            resultados[nome]["full_pcnt_poses"]=bc_full_poses
         if preprocessing_summary is not None:
             # Metadados compartilhados, nao entram em metricas de erro.
             resultados[nome]["preprocessing"] = preprocessing_summary
