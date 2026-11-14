@@ -198,6 +198,9 @@ class UwbPreprocessingModal:
         csv_path,meta=save_preprocessed_dataset(
             target,self.last_result,self.last_report
         )
+        # O Dataset Real oferece o sidecar como opção. Não habilitar
+        # automaticamente a cópia: o usuário decide no Configurar Dataset.
+        self.mode._last_uwb_preproc_sidecar=str(meta.resolve())
         self.message=(
             f"Salvos: {csv_path.name} e {meta.name}. "
             "Para reutilizar: Configurar Dataset > Simulado."
