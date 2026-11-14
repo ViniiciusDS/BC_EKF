@@ -58,11 +58,26 @@ def run_bc_ekf(
     for k in range(1, len(t)):
         v_k = input_noisy[0,k]
         w_k = input_noisy[1,k]
-        x_pred, A_k = _predict_state(x_est, v_k, w_k, T)
-        P_pred = A_k @ P @ A_k.T + Q
+        step_dt=(float(time_axis[k]-time_axis[k-1])
+                 if time_axis is not None else T)
+        x_pred, A_k = _predict_state(x_est, v_k, w_k, step_dt)
+        P_pred = A_k @ P @ A_k.T + (
+            Q*(step_dt/T) if time_axis is not None else Q
+        )
 
-        if k % update_ratio == 0:
-            h_pred, H_k = _measurement_model(x_pred, anchors, l, z_c, tag_offsets_xyz=tag_offsets_xyz)
+        if time_axis is not None or k % update_ratio == 0:
+            # Evita calcular H e inverter matriz quando o valor de UWB
+            # é repetido/ausente. Mantém BC antigo quando timestamps
+            # não são informados, sem mudar seu resultado.
+            z_k = z_hist[:, k]
+            if not np.all(np.isfinite(z_k)):
+                x_est=x_pred
+                P=P_pred
+                x_hist_est[:,k]=x_est
+                continue
+            h_pred, H_k = _measurement_model(
+                x_pred, anchors, l, z_c, tag_offsets_xyz=tag_offsets_xyz
+            )
             K_k = P_pred @ H_k.T @ np.linalg.inv(H_k @ P_pred @ H_k.T + R)
             z_k = z_hist[:,k]
             x_est = x_pred + K_k @ (z_k - h_pred)
@@ -166,6 +181,7 @@ def run_bc_ekf_from_data(
     x0=None,
     update_hz=5.0,
     tag_offsets_xyz=None,
+    timestamps_s=None,
 ):
     """
     Roda o BC-EKF recebendo diretamente odometria e medições UWB.
@@ -194,6 +210,16 @@ def run_bc_ekf_from_data(
         raise ValueError(
             f"z_hist possui {z_hist.shape[0]} linhas, esperado {2 * num_anchors}"
         )
+
+    # O dataset novo registra PCNT em intervalos variáveis. Quando o
+    # tempo exato é informado, usar dt real e realizar updates apenas
+    # onde há ranges NOVOS (NaN em todos os demais instantes).
+    time_axis=None
+    if timestamps_s is not None:
+        time_axis=np.asarray(timestamps_s,dtype=float)
+        if (time_axis.shape!=(num_steps,) or not np.isfinite(time_axis).all()
+                or np.any(np.diff(time_axis)<=0)):
+            raise ValueError("timestamps_s precisa conter N instantes PCNT crescentes")
 
     # Inicialização
     if x0 is None:
