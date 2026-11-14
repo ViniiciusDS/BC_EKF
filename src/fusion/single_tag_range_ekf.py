@@ -243,6 +243,8 @@ def run_single_tag_range_ekf(
         timestamps_s,v_m_s,omega_rad_s,anchors_xyz,ranges_m,
         sample_indices,deviations_m,sample_timestamps_s,initial_pose
     )
+    if cfg.min_ranges_for_update > len(anchors):
+        raise ValueError("min_ranges_for_update excede número de âncoras")
     x=x.copy()
     x[2]=_wrap(x[2])
     P=np.diag([
