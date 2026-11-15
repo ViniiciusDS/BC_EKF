@@ -364,3 +364,86 @@ python -m unittest discover -s tests -v
 ```
 
 **Não executar merge sem teste real de interface no Windows.**
+
+## Refinos 15/11/2026 — modo Personalizado e diagnóstico de deslocamento
+
+### Erro: Personalizado exige duas tags XYZ
+
+O perfil `lab_14_11_2026_t1_direita_t2_esquerda_36cm.json`
+contém `preset=left_right`, `baseline_m=0.36`, `height_m=0.215`
+e `channel_order=["right","left"]`. É uma configuração de **preset
+lateral**, não uma lista de coordenadas individuais; portanto
+**Personalizado (JSON)** rejeita corretamente o arquivo.
+
+As opções válidas são:
+
+- **Tags = Auto (JSON / legado)** + perfil
+  `lab_14_11_2026_t1_direita_t2_esquerda_36cm.json`;
+- **Tags = Esquerda / direita** + o mesmo perfil;
+- **Tags = Personalizado (JSON)** + **novo** perfil
+  `lab_14_11_2026_t1_direita_t2_esquerda_xyz_custom.json`.
+
+Este novo arquivo custom declara explicitamente, na ordem dos
+canais do log, `T1_direita=(0, -0.18, 0.215)` e
+`T2_esquerda=(0, +0.18, 0.215)`, em metros. Enquanto as tags
+forem simétricas, os três casos produzem a **mesma geometria**.
+O erro passa a explicar como corrigir a seleção e há regressão
+que compara ranges e Jacobianos dos dois perfis.
+
+Os offsets X=0 e Y=±0.18 pressupõem que o ponto médio da linha
+entre as antenas coincide com a origem cinemática. Se isso não
+for verdadeiro, medir a distância lateral e longitudinal de cada
+tag à origem e corrigir **somente** o perfil custom, não o código.
+
+O novo parser de 39 colunas também normaliza espaços opcionais
+nos cabeçalhos (como `time_ms, left, right, ...`), mantendo
+os bytes originais intocados e teste regressivo específico.
+
+### Trajetória preta se deslocando: não aplicar correção fictícia
+
+Análise independente do `pcntLog_14_11_26_1o.csv` com os
+parâmetros atuais: odometria PCNT termina em
+aproximadamente `(2.669,-0.724)`m, enquanto uma localização
+independente por ranges UWB das duas tags termina com centro
+aproximado em `(0.116,2.456)`m. A discordância final é
+aproximadamente **4.06 m**, mas a referência UWB **não é GT**.
+
+Comparando os mesmos snapshots UWB (510 épocas), a discordância
+RMS odometria versus centro UWB estimado é **2.54m**.
+Distâncias RMS às linhas da polilinha nominal (também não GT):
+odometria ≈ **0.83m**, centro UWB estimado ≈ **0.28m**.
+
+Se alinhar rigidamente cada janela de ~100s da odometria à
+trajetória UWB estimada por duas tags, os resíduos RMS caem
+tipicamente a ~0.11–0.15 m, mas a orientação de alinhamento
+necessária varia acentuadamente entre as janelas. Isso é
+consistente com **deriva angular acumulada dos encoders/
+parâmetros cinemáticos**, não apenas translação fixa de mapa.
+Sem calibração externa, não se atribui definitivamente a causa
+a `wheel_base_m`, escalas L/R, deslizamento, etc.
+
+A curva **preta** é odometria aberta, **não** trajetória medida
+por ground truth. O **tracejado** é rota nominal aproximada;
+a curva **laranja** é fusão BC-EKF. Não esconder esse
+desacordo por translação/rotação artificial, nem ajustar
+um parâmetro apenas para minimizar distância à pista nominal.
+As escalas/entre-eixos exigem ensaios e identificação de
+parâmetros com rastreabilidade de hipóteses.
+
+### Comparação justa das métricas
+
+No Dataset duas tags, os métodos UWB estáticos recebem
+distâncias da **T1 direita**, e estimam sua posição;
+o BC-EKF retorna a posição da **origem do robô**.
+A trilha nominal representa aproximadamente a trilha do
+carrinho, mas esses dois referenciais são deslocados em
+até 18cm. Números do Analyzer atuais não são comparação
+direta de RMSE de localização entre solvers.
+
+Antes de fazer uma comparação algorítmica justa, adicionar
+uma opção não destrutiva para projetar cada resultado no
+mesmo referencial (ou deslocar o caminho nominal com a
+pose/heading disponível, distinguindo os casos). Este
+ponto fica indicado para próximo PR de diagnóstico e
+metrologia; evitar concluir superioridade por um único
+ranking de distância à pista.
