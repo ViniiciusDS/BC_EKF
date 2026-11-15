@@ -198,9 +198,14 @@ def load_tag_geometry(
         from_profile=True
     if selection=="custom" and (not isinstance(settings,dict) or
                                 not settings.get("tags")):
+        current=(settings.get("preset","sem preset")
+                 if isinstance(settings,dict) else "sem perfil")
         raise ValueError(
-            "Personalizado exige duas tags XYZ no perfil de tags "
-            "ou em tag_geometry.tags no JSON de âncoras"
+            "Perfil selecionado usa '"+str(current)+"' sem XYZ individuais. "
+            "Para esse perfil escolha Tags=Auto ou Esquerda/direita; "
+            "para Personalizado, selecione um perfil com "
+            "tag_geometry.tags=[{name,x_m,y_m,z_m}, ...] "
+            "em ordem dos canais 1/2."
         )
     result=resolve_tag_geometry(
         settings, default_baseline_m=default_baseline_m,
