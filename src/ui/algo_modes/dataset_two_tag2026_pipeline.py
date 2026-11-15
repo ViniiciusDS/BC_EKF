@@ -127,7 +127,12 @@ def _read_sessions(path):
         reader=csv.DictReader(file,skipinitialspace=True)
         if reader.fieldnames is None:
             raise ValueError("CSV de duas tags sem cabeçalho")
-        header=[c.strip() for c in reader.fieldnames]
+        # CSVs reais podem conter espaços após as vírgulas (ex. " left").
+        # Apenas normalizamos as chaves em memória, jamais o arquivo bruto.
+        header=[name.strip() for name in reader.fieldnames]
+        if len(set(header))!=len(header) or not all(header):
+            raise ValueError("CSV de duas tags possui cabeçalho duplicado ou vazio")
+        reader.fieldnames=header
         for line_no,row in enumerate(reader,2):
             if not row or not any(v is not None and v.strip() for v in row.values()):
                 continue
