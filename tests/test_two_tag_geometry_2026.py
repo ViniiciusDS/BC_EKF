@@ -241,6 +241,44 @@ class TestTwoTagGeometry(unittest.TestCase):
                 )
             self.assertEqual(before,anchors.read_bytes())
 
+    def test_lab_custom_xyz_matches_lateral_preset_exactly(self):
+        """Mesmo robô, dois jeitos de descrever a geometria, sem mudança no filtro."""
+        root=Path(__file__).resolve().parents[1]
+        preset_file=root/"tag_profiles/lab_14_11_2026_t1_direita_t2_esquerda_36cm.json"
+        custom_file=root/"tag_profiles/lab_14_11_2026_t1_direita_t2_esquerda_xyz_custom.json"
+        anchor_file=root/"anchor_sets/lab_duas_tags_A3_A9_14_11_2026.json"
+        preset=load_tag_geometry(
+            anchor_file,default_baseline_m=.25,default_height_m=.2,
+            selection="left_right",tag_profile_json=preset_file,
+        )
+        customized=load_tag_geometry(
+            anchor_file,default_baseline_m=.25,default_height_m=.2,
+            selection="custom",tag_profile_json=custom_file,
+        )
+        self.assertEqual(preset.channels,("right","left"))
+        self.assertEqual(customized.channels,("T1_direita","T2_esquerda"))
+        np.testing.assert_array_equal(preset.offsets,customized.offsets)
+        h0,H0=_measurement_model(self.x,self.a,.18,.215,preset.offsets)
+        h1,H1=_measurement_model(self.x,self.a,.18,.215,customized.offsets)
+        np.testing.assert_array_equal(h0,h1)
+        np.testing.assert_array_equal(H0,H1)
+
+    def test_custom_with_preset_only_shows_actionable_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d)
+            anchors=root/"anchors.json"
+            profile=root/"tags.json"
+            anchors.write_text(json.dumps({"anchors_xy":[]}),encoding="utf8")
+            profile.write_text(json.dumps({"tag_geometry":{
+                "preset":"left_right","baseline_m":.36,"height_m":.215,
+                "channel_order":["right","left"],
+            }}),encoding="utf8")
+            with self.assertRaisesRegex(ValueError,"Tags=Auto"):
+                load_tag_geometry(
+                    anchors,default_baseline_m=.25,default_height_m=.2,
+                    selection="custom",tag_profile_json=profile,
+                )
+
     def test_custom_option_without_coordinates_and_bad_geometry_fail(self):
         cases=[
             {"preset":"custom"},
