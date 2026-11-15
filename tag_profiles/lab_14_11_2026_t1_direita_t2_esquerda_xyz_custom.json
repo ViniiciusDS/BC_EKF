@@ -1,0 +1,27 @@
+{
+  "meta": {
+    "example_only": false,
+    "experimental_profile": true,
+    "known_baseline_m": 0.36,
+    "known_tag_height_m": 0.215,
+    "assumes_symmetric_mount_about_robot_origin": true,
+    "note": "T1 fisicamente direita (canal 0), T2 fisicamente esquerda (canal 1). X=0 e Y=+-0.18m assumem simetria; medir deslocamento real do centro cinemático."
+  },
+  "tag_geometry": {
+    "preset": "custom",
+    "tags": [
+      {
+        "name": "T1_direita",
+        "x_m": 0,
+        "y_m": -0.18,
+        "z_m": 0.215
+      },
+      {
+        "name": "T2_esquerda",
+        "x_m": 0,
+        "y_m": 0.18,
+        "z_m": 0.215
+      }
+    ]
+  }
+}
