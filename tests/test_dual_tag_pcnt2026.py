@@ -123,6 +123,20 @@ class TestDualTagPcnt2026(unittest.TestCase):
         self.assertGreater(record.odometry.poses_xytheta[-1,0],0.)
         self.assertGreater(record.odometry.timestamps_s[-1],7.)
 
+    def test_real_csv_header_with_spaces_is_parsed_without_mutation(self):
+        """Firmware pode escrever vírgula e espaço em cada coluna do header."""
+        self.write_log()
+        before=self.csv.read_text(encoding="utf8")
+        lines=before.splitlines(keepends=True)
+        lines[0]=lines[0].replace(",",", ")
+        self.csv.write_text("".join(lines),encoding="utf8")
+        raw_before=self.csv.read_bytes()
+        rec=self.load()
+        self.assertEqual(rec.odometry.sample_count,30)
+        self.assertEqual(rec.sample_count,5)
+        np.testing.assert_array_equal(rec.sample_indices,[5,10,15,20,25])
+        self.assertEqual(self.csv.read_bytes(),raw_before)
+
     def test_two_tag_orientation_and_center_offset(self):
         self.assertEqual(self.g.channels,("right","left"))
         np.testing.assert_allclose(self.g.offsets,[
