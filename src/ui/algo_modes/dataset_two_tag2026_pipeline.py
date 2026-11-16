@@ -41,6 +41,10 @@ class DualTagPcnt2026:
     anchor_ids: tuple[int, ...]
     max_pair_gap_m: float
     pairing_anomaly_count: int
+    # Extraídos de convert_session SEM ajustar ou reescalar os encoders:
+    # canais já normalizados, mesma ordem/índices de todas as linhas PCNT.
+    pcnt_delta_left_ticks: np.ndarray
+    pcnt_delta_right_ticks: np.ndarray
 
     @property
     def sample_count(self):
@@ -261,4 +265,10 @@ def load_dual_tag_pcnt(
         anchor_ids=ids,
         max_pair_gap_m=largest_gap,
         pairing_anomaly_count=pairing,
+        pcnt_delta_left_ticks=np.asarray(
+            [row["delta_left_ticks"] for row in odom_rows],dtype=float
+        ),
+        pcnt_delta_right_ticks=np.asarray(
+            [row["delta_right_ticks"] for row in odom_rows],dtype=float
+        ),
     )
