@@ -18,7 +18,7 @@ import numpy as np
 from src.analysis.dual_tag_heading_audit import (
     HeadingAuditConfig,audit_dual_tag_heading,
 )
-from tools.audit_dual_tag_heading_2026 import save_heading_audit,main
+from tools.audit_dual_tag_heading_2026 import save_heading_audit,main,display_uwb_heading
 
 
 def _trajectory(n=401,dt=.25,*,angular_start_deg=10,angular_speed_deg_s=1):
@@ -264,6 +264,35 @@ class TestDualTagHeadingAudit(unittest.TestCase):
             self.assertTrue((out/"dual_tag_heading_audit_snapshots.csv").is_file())
             self.assertTrue((out/"dual_tag_heading_audit_pcnt.csv").is_file())
             self.assertTrue((out/"dual_tag_heading_audit_windows.csv").is_file())
+
+    def test_uwb_plot_multiturn_phase_matches_discrepancy_after_gaps(self):
+        """Gráfico UWB não pode diferir 360° do gráfico de discordância."""
+        epochs=[
+            {
+                "theta_odom_deg":-400.,
+                "theta_uwb_wrapped_deg":-90.,
+                "difference_unwrapped_deg":-50.,
+            },
+            {
+                "theta_odom_deg":-1800.,
+                "theta_uwb_wrapped_deg":-150.,
+                "difference_unwrapped_deg":-150.,
+            },
+            {
+                "theta_odom_deg":-1900.,
+                "theta_uwb_wrapped_deg":None,
+                "difference_unwrapped_deg":None,
+            },
+        ]
+        display=display_uwb_heading(epochs)
+        self.assertAlmostEqual(display[0],-450.)
+        self.assertAlmostEqual(display[1],-1950.)
+        self.assertTrue(np.isnan(display[2]))
+        for i in (0,1):
+            self.assertAlmostEqual(
+                display[i]-epochs[i]["theta_odom_deg"],
+                epochs[i]["difference_unwrapped_deg"],
+            )
 
     def test_cli_import_and_dual_parser_connection_are_stable(self):
         root=Path(__file__).resolve().parents[1]
