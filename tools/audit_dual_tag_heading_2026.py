@@ -50,6 +50,24 @@ def _write_csv(path,items):
         writer.writerows(items)
 
 
+def display_uwb_heading(epochs):
+    """UWB em ramo contínuo consistente com o painel de discordância.
+
+    Cada observação UWB é estimada independentemente do PCNT.
+    Somente a representação MULTIVOLTAS é ambígua sem referência
+    externa; escolhe-se o mesmo ramo da diferença circular já
+    desenrolada no relatório, para não exibir discrepância artificial
+    de 360° entre gráficos após lacunas longas.
+    """
+    odom=np.asarray([r["theta_odom_deg"] for r in epochs],dtype=float)
+    delta=np.asarray([
+        float(r["difference_unwrapped_deg"])
+        if r["difference_unwrapped_deg"] is not None else np.nan
+        for r in epochs
+    ],dtype=float)
+    return odom+delta
+
+
 def save_heading_audit(report,output_dir,*,plots=True):
     """Exporta JSON/CSVs e, quando matplotlib existe, 4 PNGs separados."""
     out=Path(output_dir)
@@ -83,23 +101,15 @@ def save_heading_audit(report,output_dir,*,plots=True):
                 ],dtype=float)
             pt=np.array([r["timestamp_s"] for r in pcnt])
             odom=np.array([r["theta_odom_deg"] for r in pcnt])
-            theta_w=vals("theta_uwb_wrapped_deg")
-            # Desenrolar só épocas aceitas, sem estimar saltos durante
-            # lacunas. Alinha apenas múltiplos inteiros de 360° para
-            # comparação visual, sem ajustar curso de heading ao PCNT.
-            uwb_cont=np.full(len(epochs),np.nan)
-            if np.any(valid):
-                unwrapped=np.rad2deg(
-                    np.unwrap(np.deg2rad(theta_w[valid]))
-                )
-                nearest=round(
-                    (vals("theta_odom_deg")[valid][0]-unwrapped[0])/360
-                )
-                uwb_cont[valid]=unwrapped+nearest*360
+            # O formato MULTIVOLTAS da orientação UWB é ambíguo
+            # após gaps longos. Não desenrolar raw UWB de modo
+            # diferente do painel de discordância: isso gerava erro
+            # VISUAL de 360° após ~631s no ensaio real.
+            uwb_cont=display_uwb_heading(epochs)
             start=report["config"]["focus_start_s"]
             end=report["config"]["focus_end_s"]
             plots_spec=[
-                ("angulos","Heading contínuo PCNT vs heading UWB independente",
+                ("angulos","Heading PCNT e UWB (ramo multivoltas do desvio)",
                  "Orientação (graus)"),
                 ("divergencia","Discordância UWB - PCNT (não é erro GT)",
                  "Graus (desenrolado)"),
@@ -109,22 +119,37 @@ def save_heading_audit(report,output_dir,*,plots=True):
                  "Separação estimada (m)"),
             ]
             for label,title,ylabel in plots_spec:
+              for focus_only in (False,True):
                 fig,ax=plt.subplots(figsize=(12,4.3))
+                def plotted(x,y,**kwargs):
+                    x=np.asarray(x,dtype=float)
+                    y=np.asarray(y,dtype=float)
+                    if focus_only:
+                        # Desenhar APENAS o trecho com margem para
+                        # autoscale Y real do foco; não esconder a curva.
+                        selection=((x>=max(0.,start-10.))&
+                                   (x<=end+10.))
+                        x=x[selection]
+                        y=y[selection]
+                    ax.plot(x,y,**kwargs)
                 if label=="angulos":
-                    ax.plot(pt,odom,label="PCNT: theta contínuo",lw=1)
-                    ax.plot(t,uwb_cont,label="UWB: duas tags (válido)",lw=1,marker=".",ms=3)
+                    plotted(pt,odom,label="PCNT: theta contínuo",lw=1)
+                    plotted(t,uwb_cont,
+                            label="UWB (ramo consistente com desvio)",lw=1,
+                            marker=".",ms=3)
                 elif label=="divergencia":
-                    ax.plot(t,vals("difference_unwrapped_deg"),
+                    plotted(t,vals("difference_unwrapped_deg"),
                             label="UWB - PCNT",marker=".",ms=3,lw=1)
-                    ax.plot(t,vals("relative_drift_deg"),
+                    plotted(t,vals("relative_drift_deg"),
                             label="Relativo à 1ª época válida",alpha=.7,lw=1)
                 elif label=="encoders":
-                    ax.plot(pt,[r["delta_left_ticks"] for r in pcnt],
+                    plotted(pt,[r["delta_left_ticks"] for r in pcnt],
                             lw=.8,label="Roda esquerda")
-                    ax.plot(pt,[r["delta_right_ticks"] for r in pcnt],
+                    plotted(pt,[r["delta_right_ticks"] for r in pcnt],
                             lw=.8,label="Roda direita")
                 else:
-                    ax.plot(t,vals("measured_baseline_m"),label="UWB estimado",lw=1)
+                    plotted(t,vals("measured_baseline_m"),
+                            label="UWB estimado",lw=1)
                     ax.axhline(
                         report["geometry"]["baseline_m"],ls="--",
                         label="Baseline físico configurado"
@@ -135,14 +160,20 @@ def save_heading_audit(report,output_dir,*,plots=True):
                         label="Limite superior de qualidade"
                     )
                 ax.axvspan(start,end,alpha=.1,label="Foco diagnóstico")
-                ax.set(title=title,xlabel="Tempo PCNT (s)",ylabel=ylabel)
+                if focus_only:
+                    ax.set_xlim(max(0.,start-10.),end+10.)
+                ax.set(
+                    title=title+(" — foco" if focus_only else ""),
+                    xlabel="Tempo PCNT (s)",ylabel=ylabel,
+                )
                 ax.grid(True,alpha=.3)
                 ax.legend(fontsize=8)
                 fig.tight_layout()
-                dest=out/(stem+"_"+label+".png")
+                suffix="_foco" if focus_only else ""
+                dest=out/(stem+"_"+label+suffix+".png")
                 fig.savefig(dest,dpi=150)
                 plt.close(fig)
-                exports[label]=str(dest)
+                exports[label+suffix]=str(dest)
     return exports
 
 
