@@ -85,11 +85,11 @@ class TestDualTagHeadingAudit(unittest.TestCase):
         self.assertAlmostEqual(rows[-1]["relative_drift_deg"],-20.,delta=1.)
         self.assertEqual(len(report["pcnt_steps"]),401)
         self.assertEqual(len(report["windows"]),11)
-        self.assertEqual(len(s["focus_window"]),2)
+        # A série sintética termina em 100s; só 80–90, 90–100,
+        # e 100–110 (última janela vazia) podem intersectar o foco.
+        self.assertEqual(len(s["focus_window"]),3)
         self.assertEqual(report["geometry"]["baseline_m"],.36)
-        self.assertIn("ground truth",report["warnings"][0].lower()
-                      if "ground truth" in report["warnings"][0].lower()
-                      else "ground truth")
+        self.assertIn("não é GT",report["warnings"][0])
 
     def test_heading_does_not_falsely_jump_across_plus_minus_180(self):
         p=self.make_input(start=165,speed=3.3)
