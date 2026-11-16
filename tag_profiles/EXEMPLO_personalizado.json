@@ -1,0 +1,23 @@
+{
+  "meta": {
+    "example_only": true,
+    "notes": "As tags aparecem na ordem exata dos canais 0 e 1 do arquivo UWB"
+  },
+  "tag_geometry": {
+    "preset": "custom",
+    "tags": [
+      {
+        "name": "tag_A_canal_0",
+        "x_m": 0.04,
+        "y_m": 0.16,
+        "z_m": 0.23
+      },
+      {
+        "name": "tag_B_canal_1",
+        "x_m": -0.02,
+        "y_m": -0.17,
+        "z_m": 0.25
+      }
+    ]
+  }
+}

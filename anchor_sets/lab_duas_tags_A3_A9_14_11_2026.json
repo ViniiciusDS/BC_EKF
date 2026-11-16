@@ -1,0 +1,85 @@
+{
+  "meta": {
+    "example_only": false,
+    "test_id": "laboratorio_2026_11_14_duas_tags",
+    "experimental_profile": true,
+    "source": "Cordenadas do LAB7A anterior; A2 fisicamente renomeada como A9 sem mudar posicao",
+    "coordinate_order": "x,y,z (m); mesmo referencial do LAB7A",
+    "anchor_order": "A3,A4,A5,A6,A7,A8,A9",
+    "anchor_remap": "A9 reutiliza antiga posicao de A2: (0.0,2.68,1.76)m",
+    "robot_tag_height_m": 0.215,
+    "dual_tag_channel_order": "t1 = direita / t2 = esquerda",
+    "notes": "Nao assumir que T1/T2 estejam perfeitamente sincronos fisicamente; timestamp do registro PCNT",
+    "do_not_treat_route_as_ground_truth": true
+  },
+  "anchors_xy": [
+    [
+      1.38,
+      2.28,
+      0.85
+    ],
+    [
+      2.98,
+      1.98,
+      1.7
+    ],
+    [
+      2.76,
+      -0.7,
+      0.98
+    ],
+    [
+      1.38,
+      -0.7,
+      0.96
+    ],
+    [
+      0,
+      -0.7,
+      1.28
+    ],
+    [
+      1.38,
+      1.2,
+      1.53
+    ],
+    [
+      0,
+      2.68,
+      1.76
+    ]
+  ],
+  "uwb_dual_2026": {
+    "anchor_ids_uwb": [
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9
+    ],
+    "range_unit": "cm",
+    "std_unit": "cm",
+    "min_valid_anchors_per_tag": 4,
+    "min_sigma_m": 0.02,
+    "pair_gap_tolerance_m": 0.05
+  },
+  "robot_2026": {
+    "wheel_radius_m": 0.03425,
+    "wheel_base_m": 0.229,
+    "ticks_per_wheel_rev": 4560,
+    "swap_encoder_columns": false,
+    "invert_left": false,
+    "invert_right": true,
+    "left_scale": 1,
+    "right_scale": 1,
+    "initial_x_m": 0.15,
+    "initial_y_m": 1.38,
+    "initial_theta_deg": 0
+  },
+  "view_2026": {
+    "segmentation": "time_windows",
+    "window_duration_s": 80
+  }
+}

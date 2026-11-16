@@ -217,6 +217,7 @@ def prepare_simulated_bc_ekf_data(
     route_waypoints,
     cfg: Any,
     resample_polyline_fn: Callable[[Any, int], Any],
+    tag_geometry=None,
 ) -> BcPrepResult:
     """
     Prepara um dataset simulado do tipo BC para o algoritmo bc_ekf.
@@ -328,6 +329,14 @@ def prepare_simulated_bc_ekf_data(
         "z_c": float(getattr(cfg, "TAG_HEIGHT", 0.20)),
         "sigma_uwb": sigma_uwb,
         "x0": np.asarray(poses[0], dtype=float).reshape(3,),
+        # Formato imutável de entrada ao filtro. None preserva rigorosamente
+        # a geometria longitudinal histórica [±l, 0, z_c].
+        "tag_offsets_xyz": (
+            tag_geometry.offsets if tag_geometry is not None else None
+        ),
+        "tag_geometry_info": (
+            tag_geometry.as_dict() if tag_geometry is not None else None
+        ),
     }
 
     reduced_dists = full_dists[:, 0::2]
@@ -355,6 +364,7 @@ def prepare_real_bc_ekf_data(
     build_pose_path_fn: Callable[[Any], Any],
     resample_pose_path_fn: Callable[[Any, int], Any],
     apply_initial_pose_fn: Callable[[Any], Any],
+    tag_geometry=None,
 ) -> BcPrepResult:
     """
     Prepara o BC-EKF para dataset real.
@@ -470,6 +480,14 @@ def prepare_real_bc_ekf_data(
         "z_c": float(getattr(cfg, "TAG_HEIGHT", 0.20)),
         "sigma_uwb": sigma_uwb,
         "x0": np.asarray(poses[0], dtype=float).reshape(3,),
+        # Formato imutável de entrada ao filtro. None preserva rigorosamente
+        # a geometria longitudinal histórica [±l, 0, z_c].
+        "tag_offsets_xyz": (
+            tag_geometry.offsets if tag_geometry is not None else None
+        ),
+        "tag_geometry_info": (
+            tag_geometry.as_dict() if tag_geometry is not None else None
+        ),
     }
 
     batch_dists = z_hist.T[:, 0::2]

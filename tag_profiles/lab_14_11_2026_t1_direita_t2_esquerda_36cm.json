@@ -1,0 +1,19 @@
+{
+  "meta": {
+    "example_only": false,
+    "experimental_profile": true,
+    "measured_baseline_m": 0.36,
+    "known_tag_height_m": 0.215,
+    "assumes_symmetric_mount_about_robot_origin": true,
+    "note": "Confirmar deslocamento do centro cinemático e ordem dos canais em firmware. T1=right T2=left."
+  },
+  "tag_geometry": {
+    "preset": "left_right",
+    "baseline_m": 0.36,
+    "height_m": 0.215,
+    "channel_order": [
+      "right",
+      "left"
+    ]
+  }
+}

@@ -13,7 +13,9 @@ from src.ui.botton import Button
 from src.uwb.algoritmos_estaticos import run_batch
 from src.uwb.preprocessing import load_uwb_preprocess_config
 from src.fusion.single_tag_range_ekf import load_single_tag_ekf_config
+from src.fusion.tag_geometry import load_tag_geometry
 from src.ui.algo_modes.dataset_single_tag_fusion import run_real_single_tag_fusion
+from src.ui.algo_modes.dataset_two_tag2026_pipeline import load_dual_tag_pcnt
 from src.uwb.preprocessing_workflow import load_preprocessed_pcnt_overlay
 from src.ui.algo_modes.shared import (
     ALGO_ORDER,
@@ -111,6 +113,9 @@ class DatasetMode:
         self._dataset_path = None
         self._dataset_label = ""
         self._anchors_path = None
+        self._modal_tag_preset = "auto"
+        self._modal_tag_profile = "(Do JSON das âncoras)"
+        self._tag_geometry_info = None
         # Sidecar opcional de medições UWB externas associadas ao PCNT
         # bruto. Nunca substituir o arquivo de origem nem encoders.
         self._real_preproc_sidecar_path = None
@@ -134,11 +139,13 @@ class DatasetMode:
         # dirs
         self.dataset_dir = os.path.join("resultados", "datasets")
         self.anchors_dir = "anchor_sets"
+        self.tag_profiles_dir = "tag_profiles"
         self.routes_dir = "routes"
         self.maps_dir = "maps"
 
         os.makedirs(self.dataset_dir, exist_ok=True)
         os.makedirs(self.anchors_dir, exist_ok=True)
+        os.makedirs(self.tag_profiles_dir, exist_ok=True)
         os.makedirs(self.routes_dir, exist_ok=True)
         os.makedirs(self.maps_dir, exist_ok=True)
 
@@ -367,6 +374,10 @@ class DatasetMode:
             return self._apply_robot2026_odometry_config(
                 odom_file, odom_session, route_file, map_file
             )
+        if self.dataset_source_type == "real_odom_uwb_dual_2026":
+            return self._apply_robot2026_dual_tag_config(
+                odom_file,odom_session,anchor_file,route_file,map_file
+            )
         if self.dataset_source_type == "real_odom_uwb_2026":
             return self._apply_robot2026_single_tag_config(
                 odom_file, odom_session, anchor_file, route_file, map_file,
@@ -472,6 +483,10 @@ class DatasetMode:
                 f"SIM | tipo={self.simulated_dataset_kind} | "
                 f"dataset={os.path.basename(dataset_file)}"
             )
+            if self.simulated_dataset_kind == "BC" and self._tag_geometry_info:
+                self._dataset_label += (
+                    f" | tags={self._tag_geometry_info['preset']}"
+                )
 
             self.host._set_msg(
                 f"Dataset simulado configurado: tipo={self.simulated_dataset_kind}, "
@@ -632,6 +647,153 @@ class DatasetMode:
             return False
 
 
+    def _apply_robot2026_dual_tag_config(
+        self, selection: str, session: str, anchor_file: str,
+        route_file: str, map_file: str,
+    ) -> bool:
+        """PCNT 39 colunas, duas tags e odometria íntegra em memória.
+
+        NÃO usa o parser de uma tag: a entrada possui cabeçalho
+        t1_aN_avg/std e t2_aN_avg/std. O firmware repete UWB
+        em várias amostras PCNT: cada atualização exige os
+        dois canais novos e contém um único epoch de fusão.
+        """
+        try:
+            if not str(selection).startswith("Bruto: "):
+                raise ValueError("Selecione Bruto: ... (39 colunas com cabeçalho)")
+            if not anchor_file:
+                raise ValueError("Selecione JSON com uwb_dual_2026.anchor_ids_uwb")
+            path=resolve_robot2026_source(
+                selection,self.robot2026_raw_dir,self.robot2026_processed_dir
+            )
+            anchor_path=resolve_file_with_extensions(
+                self.anchors_dir,anchor_file,(".json",)
+            )
+            anchors,_=load_anchors_from_json(anchor_path)
+            validate_robot2026_anchor_geometry(anchors)
+            # Usar a geometria do NOVO ensaio, não a que estava
+            # ativa anteriormente no Dataset Mode.
+            tag_profile=getattr(
+                self,"_modal_tag_profile","(Do JSON das âncoras)"
+            )
+            selected_profile=None
+            if tag_profile and tag_profile!="(Do JSON das âncoras)":
+                selected_profile=resolve_file_with_extensions(
+                    self.tag_profiles_dir,tag_profile,(".json",)
+                )
+            geometry=load_tag_geometry(
+                anchor_path,
+                default_baseline_m=float(getattr(config,"TAG_BASELINE",.25)),
+                default_height_m=float(getattr(config,"TAG_HEIGHT",.20)),
+                selection=getattr(self,"_modal_tag_preset","auto"),
+                tag_profile_json=selected_profile,
+            )
+            profile=read_robot2026_profile_from_anchor_json(anchor_path)
+            dual=load_dual_tag_pcnt(
+                path,anchor_path,profile=profile,
+                session_id=int(session or "1"),
+                baseline_m=geometry.baseline_m,
+            )
+            odom=dual.odometry
+            if route_file and not self._try_load_route(
+                resolve_file_with_extensions(
+                    self.routes_dir,route_file,(".json",)
+                )
+            ):
+                return False
+            if map_file and not self._try_load_map(
+                resolve_file_with_extensions(
+                    self.maps_dir,map_file,(".json",)
+                )
+            ):
+                return False
+            # A trilateração/LMS/GN estática vê tag1 (direita);
+            # a trajetória BC-EKF representa o CENTRO do robô.
+            # Não rotular distância à rota como RMSE/GT.
+            self._dataset_anchors=np.asarray(anchors,dtype=float)
+            self._anchors_path=str(anchor_path)
+            self._dataset_path=str(path)
+            self._anchors_uwb_ids=None
+            self._batch_dists=dual.distances_by_tag[:,0,:].copy()
+            self._batch_devs=dual.deviations_by_tag[:,0,:].copy()
+            self._robot2026_data=odom
+            self._robot2026_uwb_data=dual
+            self._robot2026_uwb_indices=dual.sample_indices.copy()
+            self._real_preproc_report=None
+            self._real_preproc_sidecar_path=None
+            self._real_timestamps=dual.timestamps_s.tolist()
+            self._real_anchor_ids=list(dual.anchor_ids)
+            self._real_range_matrix=self._batch_dists.copy()
+            self._real_sigma_matrix=self._batch_devs.copy()
+            self._real_odom_path=odom.poses_xytheta.copy()
+            self._dataset_route=odom.poses_xytheta.copy()
+            self._tag_geometry_info=geometry.as_dict()
+            T=float(np.median(np.diff(odom.timestamps_s)))
+            # Usar piso conservador no BC-EKF para não dar
+            # confiança excessiva à dispersão interna do firmware.
+            self._bc_ekf_data={
+                "T":T,
+                "timestamps_s":odom.timestamps_s.copy(),
+                "odometry_noisy":np.vstack((odom.v_m_s,odom.omega_rad_s)),
+                "z_hist":dual.z_hist.copy(),
+                "output_indices":dual.sample_indices.copy(),
+                "l":geometry.baseline_m/2,
+                "z_c":float(np.mean(geometry.offsets[:,2])),
+                "tag_offsets_xyz":geometry.offsets,
+                "tag_geometry_info":geometry.as_dict(),
+                "sigma_uwb":max(.15,float(np.nanmedian(
+                    dual.deviations_by_tag
+                ))),
+                "x0":odom.poses_xytheta[0].copy(),
+            }
+            view=read_robot2026_view_settings(anchor_path)
+            self._robot2026_view_settings=view
+            self._robot2026_laps=split_time_windows(
+                odom.timestamps_s,view["window_duration_s"]
+            )
+            self._odom_is_time_window=True
+            self._odom_gate_status="Janelas por tempo (nao voltas)"
+            self._odom_gate_diagnostics=None
+            self._odom_track_template=None
+            self.show_odom_track_template=False
+            self.odom_view_mode="all"
+            self.odom_lap_start=1
+            self.odom_lap_window=5
+            self._single_tag_fusion_result=None
+            self._batch_results=None
+            self._dataset_stats=None
+            self.metric_mode=(
+                "reference_route" if self._reference_route_display is not None
+                else "encoder_route"
+            )
+            self._dataset_label=(
+                f"PCNT+2TAG 2026 | sessao={odom.session_id} "
+                f"| PCNT={odom.sample_count}, UWB={dual.sample_count} "
+                f"| tags={geometry.channels[0]}/{geometry.channels[1]}"
+            )
+            self.host._dataset_anchors=self._dataset_anchors
+            self.host._batch_dists=self._batch_dists
+            self.host._batch_devs=self._batch_devs
+            self.host._batch_results=None
+            self.host._dataset_label=self._dataset_label
+            self.host._set_msg(
+                f"2 tags: {odom.sample_count} PCNT, "
+                f"{dual.sample_count} snapshots novos; "
+                f"{dual.repeated_rows} linhas UWB repetidas; "
+                f"{dual.pairing_anomaly_count} divergencias > "
+                f"{geometry.baseline_m:.2f}m + margem"
+            )
+            print("[DUAL2026]",self._dataset_label)
+            print("[DUAL2026] perfil:",geometry.as_dict())
+            print("[DUAL2026] ids:",dual.anchor_ids,
+                  "anomalies:",dual.pairing_anomaly_count)
+            return True
+        except (OSError,ValueError,TypeError,KeyError) as exc:
+            self.host._set_msg(f"Erro PCNT+2 tags: {str(exc)[:180]}")
+            print("[DUAL2026] erro",exc)
+            return False
+
+
     def _apply_robot2026_single_tag_config(
         self, selection: str, session: str,
         anchor_file: str, route_file: str, map_file: str,
@@ -775,7 +937,7 @@ class DatasetMode:
         arquivos de entrada; o relatório inclui também trechos parciais
         devidamente identificados para transparência experimental.
         """
-        if (self.dataset_source_type != "real_odom_uwb_2026"
+        if (self.dataset_source_type not in ("real_odom_uwb_2026", "real_odom_uwb_dual_2026")
                 or self._robot2026_data is None
                 or not self._batch_results):
             self.host._set_msg("F7: carregue PCNT+UWB e execute Rodar batch")
@@ -838,7 +1000,7 @@ class DatasetMode:
         Atalho F9: não modifica dados, poses, algoritmos ou configurações.
         """
         if self.dataset_source_type not in (
-            "real_odometry_2026", "real_odom_uwb_2026"
+            "real_odometry_2026", "real_odom_uwb_2026", "real_odom_uwb_dual_2026"
         ) or self._robot2026_data is None:
             self.host._set_msg("F9: carregue primeiro um log PCNT 2026")
             return
@@ -867,7 +1029,7 @@ class DatasetMode:
     def _toggle_field_quality_panel(self):
         """F8 alterna painel descritivo para a sessão PCNT carregada."""
         if self.dataset_source_type not in (
-            "real_odometry_2026", "real_odom_uwb_2026"
+            "real_odometry_2026", "real_odom_uwb_2026", "real_odom_uwb_dual_2026"
         ) or self._robot2026_data is None:
             self.host._set_msg("F8: carregue uma sessão PCNT 2026")
             return
@@ -1180,7 +1342,7 @@ class DatasetMode:
     def _metric_mode_label(self, mode=None):
         mode = mode or self.metric_mode
 
-        if self.dataset_source_type == "real_odom_uwb_2026":
+        if self.dataset_source_type in ("real_odom_uwb_2026", "real_odom_uwb_dual_2026"):
             return {
                 "reference_route": "Rota nominal",
                 "encoder_route": "UWB x odometria",
@@ -1207,7 +1369,7 @@ class DatasetMode:
             ]
 
         modes = self.available_metric_modes
-        if self.dataset_source_type == "real_odom_uwb_2026":
+        if self.dataset_source_type in ("real_odom_uwb_2026", "real_odom_uwb_dual_2026"):
             # Nunca oferecer pseudo-sincronismo com rota MATLAB nominal:
             # geometria não contém posições verdadeiras por timestamp.
             modes = ["encoder_route", "cluster"]
@@ -1374,7 +1536,7 @@ class DatasetMode:
                         continue
                     
                     elif (
-                        self.dataset_source_type in ("real_odometry_2026", "real_odom_uwb_2026")
+                        self.dataset_source_type in ("real_odometry_2026", "real_odom_uwb_2026", "real_odom_uwb_dual_2026")
                         and self._robot2026_data is not None
                         and self.btn_odom_track.hit(pos)
                     ):
@@ -1382,7 +1544,7 @@ class DatasetMode:
                         continue
 
                     elif (
-                        self.dataset_source_type in ("real_odometry_2026", "real_odom_uwb_2026")
+                        self.dataset_source_type in ("real_odometry_2026", "real_odom_uwb_2026", "real_odom_uwb_dual_2026")
                         and self._robot2026_data is not None
                         and self.btn_lap_mode.hit(pos)
                     ):
@@ -1390,7 +1552,7 @@ class DatasetMode:
                         continue
 
                     elif (
-                        self.dataset_source_type in ("real_odometry_2026", "real_odom_uwb_2026")
+                        self.dataset_source_type in ("real_odometry_2026", "real_odom_uwb_2026", "real_odom_uwb_dual_2026")
                         and self._robot2026_data is not None
                         and self.btn_lap_prev.hit(pos)
                     ):
@@ -1398,7 +1560,7 @@ class DatasetMode:
                         continue
 
                     elif (
-                        self.dataset_source_type in ("real_odometry_2026", "real_odom_uwb_2026")
+                        self.dataset_source_type in ("real_odometry_2026", "real_odom_uwb_2026", "real_odom_uwb_dual_2026")
                         and self._robot2026_data is not None
                         and self.btn_lap_next.hit(pos)
                     ):
@@ -1406,7 +1568,7 @@ class DatasetMode:
                         continue
 
                     elif (
-                        self.dataset_source_type in ("real_odometry_2026", "real_odom_uwb_2026")
+                        self.dataset_source_type in ("real_odometry_2026", "real_odom_uwb_2026", "real_odom_uwb_dual_2026")
                         and self._robot2026_data is not None
                         and self.btn_lap_less.hit(pos)
                     ):
@@ -1414,7 +1576,7 @@ class DatasetMode:
                         continue
 
                     elif (
-                        self.dataset_source_type in ("real_odometry_2026", "real_odom_uwb_2026")
+                        self.dataset_source_type in ("real_odometry_2026", "real_odom_uwb_2026", "real_odom_uwb_dual_2026")
                         and self._robot2026_data is not None
                         and self.btn_lap_more.hit(pos)
                     ):
@@ -1648,7 +1810,7 @@ class DatasetMode:
 
             self._batch_results = self._remap_batch_results_to_sidebar_keys(raw_results)
 
-            if self.dataset_source_type == "real_odom_uwb_2026":
+            if self.dataset_source_type in ("real_odom_uwb_2026", "real_odom_uwb_dual_2026"):
                 self._refresh_uwb_gate_laps_after_batch()
 
             if not self._batch_results:
@@ -1666,7 +1828,7 @@ class DatasetMode:
 
             status = (
                 "Batch executado; Analyzer: comparacoes geometrica/odometrica (sem ground truth)"
-                if self.dataset_source_type == "real_odom_uwb_2026"
+                if self.dataset_source_type in ("real_odom_uwb_2026", "real_odom_uwb_dual_2026")
                 else "Batch executado"
             )
             if self.dataset_source_type=="real_odom_uwb_2026" and self._real_preproc_report is not None:
@@ -1683,6 +1845,11 @@ class DatasetMode:
                     f" | Preproc {pre_cfg.mode}: "
                     f"{audit.get('flagged_cells', 0)} sinalizadas, "
                     f"{audit.get('newly_masked_finite_positive_cells', 0)} mascaradas"
+                )
+            if self.dataset_source_type=="real_odom_uwb_dual_2026":
+                status+=(
+                    " | UWB estaticos: tag1 direita; "
+                    "BC-EKF: centro robotico (referencias distintas)"
                 )
             if run_one_tag_ekf and self._single_tag_fusion_result is not None:
                 info = self._single_tag_fusion_result["fusion_diagnostics"]
@@ -2581,10 +2748,11 @@ class DatasetMode:
 
         # Prepara BC-EKF quando houver dados suficientes.
         if self._real_encoder_samples is not None and self._real_uwb_rows is not None:
-            self._prepare_bc_ekf_data_for_real_bc(
+            if not self._prepare_bc_ekf_data_for_real_bc(
                 self._real_encoder_samples,
                 self._real_uwb_rows,
-            )
+            ):
+                return False
 
         self.dataset_source_type = "real_encoder_uwb"
         self.simulated_dataset_kind = "Front"
@@ -2593,6 +2761,8 @@ class DatasetMode:
             f"REAL | enc={os.path.basename(str(encoder_path))} | "
             f"uwb={os.path.basename(str(uwb_path))}"
         )
+        if self._tag_geometry_info:
+            self._dataset_label += f" | tags={self._tag_geometry_info['preset']}"
 
         self.host._set_msg(
             f"Dataset real configurado: {self._batch_dists.shape[0]} amostras, "
@@ -2640,7 +2810,7 @@ class DatasetMode:
         - encoder_route: comparação com odometria reconstruída;
         - cluster: dispersão relativa.
         """
-        if self.dataset_source_type == "real_odom_uwb_2026":
+        if self.dataset_source_type in ("real_odom_uwb_2026", "real_odom_uwb_dual_2026"):
             # O leitor conserva os índices temporais: a janela exibida
             # NÃO reduz as amostras de entrada do Analyzer.
             ref = (
@@ -2863,6 +3033,17 @@ class DatasetMode:
             return False
 
         self._bc_ekf_data = result.bc_ekf_data
+        self._tag_geometry_info = (
+            self._bc_ekf_data.get("tag_geometry_info")
+            if isinstance(self._bc_ekf_data, dict) else None
+        )
+        if self._tag_geometry_info:
+            print(
+                "[BC-EKF] geometria selecionada:",
+                self._tag_geometry_info["preset"],
+                "canais =", self._tag_geometry_info["channel_order"],
+                "baseline =", round(self._tag_geometry_info["baseline_m"],4),
+            )
 
         if result.batch_dists is not None:
             self._batch_dists = result.batch_dists
@@ -2942,7 +3123,33 @@ class DatasetMode:
 
         return True
 
+    def _resolve_two_tag_geometry(self):
+        """Prioriza o perfil de tag independente, depois JSON e legado.
+
+        Alterar o perfil não muda o hash do arquivo de âncoras, útil
+        quando a aquisição tem relatórios UWB processados do PR17.
+        """
+        selected=getattr(self,"_modal_tag_profile","(Do JSON das âncoras)")
+        profile=None
+        if selected and selected!="(Do JSON das âncoras)":
+            profile=resolve_file_with_extensions(
+                self.tag_profiles_dir,selected,(".json",)
+            )
+        return load_tag_geometry(
+            getattr(self, "_anchors_path", None),
+            default_baseline_m=float(getattr(config, "TAG_BASELINE", 0.25)),
+            default_height_m=float(getattr(config, "TAG_HEIGHT", 0.20)),
+            selection=getattr(self, "_modal_tag_preset", "auto"),
+            tag_profile_json=profile,
+        )
+
     def _prepare_bc_ekf_data_for_simulated_bc(self):
+        try:
+            geometry=self._resolve_two_tag_geometry()
+        except (ValueError, OSError) as exc:
+            self._bc_ekf_data=None
+            self.host._set_msg(f"Geometria de tags inválida: {exc}")
+            return False
         result = prepare_simulated_bc_ekf_data(
             batch_dists=self._batch_dists,
             batch_devs=self._batch_devs,
@@ -2952,12 +3159,19 @@ class DatasetMode:
             route_waypoints=self._route_waypoints,
             cfg=config,
             resample_polyline_fn=resample_polyline,
+            tag_geometry=geometry,
         )
 
-        self._apply_bc_prep_result(result)
+        return self._apply_bc_prep_result(result)
 
 
     def _prepare_bc_ekf_data_for_real_bc(self, encoder_samples, uwb_rows):
+        try:
+            geometry=self._resolve_two_tag_geometry()
+        except (ValueError, OSError) as exc:
+            self._bc_ekf_data=None
+            self.host._set_msg(f"Geometria de tags inválida: {exc}")
+            return False
         result = prepare_real_bc_ekf_data(
             encoder_samples=encoder_samples,
             uwb_rows=uwb_rows,
@@ -2966,9 +3180,10 @@ class DatasetMode:
             build_pose_path_fn=self._build_pose_path_from_encoder_samples,
             resample_pose_path_fn=self._resample_pose_path_to_length,
             apply_initial_pose_fn=self._apply_real_odom_initial_pose,
+            tag_geometry=geometry,
         )
 
-        self._apply_bc_prep_result(result)
+        return self._apply_bc_prep_result(result)
 
     def _build_pose_path_from_encoder_samples(self, encoder_samples):
         """
