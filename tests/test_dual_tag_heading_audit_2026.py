@@ -5,6 +5,8 @@ SciPy, CSV real, pseudo-GT nem altera a parametrização de encoders.
 """
 from __future__ import annotations
 
+import csv
+import hashlib
 import json
 import math
 import tempfile
@@ -16,7 +18,7 @@ import numpy as np
 from src.analysis.dual_tag_heading_audit import (
     HeadingAuditConfig,audit_dual_tag_heading,
 )
-from tools.audit_dual_tag_heading_2026 import save_heading_audit
+from tools.audit_dual_tag_heading_2026 import save_heading_audit,main
 
 
 def _trajectory(n=401,dt=.25,*,angular_start_deg=10,angular_speed_deg_s=1):
@@ -201,6 +203,67 @@ class TestDualTagHeadingAudit(unittest.TestCase):
             self.assertEqual(len(Path(outputs["snapshots"]).read_text().splitlines()),52)
             self.assertGreater(len(Path(outputs["windows"]).read_text().splitlines()),1)
             np.testing.assert_array_equal(source,p["distances_by_tag"])
+
+    def test_cli_complete_39_column_pipeline_with_original_hashes(self):
+        """Teste e2e PCNT+T1/T2 sintético, sem tocar em dados do LAB."""
+        root=Path(__file__).resolve().parents[1]
+        anchors=root/"anchor_sets/lab_duas_tags_A3_A9_14_11_2026.json"
+        tags=root/"tag_profiles/lab_14_11_2026_t1_direita_t2_esquerda_xyz_custom.json"
+        xyz=np.asarray(json.loads(anchors.read_text())["anchors_xy"])
+        with tempfile.TemporaryDirectory() as d:
+            folder=Path(d)
+            raw=folder/"pcnt_new_dual.csv"
+            out=folder/"export"
+            fields=["time_ms","left","right"]
+            for tag in (1,2):
+                for anchor in range(1,10):
+                    fields.extend((f"t{tag}_a{anchor}_avg",f"t{tag}_a{anchor}_std"))
+            rows=[]
+            epoch=-1
+            for k in range(26):
+                if k>=2 and (k-2)%4==0:
+                    epoch+=1
+                line=[343+k*250,80*k,-80*k]
+                for tag in (1,2):
+                    for anchor in range(1,10):
+                        if anchor<3 or epoch<0:
+                            line.extend([0.,0.])
+                        else:
+                            angle=.03*max(epoch,0)
+                            local_y=-.18 if tag==1 else .18
+                            pos=np.array([
+                                .7-math.sin(angle)*local_y,
+                                1.2+math.cos(angle)*local_y,
+                                .215,
+                            ])
+                            cm=100*float(np.linalg.norm(pos-xyz[anchor-3]))
+                            line.extend([cm,2.])
+                rows.append(line)
+            with raw.open("w",encoding="utf8",newline="") as handle:
+                writer=csv.writer(handle)
+                writer.writerow(fields)
+                writer.writerows(rows)
+            original_bytes=raw.read_bytes()
+            status=main([
+                "--pcnt",str(raw),"--anchors",str(anchors),
+                "--tags",str(tags),"--session","1",
+                "--output-dir",str(out),"--no-plots",
+                "--focus-start","0","--focus-end","8",
+            ])
+            self.assertEqual(status,0)
+            report=json.loads(
+                (out/"dual_tag_heading_audit.json").read_text(encoding="utf8")
+            )
+            self.assertEqual(report["summary"]["pcnt_samples"],26)
+            self.assertEqual(report["summary"]["uwb_epochs"],6)
+            self.assertEqual(report["provenance"]["pcnt_sha256"],
+                             hashlib.sha256(original_bytes).hexdigest())
+            self.assertEqual(report["provenance"]["source_uwb_epochs"],6)
+            self.assertEqual(report["geometry"]["baseline_m"],.36)
+            self.assertEqual(raw.read_bytes(),original_bytes)
+            self.assertTrue((out/"dual_tag_heading_audit_snapshots.csv").is_file())
+            self.assertTrue((out/"dual_tag_heading_audit_pcnt.csv").is_file())
+            self.assertTrue((out/"dual_tag_heading_audit_windows.csv").is_file())
 
     def test_cli_import_and_dual_parser_connection_are_stable(self):
         root=Path(__file__).resolve().parents[1]
