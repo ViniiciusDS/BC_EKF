@@ -150,3 +150,109 @@ serializável e vinculação ao parser real sem Pygame.
 
 **Status PR Draft até CI aprovado + execução com CSV real
 no Windows. Nenhum merge automático.**
+
+## Análise real recebida em 16/11/2026
+
+Foram examinados os relatórios `dual_tag_heading_audit.json`,
+`_snapshots.csv`, `_pcnt.csv` e `_windows.csv` e os quatro
+gráficos enviados pelo usuário. Os arquivos analisados reportam
+SHA-256 do PCNT `5691989936293019482c6fd60337993ff363f9f2ab251af9166cf9015d33de5e`.
+
+**Amostragem e qualidade:**
+- 4.209 instantes PCNT, 510 épocas UWB novas, 3.698 repetições;
+- apenas **295/510 (57,8%)** headings foram aceitos;
+- 185 reprovados por RMS de ajuste UWB e 30 por incompatibilidade
+  da separação entre tags;
+- incerteza angular WLS **nominal** mediana em épocas boas ≈15,0°
+  (não confundir com precisão validada ou ground truth);
+- máxima lacuna entre headings UWB aceitos ≈31,0s;
+- separação estimada entre tags variou de ≈0,203m a ≈0,666m
+  mesmo com baseline físico configurado em 0,360m.
+
+### Primeiro desvio grande entre 80–120s
+
+| Intervalo | PCNT: Δheading acumulado | Alteração da discordância entre 1ª/última UWB válida | UWB aceitos |
+| --- | ---: | ---: | ---: |
+| 80–90s | −29,87° | −7,16° | 5 |
+| **90–100s** | **−6,33°** | **−53,83°** | 4 |
+| 100–110s | −2,52° | −8,26° | 5 |
+| 110–120s | −83,68° | −31,25° | 4 |
+
+**Pareamento mais claro:** entre **90,53s e 109,10s**:
+- `theta_PCN`: −203,37° → −214,41° (**Δ=−11,04°**);
+- `theta_UWB`: +166,77° → +95,45° (**Δ=−71,32°**);
+- **discordância de mudanças: −60,28°**.
+- centros XY UWB: aproximadamente `(0.15,0.00)` →
+  `(-0.01,1.06)`m, indicando transição para deslocamento
+  no sentido +Y. Também se observa orientação de curso do
+  centro UWB ≈172° durante 74–88s (ida −X) e ≈83° durante
+  100–109s (ida +Y).
+
+Esses dois indícios são derivados do **mesmo UWB**, não são
+duas referências de sensores independentes. Contudo,
+juntos apontam mudança de direção na curva que o PCNT
+não reflete proporcionalmente. Isto é evidência de
+**discordância localizada de giro**, NÃO demonstra por si
+só falha do encoder, deslizamento ou calibração de rodas.
+
+O relatório global mostra tendência negativa da
+discordância desenrolada de aprox. **−0,197°/s**
+(ajuste linear exploratório, R²~0,894). Ao reanalisar somente
+épocas com **baseline a ±0,05m** e RMS de ajuste de
+cada tag ≤0,12m (95 épocas boas restantes), a inclinação
+permanece em ≈**−0,191°/s** (R²~0,929). Isso sugere
+componente persistente, mas não converte a orientação UWB
+em ground truth.
+
+**Contraprova importante:** há diversas janelas com PCNT
+quase retilíneo e discordância UWB oscilando >20°.
+Por exemplo, entre 1030–1040s, PCNT varia −3,84° e a
+discordância estimada varia −61,87°. Como a maioria das
+janelas contém apenas 2–5 headings UWB aprovados,
+**não considerar `angular_difference_change_deg` uma
+medida confiável de erro físico instantâneo**. Precisamos
+comparar incrementos de orientação com incerteza temporal,
+aprovação por geometria e, se possível, uma estimação
+conjunta de pose rígida por duas tags.
+
+### Correção de visualização após envio dos gráficos
+
+Detectou-se que `angulos.png` desenrolava
+`theta_uwb_wrapped` de maneira **independente** enquanto
+`divergencia.png` desenrolava a **diferença circular
+UWB−PCNT**. Com lacunas longas de UWB, ambos os métodos
+podiam escolher ramos diferentes separados por 360°,
+produzindo gráficos incompatíveis **a partir de ~631s**,
+apesar de os registros PCNT/UWB não terem mudado.
+
+O PR20 passou a:
+1. Calcular `theta_uwb_multivoltas_plot =
+   theta_odom+delta_circular_desenrolado` **apenas para
+   apresentação**. A observação UWB por época continua
+   independente dos encoders; o ramo multivoltas pode
+   continuar ambíguo após lacunas longas.
+2. Exportar, além dos 4 gráficos globais, 4 PNGs `*_foco.png`
+   com eixo X e Y ampliados no intervalo de interesse
+   (com margem de 10s), para examinar a curva sem compressão.
+3. Adicionar teste de regressão para garantir
+   `theta_UWB_plot−theta_PCNT = delta_circular_desenrolado`
+   mesmo após lacunas e números de voltas elevados.
+
+Para obter esses novos PNGs, atualizar a branch e executar
+a mesma CLI **novamente**. O CSV original não será alterado.
+
+### Próximas verificações ANTES de calibrar automaticamente
+
+- Checar um evento de curva por volta, usando o deslocamento
+  do centro estimado UWB como **checagem adicional** (com
+  hipótese de movimento para frente e baixa derrapagem);
+- Repetir estimativa de heading com **ajuste conjunto rígido**
+  (XY + theta sob baseline de 36cm), mantendo um estimador
+  independente dos encoders como controle;
+- Identificar atrasos e diferenças de timestamp T1/T2;
+- Repetir análise com faixas de qualidade mais restritivas;
+- Testar parametrizações de roda/bases sem gravar valores
+  ajustados no perfil original e sem otimizar pela pista nominal.
+
+**O PR20 permanece em Draft. Não fazer merge sem a
+validação dos gráficos de foco corrigidos.**
