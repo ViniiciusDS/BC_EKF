@@ -1851,6 +1851,19 @@ class DatasetMode:
                     " | UWB estaticos: tag1 direita; "
                     "BC-EKF: centro robotico (referencias distintas)"
                 )
+            # O BC-EKF armazena os indicadores sem modificar o Analyzer
+            # geométrico. No status, avisar quantas correções UWB de fato
+            # ocorreram (incluindo épocas com ranges faltantes).
+            bc_result=raw_results.get("bc_ekf",{})
+            bc_updates=bc_result.get("update_diagnostics")
+            if bc_updates is not None:
+                s=bc_updates["summary"]
+                status+=(
+                    f" | BC-EKF UWB: {s['updates_accepted']} correcoes"
+                    f" ({s['partial_updates_accepted']} parciais), "
+                    f"NIS rejeitados: {s['nis_gate_rejected']}"
+                )
+                print("[BC-EKF-UPDATE]",s)
             if run_one_tag_ekf and self._single_tag_fusion_result is not None:
                 info = self._single_tag_fusion_result["fusion_diagnostics"]
                 status += (
