@@ -4,9 +4,13 @@ Todas as medições são sintéticas. Nunca inferir ground truth dos
 ranges reais. Testa API batch/step com numpy somente e preserva
 geometria das tags no referencial do robô.
 """
+import csv
+import hashlib
 import json
 import math
 import sys
+import tempfile
+from pathlib import Path
 import types
 import unittest
 from unittest.mock import patch
@@ -20,6 +24,7 @@ from src.fusion.uwb_ekf_update import (
     compact_uwb_diagnostic,correct_uwb_ranges,
 )
 from src.uwb.algoritmos_estaticos import run_batch
+from tools.audit_bc_ekf_updates_2026 import main as audit_cli_main
 
 
 class TestRobustBcEkf(unittest.TestCase):
@@ -247,6 +252,77 @@ class TestRobustBcEkf(unittest.TestCase):
         self.assertEqual(diag["summary"]["updates_accepted"],3)
         self.assertEqual(diag["summary"]["partial_updates_accepted"],1)
         self.assertEqual(len(diag["steps"]),n-1)
+
+    def test_cli_end_to_end_39_columns_and_versioned_immutable_exports(self):
+        """CSV sintético com firmware T1/T2 real -> duas auditorias sem overwrite."""
+        root=Path(__file__).resolve().parents[1]
+        anchor_file=root/"anchor_sets/lab_duas_tags_A3_A9_14_11_2026.json"
+        tag_file=root/"tag_profiles/lab_14_11_2026_t1_direita_t2_esquerda_xyz_custom.json"
+        anchor_xyz=np.asarray(
+            json.loads(anchor_file.read_text(encoding="utf8"))["anchors_xy"],
+            dtype=float,
+        )
+        with tempfile.TemporaryDirectory() as folder:
+            folder=Path(folder)
+            pcnt=folder/"dual_pcnt.csv"
+            output=folder/"out"
+            names=["time_ms","left","right"]
+            for tag in (1,2):
+                for anchor in range(1,10):
+                    names.extend((f"t{tag}_a{anchor}_avg",
+                                  f"t{tag}_a{anchor}_std"))
+            with pcnt.open("w",encoding="utf8",newline="") as stream:
+                writer=csv.writer(stream)
+                writer.writerow(names)
+                for k in range(26):
+                    epoch=(k-2)//4 if k>=2 else -1
+                    row=[343+250*k,55*k,-52*k]
+                    for tag in (1,2):
+                        for aid in range(1,10):
+                            if aid<=2 or epoch<0:
+                                row.extend([0.,0.])
+                            else:
+                                # Tag 1 à direita, tag 2 à esquerda,
+                                # montadas rigidamente com altura 0.215m.
+                                center=np.array([
+                                    .45+.07*epoch,1.30,0.
+                                ])
+                                world_tag=center+np.array([
+                                    0.,(-.18 if tag==1 else .18),.215
+                                ])
+                                cm=100.*np.linalg.norm(
+                                    world_tag-anchor_xyz[aid-3]
+                                )
+                                row.extend([cm,2.])
+                    writer.writerow(row)
+            original=pcnt.read_bytes()
+            args=[
+                "--pcnt",str(pcnt),"--anchors",str(anchor_file),
+                "--tags",str(tag_file),"--output-dir",str(output),
+                "--session","1",
+            ]
+            self.assertEqual(audit_cli_main(args),0)
+            self.assertEqual(audit_cli_main(args+[
+                "--nis-gate-per-dof","9",
+            ]),0)
+            reports=sorted(output.glob("bc_ekf_updates_*.json"))
+            self.assertEqual(len(reports),2)
+            self.assertEqual(pcnt.read_bytes(),original)
+            report=json.loads(reports[0].read_text(encoding="utf8"))
+            self.assertEqual(report["schema"],"bc_ekf.range_innovations.v1")
+            self.assertEqual(report["summary"]["pcnt_samples"],26)
+            self.assertEqual(report["provenance"]["uwb_new_epochs"],6)
+            self.assertEqual(
+                report["provenance"]["pcnt_sha256"],
+                hashlib.sha256(original).hexdigest(),
+            )
+            self.assertGreater(report["summary"]["updates_accepted"],0)
+            self.assertEqual(len(list(output.glob("*_steps.csv"))),2)
+            self.assertEqual(len(list(output.glob("*_poses.csv"))),2)
+            self.assertEqual(
+                len((output/"bc_ekf_updates_001_poses.csv")
+                    .read_text(encoding="utf8").splitlines()),27
+            )
 
     def test_synthetic_wrapper_no_longer_uses_undefined_time_axis(self):
         mocked=types.SimpleNamespace(
