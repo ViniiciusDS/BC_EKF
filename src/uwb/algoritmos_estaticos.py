@@ -1687,6 +1687,7 @@ def run_batch(
         t0_algo = time.perf_counter()
         posicoes = _new_posicoes()
         bc_full_poses = None
+        bc_diagnostics = None
 
         try:
             # =====================================================
@@ -1702,7 +1703,7 @@ def run_batch(
 
                 anchors_bc = np.asarray(anchors_Nx3, dtype=float).T  # 3xN
 
-                x_hist_est = run_bc_ekf_from_data(
+                x_hist_est,bc_diagnostics = run_bc_ekf_from_data(
                     T=bc_ekf_data["T"],
                     anchors=anchors_bc,
                     odometry_noisy=bc_ekf_data["odometry_noisy"],
@@ -1713,6 +1714,10 @@ def run_batch(
                     x0=bc_ekf_data.get("x0", None),
                     tag_offsets_xyz=bc_ekf_data.get("tag_offsets_xyz"),
                     timestamps_s=bc_ekf_data.get("timestamps_s"),
+                    min_valid_ranges=bc_ekf_data.get("min_valid_ranges",1),
+                    nis_gate_per_dof=bc_ekf_data.get("nis_gate_per_dof"),
+                    range_gate_sigma=bc_ekf_data.get("range_gate_sigma"),
+                    return_diagnostics=True,
                 )
 
                 bc_full_poses=x_hist_est.T
@@ -2146,6 +2151,7 @@ def run_batch(
         if nome=="bc_ekf" and bc_full_poses is not None:
             # Trajetória completa para inspeção PCNT e exportação futura.
             resultados[nome]["full_pcnt_poses"]=bc_full_poses
+            resultados[nome]["update_diagnostics"]=bc_diagnostics
         if preprocessing_summary is not None:
             # Metadados compartilhados, nao entram em metricas de erro.
             resultados[nome]["preprocessing"] = preprocessing_summary
