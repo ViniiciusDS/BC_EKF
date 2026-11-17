@@ -55,6 +55,9 @@ O passo de predição usa as velocidades PCNT.
 8. **Compatibilidade de simulação**: `run_bc_ekf` sintético
    tinha referência à variável `time_axis` inexistente.
    Retornou ao modelo de passo constante T.
+   Os wrappers `run_bc_ekf` e `run_bc_ekf_custom_commands`
+   também usam a correção UWB compartilhada e protegem
+   `update_ratio` para `T > 0,2s`.
 
 ## Como usar em código
 
