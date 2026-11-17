@@ -18,7 +18,8 @@ from unittest.mock import patch
 import numpy as np
 
 from src.bc_ekf import (
-    _measurement_model,run_bc_ekf,run_bc_ekf_from_data,run_bc_ekf_step,
+    _measurement_model,run_bc_ekf,run_bc_ekf_custom_commands,
+    run_bc_ekf_from_data,run_bc_ekf_step,
 )
 from src.fusion.uwb_ekf_update import (
     compact_uwb_diagnostic,correct_uwb_ranges,
@@ -323,6 +324,29 @@ class TestRobustBcEkf(unittest.TestCase):
                 len((output/"bc_ekf_updates_001_poses.csv")
                     .read_text(encoding="utf8").splitlines()),27
             )
+
+    def test_both_synthetic_wrappers_allow_t_greater_than_200ms(self):
+        """Update ratio era zero quando T>0,2s; simulações seguem ativas."""
+        mocked=types.SimpleNamespace(
+            apply_uwb_errors=lambda distance,sigma:distance
+        )
+        with patch.dict(sys.modules,{"src.utils":mocked}):
+            first=run_bc_ekf(
+                T=.5,t_final=1.5,anchors=self.anchors,
+                sigma_v=0.,sigma_w=0.,sigma_uwb=.05,
+                tag_offsets_xyz=self.tags,
+            )
+            second=run_bc_ekf_custom_commands(
+                T=.5,t_final=2.,anchors=self.anchors,
+                v_commands=np.full(4,.2),
+                w_commands=np.full(4,.05),
+                sigma_v=0.,sigma_w=0.,sigma_uwb=.05,
+                tag_offsets_xyz=self.tags,
+            )
+        self.assertEqual(first[-1].shape,(3,4))
+        self.assertEqual(second[-1].shape,(3,4))
+        self.assertTrue(np.isfinite(first[-1]).all())
+        self.assertTrue(np.isfinite(second[-1]).all())
 
     def test_synthetic_wrapper_no_longer_uses_undefined_time_axis(self):
         mocked=types.SimpleNamespace(
