@@ -362,6 +362,9 @@ def run_bc_ekf_step(
         dt: Optional[float] = None, 
         debug: bool = False,
         tag_offsets_xyz=None,
+        min_valid_ranges=1,
+        nis_gate_per_dof=None,
+        range_gate_sigma=None,
         ):
     """
     Executa UM passo do BC-EKF (predição +, opcionalmente, correção).
@@ -408,80 +411,66 @@ def run_bc_ekf_step(
     ])
     P_pred = A @ P @ A.T + Q
 
-    # --- Correção: checagens rápidas ---
-    # Sem medições ou R inválido -> sai só com predição
-    if z_k is None or len(z_k) == 0 or R is None or R.size == 0:
-        if debug:
-            return x_pred, P_pred, {
-                "innov": None, "S": None, "K": None, "h": None, "H": None,
-                "x_pred": x_pred.copy(), "P_pred": P_pred.copy(), "dt": dt
-            }
-        return x_pred, P_pred
+    # --- Correção UWB ---
+    # Em step, R None / z None preservam o comportamento legado:
+    # somente a predição. O debug agora informa status e dt.
+    def prediction_only(status, warning=None):
+        if not debug:
+            return x_pred,P_pred
+        result={
+            "innov":None,"S":None,"K":None,"h":None,"H":None,
+            "x_pred":x_pred.copy(),"P_pred":P_pred.copy(),
+            "dt":float(dt),"status":status,
+            "nis":None,"nis_per_dof":None,
+            "used_indices":np.empty(0,dtype=int),"valid_ranges":0,
+        }
+        if warning is not None:
+            result["warn"]=warning
+        return x_pred,P_pred,result
 
-    num_anchors = anchors.shape[1]
-    if num_anchors == 0:
-        if debug:
-            return x_pred, P_pred, {
-                "innov": None, "S": None, "K": None, "h": None, "H": None,
-                "x_pred": x_pred.copy(), "P_pred": P_pred.copy(), "dt": dt
-            }
-        return x_pred, P_pred
+    if z_k is None or R is None or np.size(R)==0 or np.size(z_k)==0:
+        return prediction_only("no_valid_ranges")
+    z=np.asarray(z_k,dtype=float)
+    if z.shape!=(2*anchors.shape[1],):
+        raise ValueError("z_k deve ter 2 ranges por âncora")
+    matrix=np.asarray(R,dtype=float)
+    if matrix.shape!=(len(z),len(z)):
+        raise ValueError("R deve ser matriz 2A x 2A")
+    if not np.any(np.isfinite(z)&(z>0)):
+        return prediction_only("no_valid_ranges")
 
-    # --- Modelo de medição compartilhado com batch/simulador ---
-    # A ordem dos ranges permanece A0_canal0, A0_canal1, A1_canal0,
-    # A1_canal1... independente da montagem física das tags.
     try:
-        h, H = _measurement_model(
-            x_pred, anchors, l, z_c, tag_offsets_xyz=tag_offsets_xyz
+        h,H=_measurement_model(
+            x_pred,anchors,l,z_c,tag_offsets_xyz=tag_offsets_xyz
         )
     except ValueError as exc:
         if "Distância tag-âncora" not in str(exc):
             raise
-        if debug:
-            return x_pred, P_pred, {
-                "innov": None, "S": None, "K": None, "h": None, "H": None,
-                "x_pred": x_pred.copy(), "P_pred": P_pred.copy(), "dt": dt,
-                "warn": str(exc),
-            }
-        return x_pred, P_pred
+        return prediction_only("geometry_unavailable",str(exc))
 
-    # --- Atualização de Kalman robusta ---
-    # Checagem de dimensões
-    m = 2 * num_anchors
-    if z_k.shape[0] != m or R.shape != (m, m):
-        raise ValueError(f"z_k/R mismatch: z_k={z_k.shape}, R={R.shape}, expected m={m}")
-    
-    S = H @ P_pred @ H.T + R
-    # regularização leve em S (caso mal-condicionado)
-    eps = 1e-9
-    S = S + eps * np.eye(S.shape[0])
-
-    y = z_k - h
-
-    # Use solve ao invés de inv
-    try:
-        assert S.shape[0] == S.shape[1] == H.shape[0], f"Dimensão inconsistente: S={S.shape}, H={H.shape}, P_pred={P_pred.shape}"
-        # S: (m,m), m = 2*num_anchors
-        # Queremos K = P_pred H^T S^{-1}
-        # Resolva:  S^T X^T = (P_pred H^T)^T  ->  X = P_pred H^T S^{-1}
-        PHt = P_pred @ H.T                 # (3,m)
-        # resolve S^T X^T = PHt^T  -> X = PHt @ S^{-1}
-        K = np.linalg.solve(S.T, PHt.T).T  # (3,m)  dimensões batem sempre
-    except np.linalg.LinAlgError:
-        # fallback numérico
-        Sinv = np.linalg.pinv(S)
-        K = (P_pred @ H.T) @ Sinv
-
-    x_upd = x_pred + K @ y
-    x_upd[2] = np.arctan2(np.sin(x_upd[2]), np.cos(x_upd[2]))
-    P_upd = (np.eye(3) - K @ H) @ P_pred
-
-    if debug:
-        return x_upd, P_upd, {
-            "innov": y, "S": S, "K": K, "h": h, "H": H,
-            "x_pred": x_pred.copy(), "P_pred": P_pred.copy(), "dt": dt
-        }
-    return x_upd, P_upd
+    x_upd,P_upd,detail=correct_uwb_ranges(
+        x_pred,P_pred,z,h,H,matrix,
+        min_valid_ranges=min_valid_ranges,
+        nis_gate_per_dof=nis_gate_per_dof,
+        range_gate_sigma=range_gate_sigma,
+    )
+    if not debug:
+        return x_upd,P_upd
+    return x_upd,P_upd,{
+        "innov":detail["innovation"],
+        "S":detail["S"],"K":detail["K"],
+        "h":detail["h"],"H":detail["H"],
+        "x_pred":x_pred.copy(),"P_pred":P_pred.copy(),
+        "dt":float(dt),
+        "status":detail["status"],
+        "used_indices":detail["used_indices"].copy(),
+        "valid_ranges":detail["valid_ranges"],
+        "used_ranges":detail["used_ranges"],
+        "nis":detail["nis"],
+        "nis_per_dof":detail["nis_per_dof"],
+        "innovation_rms_m":detail["innovation_rms_m"],
+        "max_abs_innovation_m":detail["max_abs_innovation_m"],
+    }
 
 # ======================
 # Funções auxiliares
