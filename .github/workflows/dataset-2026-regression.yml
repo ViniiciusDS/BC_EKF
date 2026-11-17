@@ -15,6 +15,8 @@ on:
       - "src/bc_ekf.py"
       - "src/ui/algo_modes/dataset_bc_prep.py"
       - "tests/test_two_tag_geometry_2026.py"
+      - "tests/test_bc_ekf_robust_updates_2026.py"
+      - "tools/audit_bc_ekf_updates_2026.py"
       - "src/ui/algo_modes/dataset_two_tag2026_pipeline.py"
       - "tests/test_dual_tag_pcnt2026.py"
       - "tests/test_dual_tag_heading_audit_2026.py"
@@ -81,6 +83,7 @@ jobs:
           python -m unittest discover -s tests -p "test_uwb_preprocessing_workflow_2026.py" -v
           python -m unittest discover -s tests -p "test_single_tag_range_ekf_2026.py" -v
           python -m unittest discover -s tests -p "test_two_tag_geometry_2026.py" -v
+          python -m unittest discover -s tests -p "test_bc_ekf_robust_updates_2026.py" -v
           python -m unittest discover -s tests -p "test_dual_tag_pcnt2026.py" -v
           python -m unittest discover -s tests -p "test_dual_tag_heading_audit_2026.py" -v
           python -m unittest discover -s tests -p "test_ui_menu_default_algos_2026.py" -v
