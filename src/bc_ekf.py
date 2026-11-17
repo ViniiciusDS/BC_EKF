@@ -26,7 +26,7 @@ def run_bc_ekf(
     """
     t = np.arange(0, t_final + T, T)
     num_anchors = anchors.shape[1]
-    update_ratio = int((1/T) / 5)  # Correção UWB a cada 0.2s
+    update_ratio = max(1, int((1/T) / 5))  # Evita divisor zero se T>0.2s
 
     # Trajetória real
     x_hist_true = np.zeros((3, len(t)))
@@ -104,7 +104,7 @@ def run_bc_ekf_custom_commands(
     """
     t = np.arange(0, t_final, T)
     num_anchors = anchors.shape[1]
-    update_ratio = int((1/T)/5)
+    update_ratio = max(1, int((1/T)/5))
 
     # Trajetória real
     x_hist_true = np.zeros((3, len(t)))
@@ -145,15 +145,15 @@ def run_bc_ekf_custom_commands(
         P_pred = A_k @ P @ A_k.T + Q
 
         if k % update_ratio == 0:
-            h_pred, H_k = _measurement_model(x_pred, anchors, l, z_c, tag_offsets_xyz=tag_offsets_xyz)
-            K_k = P_pred @ H_k.T @ np.linalg.inv(H_k @ P_pred @ H_k.T + R)
-            z_k = z_hist[:,k]
-            x_est = x_pred + K_k @ (z_k - h_pred)
-            x_est[2] = np.arctan2(np.sin(x_est[2]), np.cos(x_est[2]))
-            P = (np.eye(3) - K_k @ H_k) @ P_pred
+            h_pred,H_k=_measurement_model(
+                x_pred,anchors,l,z_c,tag_offsets_xyz=tag_offsets_xyz
+            )
+            x_est,P,_=correct_uwb_ranges(
+                x_pred,P_pred,z_hist[:,k],h_pred,H_k,R
+            )
         else:
-            x_est = x_pred
-            P = P_pred
+            x_est=x_pred
+            P=P_pred
 
         x_hist_est[:,k] = x_est
 
