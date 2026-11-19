@@ -3,6 +3,10 @@
 import numpy as np
 from typing import Optional
 
+from src.fusion.uwb_ekf_update import (
+    correct_uwb_ranges, compact_uwb_diagnostic,
+)
+
 def run_bc_ekf(
     T,
     t_final,
@@ -22,7 +26,7 @@ def run_bc_ekf(
     """
     t = np.arange(0, t_final + T, T)
     num_anchors = anchors.shape[1]
-    update_ratio = int((1/T) / 5)  # Correção UWB a cada 0.2s
+    update_ratio = max(1, int((1/T) / 5))  # Evita divisor zero se T>0.2s
 
     # Trajetória real
     x_hist_true = np.zeros((3, len(t)))
@@ -58,31 +62,18 @@ def run_bc_ekf(
     for k in range(1, len(t)):
         v_k = input_noisy[0,k]
         w_k = input_noisy[1,k]
-        step_dt=(float(time_axis[k]-time_axis[k-1])
-                 if time_axis is not None else T)
-        x_pred, A_k = _predict_state(x_est, v_k, w_k, step_dt)
-        P_pred = A_k @ P @ A_k.T + (
-            Q*(step_dt/T) if time_axis is not None else Q
-        )
+        # Simulador sintético: passo constante T. O código anterior
+        # referenciava 'time_axis' sem defini-lo nesse wrapper.
+        x_pred, A_k = _predict_state(x_est, v_k, w_k, T)
+        P_pred = A_k @ P @ A_k.T + Q
 
-        if time_axis is not None or k % update_ratio == 0:
-            # Evita calcular H e inverter matriz quando o valor de UWB
-            # é repetido/ausente. Mantém BC antigo quando timestamps
-            # não são informados, sem mudar seu resultado.
-            z_k = z_hist[:, k]
-            if not np.all(np.isfinite(z_k)):
-                x_est=x_pred
-                P=P_pred
-                x_hist_est[:,k]=x_est
-                continue
+        if k % update_ratio == 0:
             h_pred, H_k = _measurement_model(
                 x_pred, anchors, l, z_c, tag_offsets_xyz=tag_offsets_xyz
             )
-            K_k = P_pred @ H_k.T @ np.linalg.inv(H_k @ P_pred @ H_k.T + R)
-            z_k = z_hist[:,k]
-            x_est = x_pred + K_k @ (z_k - h_pred)
-            x_est[2] = np.arctan2(np.sin(x_est[2]), np.cos(x_est[2]))
-            P = (np.eye(3) - K_k @ H_k) @ P_pred
+            x_est, P, _ = correct_uwb_ranges(
+                x_pred, P_pred, z_hist[:,k], h_pred, H_k, R
+            )
         else:
             x_est = x_pred
             P = P_pred
@@ -113,7 +104,7 @@ def run_bc_ekf_custom_commands(
     """
     t = np.arange(0, t_final, T)
     num_anchors = anchors.shape[1]
-    update_ratio = int((1/T)/5)
+    update_ratio = max(1, int((1/T)/5))
 
     # Trajetória real
     x_hist_true = np.zeros((3, len(t)))
@@ -154,15 +145,15 @@ def run_bc_ekf_custom_commands(
         P_pred = A_k @ P @ A_k.T + Q
 
         if k % update_ratio == 0:
-            h_pred, H_k = _measurement_model(x_pred, anchors, l, z_c, tag_offsets_xyz=tag_offsets_xyz)
-            K_k = P_pred @ H_k.T @ np.linalg.inv(H_k @ P_pred @ H_k.T + R)
-            z_k = z_hist[:,k]
-            x_est = x_pred + K_k @ (z_k - h_pred)
-            x_est[2] = np.arctan2(np.sin(x_est[2]), np.cos(x_est[2]))
-            P = (np.eye(3) - K_k @ H_k) @ P_pred
+            h_pred,H_k=_measurement_model(
+                x_pred,anchors,l,z_c,tag_offsets_xyz=tag_offsets_xyz
+            )
+            x_est,P,_=correct_uwb_ranges(
+                x_pred,P_pred,z_hist[:,k],h_pred,H_k,R
+            )
         else:
-            x_est = x_pred
-            P = P_pred
+            x_est=x_pred
+            P=P_pred
 
         x_hist_est[:,k] = x_est
 
@@ -182,101 +173,180 @@ def run_bc_ekf_from_data(
     update_hz=5.0,
     tag_offsets_xyz=None,
     timestamps_s=None,
+    *,
+    min_valid_ranges=1,
+    nis_gate_per_dof=None,
+    range_gate_sigma=None,
+    return_diagnostics=False,
 ):
-    """
-    Roda o BC-EKF recebendo diretamente odometria e medições UWB.
+    """BC-EKF de duas tags: odometria contínua e correção UWB parcial.
 
-    Compatível com datasets simulados e reais.
-    Para datasets reais com T maior que 0,2 s, a correção UWB passa a ocorrer
-    em toda amostra, evitando update_ratio = 0.
+    Compatibilidade:
+    - Sem timestamps_s: usa T constante e agenda legacy por
+      update_hz. A saída padrão continua sendo matriz (3,N).
+    - Com timestamps_s: usa dt real em cada transição, escala
+      o ruído de processo por dt/T e processa cada linha que
+      contiver pelo menos uma medição UWB nova e válida.
+      Ausências (NaN/Inf/range<=0) não invalidam os demais ranges.
+
+    Gating por NIS/dof e resíduos individuais é opcional e DESLIGADO
+    por padrão. NIS descreve consistência estatística do EKF, não GT.
+    return_diagnostics=True retorna (poses, {summary, steps}).
     """
-    T = float(T)
-    if not np.isfinite(T) or T <= 0:
+    T=float(T)
+    if not np.isfinite(T) or T<=0:
         raise ValueError(f"T inválido no BC-EKF: {T}")
+    update_hz=float(update_hz)
+    if not np.isfinite(update_hz) or update_hz<=0:
+        raise ValueError("update_hz deve ser positivo e finito")
+    sigma_uwb=float(sigma_uwb)
+    if not np.isfinite(sigma_uwb) or sigma_uwb<=0:
+        raise ValueError("sigma_uwb precisa ser positivo e finito")
+    if type(min_valid_ranges) is not int or min_valid_ranges<1:
+        raise ValueError("min_valid_ranges deve ser inteiro positivo")
+    for name,value in (("nis_gate_per_dof",nis_gate_per_dof),
+                       ("range_gate_sigma",range_gate_sigma)):
+        if value is not None and (not np.isscalar(value)
+                or not np.isfinite(value) or float(value)<=0):
+            raise ValueError(f"{name} deve ser positivo ou None")
 
-    anchors = np.asarray(anchors, dtype=float)
-    odometry_noisy = np.asarray(odometry_noisy, dtype=float)
-    z_hist = np.asarray(z_hist, dtype=float)
-
-    num_steps = int(odometry_noisy.shape[1])
-    num_anchors = int(anchors.shape[1])
-
-    if z_hist.shape[1] != num_steps:
+    anchors=np.asarray(anchors,dtype=float)
+    odo=np.asarray(odometry_noisy,dtype=float)
+    z=np.asarray(z_hist,dtype=float)
+    if anchors.ndim!=2 or anchors.shape[0]!=3 or not np.isfinite(anchors).all():
+        raise ValueError("anchors deve ser matriz 3xA finita")
+    if odo.ndim!=2 or odo.shape[0]!=2 or not np.isfinite(odo).all():
+        raise ValueError("odometry_noisy deve ser matriz 2xN finita")
+    num_steps=odo.shape[1]
+    if num_steps<1:
+        raise ValueError("odometry_noisy precisa de ao menos uma amostra")
+    m=2*anchors.shape[1]
+    if z.shape!=(m,num_steps):
         raise ValueError(
-            f"z_hist possui {z_hist.shape[1]} passos, mas odometria possui {num_steps}"
+            f"z_hist possui shape {z.shape}, esperado ({m},{num_steps})"
         )
 
-    if z_hist.shape[0] != 2 * num_anchors:
-        raise ValueError(
-            f"z_hist possui {z_hist.shape[0]} linhas, esperado {2 * num_anchors}"
-        )
-
-    # O dataset novo registra PCNT em intervalos variáveis. Quando o
-    # tempo exato é informado, usar dt real e realizar updates apenas
-    # onde há ranges NOVOS (NaN em todos os demais instantes).
     time_axis=None
     if timestamps_s is not None:
         time_axis=np.asarray(timestamps_s,dtype=float)
         if (time_axis.shape!=(num_steps,) or not np.isfinite(time_axis).all()
                 or np.any(np.diff(time_axis)<=0)):
-            raise ValueError("timestamps_s precisa conter N instantes PCNT crescentes")
-
-    # Inicialização
-    if x0 is None:
-        x_est = np.array([2.5, 0.0, 0.0], dtype=float)
-    else:
-        x_est = np.asarray(x0, dtype=float).reshape(3,)
-
-    P = np.diag([0.1, 0.1, 0.1])
-    Q = np.diag([1e-4] * 3)
-    R = np.diag([float(sigma_uwb) ** 2] * (2 * num_anchors))
-
-    x_hist_est = np.zeros((3, num_steps), dtype=float)
-    x_hist_est[:, 0] = x_est
-
-    # Correção UWB a update_hz, mas nunca deixa update_ratio virar zero.
-    # Se T for maior que o período desejado, corrige em toda amostra.
-    desired_update_period = 1.0 / float(update_hz)
-    update_ratio = max(1, int(round(desired_update_period / T)))
-
-    print(
-        "[BC_EKF_FROM_DATA]",
-        "T=", T,
-        "num_steps=", num_steps,
-        "num_anchors=", num_anchors,
-        "update_ratio=", update_ratio,
-        "x0=", x_est,
+            raise ValueError(
+                "timestamps_s precisa conter N instantes crescentes e finitos"
+            )
+    initial=np.array([2.5,0.,0.],dtype=float) if x0 is None else (
+        np.asarray(x0,dtype=float).reshape(3).copy()
     )
+    if not np.isfinite(initial).all():
+        raise ValueError("x0 precisa ser finito")
 
-    # Loop EKF
-    for k in range(1, num_steps):
-        v_k = odometry_noisy[0, k]
-        w_k = odometry_noisy[1, k]
+    x_est=initial
+    P=np.diag([.1,.1,.1])
+    Q=np.diag([1e-4]*3)
+    R=np.eye(m)*(sigma_uwb*sigma_uwb)
+    states=np.zeros((3,num_steps),dtype=float)
+    states[:,0]=x_est
+    update_ratio=max(1,int(round((1./update_hz)/T)))
+    summary={
+        "pcnt_samples":int(num_steps),
+        "anchor_count":int(anchors.shape[1]),
+        "sampling_mode":"real_dt" if time_axis is not None else "fixed_dt_legacy",
+        "nominal_T_s":T,
+        "scheduled_update_ratio":None if time_axis is not None else update_ratio,
+        "updates_accepted":0,
+        "partial_updates_accepted":0,
+        "nis_gate_rejected":0,
+        "range_gate_rejected":0,
+        "insufficient_ranges":0,
+        "prediction_only_steps":0,
+        "max_nis_per_dof":None,
+        "max_innovation_rms_m":None,
+        "min_dt_s":None,
+        "max_dt_s":None,
+    }
+    reports=[]
+    for k in range(1,num_steps):
+        dt=float(time_axis[k]-time_axis[k-1]) if time_axis is not None else T
+        x_pred,A=_predict_state(x_est,odo[0,k],odo[1,k],dt)
+        # Q é definido por passo nominal T, por isso escala com dt.
+        q_effective=Q*(dt/T) if time_axis is not None else Q
+        P_pred=A@P@A.T+q_effective
+        if summary["min_dt_s"] is None or dt<summary["min_dt_s"]:
+            summary["min_dt_s"]=dt
+        if summary["max_dt_s"] is None or dt>summary["max_dt_s"]:
+            summary["max_dt_s"]=dt
 
-        x_pred, A_k = _predict_state(x_est, v_k, w_k, T)
-        P_pred = A_k @ P @ A_k.T + Q
-
-        if k % update_ratio == 0:
-            h_pred, H_k = _measurement_model(x_pred, anchors, l, z_c, tag_offsets_xyz=tag_offsets_xyz)
-
-            z_k = z_hist[:, k]
-            if np.all(np.isfinite(z_k)):
-                S = H_k @ P_pred @ H_k.T + R
-                K_k = P_pred @ H_k.T @ np.linalg.inv(S)
-
-                x_est = x_pred + K_k @ (z_k - h_pred)
-                x_est[2] = np.arctan2(np.sin(x_est[2]), np.cos(x_est[2]))
-                P = (np.eye(3) - K_k @ H_k) @ P_pred
-            else:
-                x_est = x_pred
-                P = P_pred
+        should_update=(time_axis is not None or k%update_ratio==0)
+        values=z[:,k]
+        if should_update and np.any(np.isfinite(values)&(values>0)):
+            h,H=_measurement_model(
+                x_pred,anchors,l,z_c,tag_offsets_xyz=tag_offsets_xyz
+            )
+            x_est,P,detail=correct_uwb_ranges(
+                x_pred,P_pred,values,h,H,R,
+                min_valid_ranges=min_valid_ranges,
+                nis_gate_per_dof=nis_gate_per_dof,
+                range_gate_sigma=range_gate_sigma,
+            )
         else:
-            x_est = x_pred
-            P = P_pred
-
-        x_hist_est[:, k] = x_est
-
-    return x_hist_est
+            x_est,P=x_pred,P_pred
+            detail={
+                "status":("not_scheduled" if not should_update
+                          else "no_valid_ranges"),
+                "total_ranges":m,
+                "valid_ranges":int(np.count_nonzero(
+                    np.isfinite(values)&(values>0)
+                )),
+                "used_ranges":0,"dropped_ranges":m,
+                "used_indices":np.empty(0,dtype=int),
+                "nis":None,"nis_per_dof":None,
+                "innovation_rms_m":None,
+                "max_abs_innovation_m":None,
+                "max_standardized_innovation":None,
+            }
+        status=detail["status"]
+        if status=="accepted":
+            summary["updates_accepted"]+=1
+            if detail["used_ranges"]<m:
+                summary["partial_updates_accepted"]+=1
+        else:
+            summary["prediction_only_steps"]+=1
+            if status=="nis_gate_rejected":
+                summary["nis_gate_rejected"]+=1
+            elif status=="range_gate_rejected":
+                summary["range_gate_rejected"]+=1
+            elif status=="insufficient_ranges":
+                summary["insufficient_ranges"]+=1
+        for key,name in (("max_nis_per_dof","nis_per_dof"),
+                         ("max_innovation_rms_m","innovation_rms_m")):
+            v=detail[name]
+            if v is not None:
+                summary[key]=v if summary[key] is None else max(summary[key],v)
+        states[:,k]=x_est
+        if return_diagnostics:
+            reports.append(compact_uwb_diagnostic(
+                detail,index=k,
+                timestamp_s=float(time_axis[k]) if time_axis is not None else k*T,
+                dt_s=dt,
+            ))
+    if not return_diagnostics:
+        return states
+    return states,{
+        "schema":"bc_ekf.range_innovations.v1",
+        "summary":summary,
+        "steps":reports,
+        "config":{
+            "min_valid_ranges":min_valid_ranges,
+            "nis_gate_per_dof":nis_gate_per_dof,
+            "range_gate_sigma":range_gate_sigma,
+            "sigma_uwb_m":sigma_uwb,
+        },
+        "caveats":[
+            "NIS é estatística de consistência, não RMSE nem ground truth.",
+            "Limiares de gating são opcionais; sem ajuste de Q/R "
+            "e sem sincronização física UWB não garantem rejeição ótima.",
+        ],
+    }
 
 
 def run_bc_ekf_step(
@@ -292,6 +362,9 @@ def run_bc_ekf_step(
         dt: Optional[float] = None, 
         debug: bool = False,
         tag_offsets_xyz=None,
+        min_valid_ranges=1,
+        nis_gate_per_dof=None,
+        range_gate_sigma=None,
         ):
     """
     Executa UM passo do BC-EKF (predição +, opcionalmente, correção).
@@ -338,80 +411,66 @@ def run_bc_ekf_step(
     ])
     P_pred = A @ P @ A.T + Q
 
-    # --- Correção: checagens rápidas ---
-    # Sem medições ou R inválido -> sai só com predição
-    if z_k is None or len(z_k) == 0 or R is None or R.size == 0:
-        if debug:
-            return x_pred, P_pred, {
-                "innov": None, "S": None, "K": None, "h": None, "H": None,
-                "x_pred": x_pred.copy(), "P_pred": P_pred.copy(), "dt": dt
-            }
-        return x_pred, P_pred
+    # --- Correção UWB ---
+    # Em step, R None / z None preservam o comportamento legado:
+    # somente a predição. O debug agora informa status e dt.
+    def prediction_only(status, warning=None):
+        if not debug:
+            return x_pred,P_pred
+        result={
+            "innov":None,"S":None,"K":None,"h":None,"H":None,
+            "x_pred":x_pred.copy(),"P_pred":P_pred.copy(),
+            "dt":float(dt),"status":status,
+            "nis":None,"nis_per_dof":None,
+            "used_indices":np.empty(0,dtype=int),"valid_ranges":0,
+        }
+        if warning is not None:
+            result["warn"]=warning
+        return x_pred,P_pred,result
 
-    num_anchors = anchors.shape[1]
-    if num_anchors == 0:
-        if debug:
-            return x_pred, P_pred, {
-                "innov": None, "S": None, "K": None, "h": None, "H": None,
-                "x_pred": x_pred.copy(), "P_pred": P_pred.copy(), "dt": dt
-            }
-        return x_pred, P_pred
+    if z_k is None or R is None or np.size(R)==0 or np.size(z_k)==0:
+        return prediction_only("no_valid_ranges")
+    z=np.asarray(z_k,dtype=float)
+    if z.shape!=(2*anchors.shape[1],):
+        raise ValueError("z_k deve ter 2 ranges por âncora")
+    matrix=np.asarray(R,dtype=float)
+    if matrix.shape!=(len(z),len(z)):
+        raise ValueError("R deve ser matriz 2A x 2A")
+    if not np.any(np.isfinite(z)&(z>0)):
+        return prediction_only("no_valid_ranges")
 
-    # --- Modelo de medição compartilhado com batch/simulador ---
-    # A ordem dos ranges permanece A0_canal0, A0_canal1, A1_canal0,
-    # A1_canal1... independente da montagem física das tags.
     try:
-        h, H = _measurement_model(
-            x_pred, anchors, l, z_c, tag_offsets_xyz=tag_offsets_xyz
+        h,H=_measurement_model(
+            x_pred,anchors,l,z_c,tag_offsets_xyz=tag_offsets_xyz
         )
     except ValueError as exc:
         if "Distância tag-âncora" not in str(exc):
             raise
-        if debug:
-            return x_pred, P_pred, {
-                "innov": None, "S": None, "K": None, "h": None, "H": None,
-                "x_pred": x_pred.copy(), "P_pred": P_pred.copy(), "dt": dt,
-                "warn": str(exc),
-            }
-        return x_pred, P_pred
+        return prediction_only("geometry_unavailable",str(exc))
 
-    # --- Atualização de Kalman robusta ---
-    # Checagem de dimensões
-    m = 2 * num_anchors
-    if z_k.shape[0] != m or R.shape != (m, m):
-        raise ValueError(f"z_k/R mismatch: z_k={z_k.shape}, R={R.shape}, expected m={m}")
-    
-    S = H @ P_pred @ H.T + R
-    # regularização leve em S (caso mal-condicionado)
-    eps = 1e-9
-    S = S + eps * np.eye(S.shape[0])
-
-    y = z_k - h
-
-    # Use solve ao invés de inv
-    try:
-        assert S.shape[0] == S.shape[1] == H.shape[0], f"Dimensão inconsistente: S={S.shape}, H={H.shape}, P_pred={P_pred.shape}"
-        # S: (m,m), m = 2*num_anchors
-        # Queremos K = P_pred H^T S^{-1}
-        # Resolva:  S^T X^T = (P_pred H^T)^T  ->  X = P_pred H^T S^{-1}
-        PHt = P_pred @ H.T                 # (3,m)
-        # resolve S^T X^T = PHt^T  -> X = PHt @ S^{-1}
-        K = np.linalg.solve(S.T, PHt.T).T  # (3,m)  dimensões batem sempre
-    except np.linalg.LinAlgError:
-        # fallback numérico
-        Sinv = np.linalg.pinv(S)
-        K = (P_pred @ H.T) @ Sinv
-
-    x_upd = x_pred + K @ y
-    x_upd[2] = np.arctan2(np.sin(x_upd[2]), np.cos(x_upd[2]))
-    P_upd = (np.eye(3) - K @ H) @ P_pred
-
-    if debug:
-        return x_upd, P_upd, {
-            "innov": y, "S": S, "K": K, "h": h, "H": H,
-            "x_pred": x_pred.copy(), "P_pred": P_pred.copy(), "dt": dt
-        }
-    return x_upd, P_upd
+    x_upd,P_upd,detail=correct_uwb_ranges(
+        x_pred,P_pred,z,h,H,matrix,
+        min_valid_ranges=min_valid_ranges,
+        nis_gate_per_dof=nis_gate_per_dof,
+        range_gate_sigma=range_gate_sigma,
+    )
+    if not debug:
+        return x_upd,P_upd
+    return x_upd,P_upd,{
+        "innov":detail["innovation"],
+        "S":detail["S"],"K":detail["K"],
+        "h":detail["h"],"H":detail["H"],
+        "x_pred":x_pred.copy(),"P_pred":P_pred.copy(),
+        "dt":float(dt),
+        "status":detail["status"],
+        "used_indices":detail["used_indices"].copy(),
+        "valid_ranges":detail["valid_ranges"],
+        "used_ranges":detail["used_ranges"],
+        "nis":detail["nis"],
+        "nis_per_dof":detail["nis_per_dof"],
+        "innovation_rms_m":detail["innovation_rms_m"],
+        "max_abs_innovation_m":detail["max_abs_innovation_m"],
+    }
 
 # ======================
 # Funções auxiliares
